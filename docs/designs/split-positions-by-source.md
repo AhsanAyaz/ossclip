@@ -1,6 +1,6 @@
 # Splits land where their source time says
 
-Status: draft 4. It revises draft 3 after review round 3 (`~/ossclip-work/egm-short/split-positions-review-r3.md`). The author picked options 1B + 2A on 2026-11-23. Context: `take-looks-by-source.md` and `take-framing-identity.md` (both built), and `framing-phase2-review-r1.md` (hazards B1, B2 and S1). Sites are cited by symbol.
+Status: draft 5. It revises draft 4 after review round 4 (`~/ossclip-work/egm-short/split-positions-review-r4.md`). **The "Draft 5 rulings" section at the end overrides the text above wherever the two differ.** The author picked options 1B + 2A on 2026-11-23. Context: `take-looks-by-source.md` and `take-framing-identity.md` (both built), and `framing-phase2-review-r1.md` (hazards B1, B2 and S1). Sites are cited by symbol.
 
 ## Problem
 
@@ -224,3 +224,68 @@ One task, then the field check.
   - `apps/editor/src/App.tsx`, `ghosts.ts` and `useEdits.ts`;
   - the tests named above, plus `take-halves.test.ts`, `take-halves-pipeline.test.ts`, `take-looks-migration.test.ts`, `take-looks-pipeline.test.ts`, `take-looks.fixtures.ts`, `scene-edit-remap.test.ts`, `caption-report.test.ts`, `overrides-write.test.ts`, `ghosts.test.ts`, `Inspector.test.ts` (if it calls `ghostCues`), and `take-looks-wiring.test.ts`;
   - the two design docs (supersede notes).
+
+## Draft 5 rulings (round 4)
+
+**R5-1. An unlabelled split's stale `at` is read on the last render's clock (B1).**
+- For an unlabelled `{at, src}` split, both the dry and the real pass 1 use `prior(at) = map.toOutput(priorMap.toSource(at)) ?? at` when `priorMap` exists, and `at` otherwise. This is where the last render showed the split, carried to this run's clock.
+- `labelGraphicSplits` measures `p` against that point, and checks the window against this run's `editedCues`.
+- **Freeze:** `src = round(priorMap.toSource(at), ms)`, unchanged.
+- **The label run with a cut added in that same run** (fc2's `at` 16.0, `shot-s1` now at [8.085, 15.950]) still lands on `shot-s1` at 14.0, is labelled, and freezes. Tested.
+
+**R5-2. A labelled graphic split's `at` is refreshed to where it landed (S4).** After the real pass 1, a labelled graphic split gets `at = round(landedPoint, ms)` when the two differ by more than 0.0015. The note is `split ${id} at ${x}s on this cut`. `at` then always means "where the last render cut", so losing a label and re-labelling changes nothing.
+
+**R5-3. The freeze needs evidence (S1, S3).** The freeze, and labelling an inert split `"graphic"`, both apply only when the prior `render-props.json` has a cue boundary within 0.0015 of `prior(at)`. The freeze is skipped in three cases:
+- the split's `src` was backfilled in this run (the `splitSrcResolved` set);
+- `G@sid` is hidden and `q < at`. In that case the split is labelled `"graphic"` with no freeze, and pass 1 then cuts at `q`, the last visible edge.
+- there is no `priorMap` (it is only labelled).
+
+**R5-4. Take labels read the real landings (S2).** `labelTakeSplits(doc, realPass1.landed, pass2Landed)` uses `realPass1.landed` from the real pass 1's `SplitDropResult`.
+
+**R5-5. Carved ranges are hoisted (S5).**
+- In `App.tsx`, `keptRanges`, `dismissedRanges` and `ranges` move above the take pass and are reused by `finishOnClock`.
+- Containment is closed: `srcIn ≤ src ≤ srcOut`, as in `carveKeptTakes`.
+- The new filter (src-only, or `src` in `ranges`) replaces `srcOnly` both in the main path and in the early-return condition.
+- `dropHiddenCues` goes after the look pass and before `previewItemTimings`.
+- `item-timing-parity.test.ts` changes to match.
+
+**R5-6. Parity test (S6).** It lives in `apps/editor/test/item-timing-parity.test.ts`.
+- **What changes:** its `producePipeline` and `editorPipeline` mirrors switch to the dry landing, the labels, `graphicSplitPoints`, `takeSplitPoints`, the new filter, and `dropHiddenCues`.
+- **Comparator:** a new `expectCueParity(a, b)` compares sorted `(id, round3(start), round3(end))` lists.
+- **Cases**, using the FE Loop fixture literals:
+  - 20752 (margin-skipped);
+  - an inert split at src 25.0 inside `shot-s1`;
+  - a src-only split at src 167.648;
+  - a kept-range split with its half hidden.
+- **Dropped case:** "a labelled graphic split after a cut", which the harness cannot express on one map. It is covered in the core pipeline test instead.
+
+**R5-7. Pipeline test literals (S7).**
+- **Harness:** `split-positions-pipeline.test.ts` reuses `SPANS`, `TAKE_CLIP_STARTS` and `FE_GRAPHICS` from `take-looks.fixtures.ts`.
+- **Graphics:** `scene-1` = `shot-s1` [10.085, 17.950]. `scene-2` is added at output [30.0, 36.0] (source from the spans).
+- **Post-cut state:** the spans with src [2, 4] removed, where every `outIn` after source 4.0 is reduced by 2.000. `scene-1` becomes [8.085, 15.950].
+- **Splits:**
+  - fc1 `{14.015, 16.5}`;
+  - fc2 `{16.0, 14.0}`;
+  - fc4 (p > at) `{11.0, 17.0}`, with p = 14.51488;
+  - fc2h `{35.0, src such that toOutput = 32.0}` on `scene-2`, with `scene-2@fc2h` hidden. Assert `scene-2` ends at 32.0 after labelling;
+  - fc3 (inert) `{16.5, 25.0}`, with `scene-1@fc3` hidden;
+  - outside `{12.0, 22.0}`, with p = 19.19788: unlabelled, with the note;
+  - a take-labelled split whose stale `at` (12.5) lies inside `scene-1` while its `src` lands on a take: it never cuts `scene-1`.
+
+**R5-8. Today's double cut, exactly (B2).**
+- **On today's code:** `shot-s1@fc2` cues appear at 11.515 AND 16.000, and `shot-s1` ends at 11.515.
+- **After the label run:**
+  - `shot-s1` covers [10.085, 14.015];
+  - `@fc1` covers [14.015, 16.000];
+  - `@fc2` covers [16.000, 17.950].
+- The field check's R0 and B steps assert exactly these cues, ±0.002.
+
+**R5-9. Breakage list (S8).**
+- **`rekeyTakeHalves` calls:** in `take-halves.test.ts`, `take-halves-pipeline.test.ts` (~36) and `take-looks.fixtures.ts` (~140).
+- **Other tests:** `useEdits.test.ts` (~914) and `Inspector.test.ts` (`ghostCues` calls).
+- **Fixtures:** they are updated in place; no new fixture file.
+
+**R5-10. Field check details (S9, S10).**
+- **Before step 5,** run `pnpm build`. Step 5 measures the state after run D. The editor gets the copy's `FE Loop-116d3cbc` dir. Timings are compared ±0.001.
+- **The baseline worktree** is `c057ec1`, or any later commit with identical code. The script asserts `git diff --quiet c057ec1 <base> -- apps packages`.
+- **Run C** expects no `labelled`, `kept` or `at … on this cut` notes. The "outside" note can repeat, and is allowed.
