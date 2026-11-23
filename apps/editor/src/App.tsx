@@ -15,6 +15,8 @@ import {
   fillPlainCues,
   splitCues,
   atSplitPoints,
+  pass1SplitPoints,
+  survivingLandings,
   resolveSplitPoints,
   resolveSrcTimingPins,
   carveKeptTakes,
@@ -1489,15 +1491,65 @@ export const App: React.FC = () => {
     // instead of erasing the whole pre-split window — including the half a
     // split was about to carve off — before the split ever ran (PLAN
     // 2026-08-04 Task 1, bug 3: deleting one split half used to delete both).
-    const { cues: shownCues } = splitThenDropHidden(graphicCues, edits.doc);
+    // Produce's pass 1, the graphic pass (split-positions-by-source D2, D3):
+    // each split at its `at`, which the last produce left fresh on this
+    // clock (D1), minus the ones inert on it (`pass1SplitPoints`, R8-2) —
+    // the points produce's pass 1 cut, on the clock it cut them on.
+    const { cues: shownCues, landedHost: graphicLandedHost } = splitThenDropHidden(
+      graphicCues,
+      edits.doc,
+      pass1SplitPoints(edits.doc.splits, oldClockMap),
+    );
     // An added graphic a visible plan graphic now covers gives way, here at
     // the hidden drop as in produce (fix-wave I1, AG2), so the preview drops
     // the block the render will — and lists it as not shown, with the reason.
-    // The one spot: the `dropHiddenCues` after the fill only catches TAKE
-    // halves, and `finishOnClock`'s post-retime pass re-applies pins and
-    // splits with no hidden drop at all.
+    // The one spot: the `dropHiddenCues` after the fill and the one in
+    // `finishOnClock` only catch split halves that pass made — neither
+    // re-runs the overlap test.
     const covered = previewDropCovered(shownCues);
     const visibleCues = covered.cues;
+    // A graphic landing counts only while a piece it cut is shown, after
+    // both drops, as in produce (R7-2, R8-4); every other split is the take
+    // passes' to cut.
+    const graphicLanded = survivingLandings(graphicLandedHost, visibleCues);
+    // The removals the carve below revives — hoisted out of `finishOnClock`
+    // (D3), because the take pass must know them too. Produce splits AFTER
+    // its carve, so a split whose `src` sits in one meets the carved block's
+    // edges, not the uncarved take's, and the margin test can answer
+    // differently on the two (FE Loop's 20752 is margin-skipped against the
+    // block). So it waits for the post-carve pass, which cuts the carved
+    // blocks as produce does (R7-6). Closed containment, `carveKeptTakes`'
+    // own.
+    const keptRanges = vetoedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
+      srcIn: seg.srcIn,
+      srcOut: seg.srcOut,
+    }));
+    const dismissedRanges = dismissedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
+      srcIn: seg.srcIn,
+      srcOut: seg.srcOut,
+      dismissed: true,
+    }));
+    const carvedRanges = [...keptRanges, ...dismissedRanges];
+    const inCarvedRange = (src: number) => carvedRanges.some((r) => src >= r.srcIn && src <= r.srcOut);
+    // The two sets the take passes cut: on an old clock no split is in
+    // both, and neither holds a graphic landing (D2: a split cuts once).
+    // With no old clock (an unrendered workdir) nothing can be resolved or
+    // called carved, so the take pass keeps today's rule — every `at`, the
+    // graphic landings re-cut on their own joints as a no-op — and the
+    // post-carve set is the src-only splits alone (R7-6).
+    const takePassSplits =
+      oldClockMap === null
+        ? edits.doc.splits
+        : edits.doc.splits.filter(
+            (s) =>
+              s.at !== undefined && !graphicLanded.has(s.id) && (s.src === undefined || !inCarvedRange(s.src)),
+          );
+    const postCarveSplits = edits.doc.splits.filter(
+      (s) =>
+        s.src !== undefined &&
+        !graphicLanded.has(s.id) &&
+        (s.at === undefined || (oldClockMap !== null && inCarvedRange(s.src))),
+    );
     const filled = fillPlainCues(visibleCues, {
       outputDurationSec: renderProps.outputDurationSec,
       // Produce's own list when it wrote one (take-framing-identity P0), so
@@ -1510,10 +1562,19 @@ export const App: React.FC = () => {
     // `id@<split id>` halves land (the suffix is the split's minted id, §137).
     // The extra dropHiddenCues below catches halves of a TAKE
     // the user deleted, whose id did not exist until the fill just ran.
-    // Pass 1 of two (cut-review rework): old-clock splits — entries carrying
-    // an `at`. Src-only splits (minted inside revived material) have no image
-    // on this clock; they apply in the post-retime pass below.
-    const splitted = splitCues(filled, atSplitPoints(edits.doc.splits));
+    // Produce's pass 2, on the old clock (split-positions-by-source D3):
+    // `takePassSplits` — not landed on a graphic, not in a carved range — at
+    // `toOutput(src)`, where produce cuts them. Cutting them at `at`, as this
+    // did, showed a split where the render made none whenever the two
+    // anchors disagreed. Its inert reports are not surfaced: produce prints
+    // the same line for the same split on every run. Src-only and
+    // carved-range splits apply in `finishOnClock`'s pass below.
+    const splitted = splitCues(
+      filled,
+      oldClockMap !== null
+        ? resolveSplitPoints(takePassSplits, oldClockMap).points
+        : atSplitPoints(takePassSplits),
+    );
     // `oldClockDoc` again — same clock as pass 1 (a split does not move time).
     const { cues: mergedCues } = applyOverrides(splitted, oldClockDoc);
     const { cues: shownTakes } = dropHiddenCues(mergedCues, edits.doc);
@@ -1637,29 +1698,21 @@ export const App: React.FC = () => {
     // player genuinely plays the revived material.
     // Cut-review rework (2026-08-26): the shared tail for both branches —
     // carve kept/dismissed removals into first-class `take-kept-*` blocks
-    // (`carveKeptTakes`) and apply src-only splits (`resolveSplitPoints`,
-    // minted by ⌘B inside revived material), on whichever clock the branch
-    // is on: the live map under a veto, the spans-backed map once a veto is
-    // BAKED into the render (livePreviewMap answers null then, but the doc's
-    // kept/dismissed ranges and src splits are still live edits to show).
-    // Nothing to do → the props pass through untouched, the regression
-    // anchor both branches held before this existed.
+    // (`carveKeptTakes`) and apply `postCarveSplits` (`resolveSplitPoints`:
+    // src-only splits, minted by ⌘B inside revived material, and the splits
+    // whose `src` is in a carved range — split-positions-by-source D3,
+    // R7-6), on whichever clock the branch is on: the live map under a veto,
+    // the spans-backed map once a veto is BAKED into the render
+    // (livePreviewMap answers null then, but the doc's kept/dismissed ranges
+    // and src splits are still live edits to show). Nothing to do → the
+    // props pass through untouched, the regression anchor both branches held
+    // before this existed.
     const finishOnClock = (
       props: PlayerProductionProps,
       priorReports: string[],
       clockMap: TimeMap | null,
     ): { props: PlayerProductionProps; reports: string[]; transcript?: LiveCaptionTrack } => {
-      const keptRanges = vetoedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
-        srcIn: seg.srcIn,
-        srcOut: seg.srcOut,
-      }));
-      const dismissedRanges = dismissedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
-        srcIn: seg.srcIn,
-        srcOut: seg.srcOut,
-        dismissed: true,
-      }));
-      const srcOnly = edits.doc.splits.filter((s) => s.at === undefined && s.src !== undefined);
-      const ranges = [...keptRanges, ...dismissedRanges];
+      const ranges = carvedRanges;
       // The caption rebuild's OWN trigger (cut-review rework phase 2), wider
       // than the carve's: any clock change invalidates the retimed lines, and
       // a LIVE user cut (`liveRecut !== null` with no veto and no split)
@@ -1672,11 +1725,14 @@ export const App: React.FC = () => {
       // stay byte-identical: no rebuild, and the early return below is the
       // one this function has always taken.
       const rebuildCaptions = transcriptDoc !== null && (ranges.length > 0 || liveRecut !== null);
-      if (clockMap === null || (ranges.length === 0 && srcOnly.length === 0 && !rebuildCaptions)) {
+      if (clockMap === null || (ranges.length === 0 && postCarveSplits.length === 0 && !rebuildCaptions)) {
         // The ordinary session lands here too (no veto, no live-only split),
         // so list items resolve on this exit as well as the main one (§4) —
         // G2 before any veto. No marked root, or no clock or word list, hands
         // back the SAME `props`: this exit's byte-identical promise above.
+        // No hidden drop here, unlike the main path: with no post-carve
+        // split nothing below has minted a half since the old-clock drop
+        // (r8 m6).
         const items = previewItemTimings(props, edits.doc, itemRoots, sfxPlan.words, clockMap);
         return {
           props: items.props,
@@ -1684,7 +1740,7 @@ export const App: React.FC = () => {
         };
       }
       const carved = carveKeptTakes(props.sceneCues ?? [], ranges, clockMap);
-      const resolved = resolveSplitPoints(srcOnly, clockMap);
+      const resolved = resolveSplitPoints(postCarveSplits, clockMap);
       const splitted2 = splitCues(carved.cues, resolved.points);
       // One more override pass so framing edits on `take-kept-*` (and on
       // src-split halves) preview live — idempotent on already-merged cues,
@@ -1715,9 +1771,15 @@ export const App: React.FC = () => {
       // produce resolves after its second pass for the same reason — and
       // before the stage previews, which only ever patch framing.
       const items = previewItemTimings({ sceneCues: merged }, edits.doc, itemRoots, sfxPlan.words, clockMap);
+      // A deleted half of a split this pass cut drops HERE, as produce's
+      // final `dropHiddenCues` drops it — after the item times, in produce's
+      // order (split-positions-by-source R7-6, R8-5): the half did not exist
+      // when the old-clock drop ran, so without this a hidden carved-range
+      // half showed in the preview and not in the render.
+      const { cues: shownFinal } = dropHiddenCues(items.props.sceneCues, edits.doc);
       // The stage preview, re-applied on the cues the Inspector actually
       // reads — see `withStagePreviews` for the slider that died without it.
-      const finalCues = withStagePreviews(items.props.sceneCues, clockMap);
+      const finalCues = withStagePreviews(shownFinal, clockMap);
       // Captions over the REVIVED material (field report 2026-08-26): the
       // retimed captionLines only cover words the LAST RENDER kept — the
       // revived stretch's words exist nowhere in render-props. Rebuild the
@@ -2364,7 +2426,11 @@ export const App: React.FC = () => {
     // and the Timeline draws these bands on the live (possibly re-cut)
     // timeline — unmapped, every ghost past a revived pause sat the revived
     // seconds off its true window.
-    return computeGhostCues(baseCues, edits.doc, clock.toLive);
+    // `liveRetimed.oldClock`, the clock the base cues are on, so the ghosts
+    // are cut by the graphic pass's points and an inert split cuts none
+    // (split-positions-by-source R8-2) — App's `clock` mapper is a
+    // different object (r8 m1, m21).
+    return computeGhostCues(baseCues, edits.doc, clock.toLive, liveRetimed.oldClock);
   }, [renderProps, liveRetimed, edits.doc, clock]);
 
   // Look mode (take-looks-by-source L3 marker): a migrated doc. Every

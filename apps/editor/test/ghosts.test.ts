@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OverrideDocSchema, type SceneCue } from "@ossclip/core/browser";
+import { OverrideDocSchema, TimeMap, type SceneCue } from "@ossclip/core/browser";
 import { ghostCues } from "../src/ghosts";
 import { editReducer, initialEditState } from "../src/useEdits";
 
@@ -98,5 +98,33 @@ describe("ghostCues under a live re-cut (cut review step 4 follow-up)", () => {
     expect(ghostCues([before(), splitScene()], doc)).toEqual(
       ghostCues([before(), splitScene()], doc, (sec) => sec),
     );
+  });
+});
+
+describe("ghostCues on the last render's clock (split-positions-by-source R8-2)", () => {
+  // Output = source on [0, 40]; the second clock cuts source [36, 37], so a
+  // split anchored at source 36.5 is inert on it.
+  const whole = new TimeMap([{ srcIn: 0, srcOut: 40, kind: "keep" }]);
+  const cutOver = new TimeMap([
+    { srcIn: 0, srcOut: 36, kind: "keep" },
+    { srcIn: 36, srcOut: 37, kind: "remove", reason: "user", confidence: 1 },
+    { srcIn: 37, srcOut: 40, kind: "keep" },
+  ]);
+  const doc = OverrideDocSchema.parse({
+    scenes: { "scene-6@s": { hidden: true } },
+    splits: [{ at: 36.4, src: 36.5, id: "s" }],
+  });
+
+  it("a split live on that clock cuts the ghost, as before", () => {
+    const ghosts = ghostCues([before(), splitScene()], doc, undefined, whole);
+    expect(ghosts.map((c) => [c.id, c.startSec, c.endSec])).toEqual([["scene-6@s", 36.4, 40]]);
+  });
+
+  it("a split inert on it cuts nothing, so no ghost of a half the preview does not make", () => {
+    expect(ghostCues([before(), splitScene()], doc, undefined, cutOver)).toEqual([]);
+  });
+
+  it("no clock filters nothing — the omitted argument's behaviour", () => {
+    expect(ghostCues([before(), splitScene()], doc, undefined, null)).toEqual(ghostCues([before(), splitScene()], doc));
   });
 });

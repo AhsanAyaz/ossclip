@@ -12,7 +12,6 @@ import {
   applyTakeLooks,
   applyUserCuts,
   assembleScenes,
-  atSplitPoints,
   carveKeptTakes,
   dismissedRemovals,
   dropHiddenCues,
@@ -22,6 +21,7 @@ import {
   itemTimingRoots,
   livePreviewMap,
   mapFromKeptSpans,
+  pass1SplitPoints,
   previewAddedScenes,
   reclampPinnedTiming,
   resolveItemTimings,
@@ -30,6 +30,7 @@ import {
   retimeForPreview,
   splitCues,
   splitThenDropHidden,
+  survivingLandings,
   TimeMap,
   vetoedRemovals,
   type CaptionLine,
@@ -114,6 +115,17 @@ function keptRangesOf(proposal: Segment[], cleanup: OverrideDoc["cleanup"]) {
   ];
 }
 
+/** Produce's `takeClipStarts` formula (`produce.ts`): span starts, then each
+ * kept range's mapped edges. */
+function takeClipStartsOf(map: TimeMap, ranges: readonly { srcIn: number; srcOut: number }[]): number[] {
+  const edges = ranges.flatMap((r) => {
+    const a = map.toOutput(r.srcIn);
+    const b = map.toOutput(r.srcOut);
+    return [...(a !== null ? [a] : []), ...(b !== null ? [b] : [])];
+  });
+  return [...map.spans.map((s) => s.outIn), ...edges];
+}
+
 interface Outcome {
   cues: SceneCue[];
   notes: string[];
@@ -142,21 +154,21 @@ function producePipeline(run: Run): Outcome {
   // (re-anchored) doc — not `pinnedDoc.doc`, whose src pins have become
   // output seconds. The resolve itself waits for the second pass below.
   const roots = itemTimingRoots(editedCues, doc, run.words, map, map);
-  const { cues: shownCues } = splitThenDropHidden(editedCues, doc);
-  const visibleCues = dropOverlappingAdded(shownCues).cues;
+  // Pass 1, the graphic pass (split-positions-by-source D2, R8-2), and the
+  // landings that survive both drops (R7-2, R8-4).
+  const pass1 = splitThenDropHidden(editedCues, doc, pass1SplitPoints(doc.splits, map));
+  const visibleCues = dropOverlappingAdded(pass1.cues).cues;
+  const pass1Surviving = survivingLandings(pass1.landedHost, visibleCues);
   const { cues: reclamped } = reclampPinnedTiming(visibleCues);
   const keptRangesForCarve = keptRangesOf(run.proposal, doc.cleanup);
-  const keptEdgeStarts = keptRangesForCarve.flatMap((r) => {
-    const a = map.toOutput(r.srcIn);
-    const b = map.toOutput(r.srcOut);
-    return [...(a !== null ? [a] : []), ...(b !== null ? [b] : [])];
-  });
   const filled0 = fillPlainCues(reclamped, {
     outputDurationSec: map.outputDuration,
-    clipStarts: [...map.spans.map((s) => s.outIn), ...keptEdgeStarts],
+    clipStarts: takeClipStartsOf(map, keptRangesForCarve),
   });
   const { cues: filled } = carveKeptTakes(filled0, keptRangesForCarve, map);
-  const split = splitCues(filled, resolveSplitPoints(doc.splits, map).points);
+  // Pass 2: only the splits that did not land in pass 1.
+  const notLandedInPass1 = doc.splits.filter((s) => !pass1Surviving.has(s.id));
+  const split = splitCues(filled, resolveSplitPoints(notLandedInPass1, map).points);
   const { cues: overriddenCues } = applyOverrides(split, pinnedDoc.doc);
   // Take looks from source time (take-looks-by-source L2), produce's step 9:
   // after the second pass, on the run's map, migrated docs only (N1). Every
@@ -196,15 +208,31 @@ function editorPipeline(run: Run, viaPreview = false): Outcome & { exit: "early"
   const roots = viaPreview
     ? previewItemRoots(graphicCues, doc, run.words, oldClockMap, liveMap)
     : itemTimingRoots(graphicCues, doc, run.words, oldClockMap, liveMap);
-  const { cues: shownCues } = splitThenDropHidden(graphicCues, doc);
-  const visibleCues = dropOverlappingAdded(shownCues).cues;
+  // The graphic pass on the old clock, and its surviving landings (D3, R8-2).
+  const pass1 = splitThenDropHidden(graphicCues, doc, pass1SplitPoints(doc.splits, oldClockMap));
+  const visibleCues = dropOverlappingAdded(pass1.cues).cues;
+  const graphicLanded = survivingLandings(pass1.landedHost, visibleCues);
+  // The carved ranges, hoisted above the take pass as in the memo.
+  const ranges = keptRangesOf(run.proposal, doc.cleanup);
+  const inCarvedRange = (src: number) => ranges.some((r) => src >= r.srcIn && src <= r.srcOut);
+  const takePassSplits = doc.splits.filter(
+    (s) => s.at !== undefined && !graphicLanded.has(s.id) && (s.src === undefined || !inCarvedRange(s.src)),
+  );
+  const postCarveSplits = doc.splits.filter(
+    (s) => s.src !== undefined && !graphicLanded.has(s.id) && (s.at === undefined || inCarvedRange(s.src)),
+  );
   const filled = fillPlainCues(visibleCues, {
     outputDurationSec: oldMap.outputDuration,
-    // The memo's call (take-framing-identity P0), on the spans the old map
-    // was built from — no `takeClipStarts`, so the span-start fallback.
-    clipStarts: editorTakeClipStarts({ spans: oldMap.spans }),
+    // The memo's call (take-framing-identity P0) on what the last render
+    // wrote: produce's own `takeClipStarts` for that render — its clock and
+    // the cleanup choices it was made with (split-positions-by-source R9-3),
+    // so the take ids are produce's.
+    clipStarts: editorTakeClipStarts({
+      spans: oldMap.spans,
+      takeClipStarts: takeClipStartsOf(oldMap, keptRangesOf(run.proposal, run.rendered)),
+    }),
   });
-  const splitted = splitCues(filled, atSplitPoints(doc.splits));
+  const splitted = splitCues(filled, resolveSplitPoints(takePassSplits, oldClockMap).points);
   const { cues: mergedCues } = applyOverrides(splitted, oldClockDoc);
   const { cues: shownTakes } = dropHiddenCues(mergedCues, doc);
   // The memo's old-clock look pass (take-looks-by-source L2, B8).
@@ -221,10 +249,8 @@ function editorPipeline(run: Run, viaPreview = false): Outcome & { exit: "early"
 
   // finishOnClock. `transcriptDoc` is taken as loaded, so the caption
   // rebuild's trigger is `ranges.length > 0 || liveRecut !== null`.
-  const ranges = keptRangesOf(run.proposal, doc.cleanup);
-  const srcOnly = doc.splits.filter((s) => s.at === undefined && s.src !== undefined);
   const rebuildCaptions = ranges.length > 0 || liveRecut !== null;
-  if (ranges.length === 0 && srcOnly.length === 0 && !rebuildCaptions) {
+  if (ranges.length === 0 && postCarveSplits.length === 0 && !rebuildCaptions) {
     if (viaPreview) {
       const timed = previewItemTimings(props, doc, roots, run.words, clockMap);
       return { cues: timed.props.sceneCues, notes: timed.notes, exit: "early" };
@@ -233,18 +259,20 @@ function editorPipeline(run: Run, viaPreview = false): Outcome & { exit: "early"
     return { ...timed, exit: "early" };
   }
   const carved = carveKeptTakes(props.sceneCues, ranges, clockMap);
-  const resolved = resolveSplitPoints(srcOnly, clockMap);
+  const resolved = resolveSplitPoints(postCarveSplits, clockMap);
   const splitted2 = splitCues(carved.cues, resolved.points);
   const pinned = resolveSrcTimingPins(doc, clockMap);
   const { cues: overridden } = applyOverrides(splitted2, pinned.doc);
   // finishOnClock's look pass, on this clock (L2, B8).
   const merged = doc.takeLooks !== undefined ? applyTakeLooks(overridden, doc.takeLooks, clockMap) : overridden;
+  // The post-carve hidden drop, after the item times as produce drops
+  // (R8-5).
   if (viaPreview) {
     const timed = previewItemTimings({ sceneCues: merged }, doc, roots, run.words, clockMap);
-    return { cues: timed.props.sceneCues, notes: timed.notes, exit: "main" };
+    return { cues: dropHiddenCues(timed.props.sceneCues, doc).cues, notes: timed.notes, exit: "main" };
   }
   const timed = resolveItemTimings(merged, doc, run.words, clockMap, roots!);
-  return { ...timed, exit: "main" };
+  return { cues: dropHiddenCues(timed.cues, doc).cues, notes: timed.notes, exit: "main" };
 }
 
 /** What G7 is about, per graphic cue: which component, its item times, and
@@ -628,6 +656,104 @@ describe("item timing parity: produce and the editor preview (graphic-editor-mod
       expect(kept.video).toEqual({ dx: 40 });
       expect(kept.captionY).toBe(0.3);
       expect(kept.layout).toBe("full-bleed");
+    });
+  });
+
+  describe("splits cut once, the same in both (split-positions-by-source D2, D3, R7-8, R8-6)", () => {
+    /** The whole cue list, `(id, start, end)` to the millisecond, sorted —
+     * so a split one pipeline cuts and the other does not, or cuts at
+     * another moment, fails here (R7-8). */
+    const cueWindows = (cues: readonly SceneCue[]) =>
+      cues
+        .map((c): [string, number, number] => [c.id, Math.round(c.startSec * 1000) / 1000, Math.round(c.endSec * 1000) / 1000])
+        .sort((x, y) => x[1] - y[1] || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
+    const expectSameCues = (run: Run, exit: "early" | "main") => {
+      const produce = cueWindows(producePipeline(run).cues);
+      const editor = editorPipeline(run);
+      expect(editor.exit).toBe(exit);
+      expect(cueWindows(editor.cues)).toEqual(produce);
+      return produce;
+    };
+    const ids = (list: ReturnType<typeof cueWindows>) => list.map(([id]) => id);
+
+    it("20752's shape: `src` in a kept range, on the carved block's edge — margin-skipped in both", () => {
+      // The pause was kept on the last render too (`rendered` = the doc's
+      // choices, R7-8). The split's `src` 2.25 is the carved block's start;
+      // its stale `at` 1.0 would have cut take-0 in the editor's old take
+      // pass, the block FE Loop showed and the render did not.
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [],
+        doc: docOf({ cleanup: keep(PAUSE_1), splits: [{ at: 1.0, src: 2.25, id: "s20752" }] }),
+        rendered: keep(PAUSE_1),
+      };
+      const out = expectSameCues(run, "main");
+      // Path: the carve made the block and the split cut nothing.
+      expect(out.find(([id]) => id === "take-kept-2250")?.slice(1)).toEqual([2.25, 3.5]);
+      expect(ids(out).some((id) => id.endsWith("@s20752"))).toBe(false);
+    });
+
+    it("an inert split: `src` in removed material — no graphic and no take is cut (R7-3, R8-2)", () => {
+      // Its stale `at` 3.0 sits inside scene-0; `src` 6.0 is in the retake.
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [bullets()],
+        doc: docOf({ splits: [{ at: 3.0, src: 6.0, id: "inert" }] }),
+      };
+      const out = expectSameCues(run, "early");
+      expect(ids(out).some((id) => id.endsWith("@inert"))).toBe(false);
+      expect(ids(out)).toContain("scene-0");
+    });
+
+    it("a drifted graphic split (fc2's shape): one cut, on the graphic, at `at`", () => {
+      // `at` 3.0 is in scene-0; `src` 0.5 would cut take-0 — before, produce
+      // cut both, naming two cues `…@fc2`.
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [bullets()],
+        doc: docOf({ splits: [{ at: 3.0, src: 0.5, id: "fc2" }] }),
+      };
+      const out = expectSameCues(run, "early");
+      const halves = out.filter(([id]) => id.endsWith("@fc2"));
+      expect(halves).toHaveLength(1);
+      expect(halves[0]![0]).toBe("scene-0@fc2");
+      expect(halves[0]![1]).toBe(3);
+    });
+
+    it("a src-only split: cut in the post-carve pass, at toOutput(src)", () => {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [bullets()],
+        doc: docOf({ splits: [{ src: 11.0, id: "so" }] }),
+      };
+      const out = expectSameCues(run, "main");
+      const half = out.filter(([id]) => id.endsWith("@so"));
+      expect(half).toHaveLength(1);
+      // Output = source − 3.5 past the third cut.
+      expect(half[0]![1]).toBe(7.5);
+    });
+
+    it("a carved-range split with its half deleted: cut on the carved block, the half hidden in both (R7-6, R8-5)", () => {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [],
+        doc: docOf({
+          cleanup: keep(PAUSE_1),
+          splits: [{ at: 2.75, src: 2.75, id: "cr" }],
+          scenes: { "take-kept-2250@cr": { hidden: true } },
+        }),
+        rendered: keep(PAUSE_1),
+      };
+      const out = expectSameCues(run, "main");
+      // Path: the split cut the carved block (its first piece ends there),
+      // and its deleted half is gone from both.
+      expect(out.find(([id]) => id === "take-kept-2250")?.slice(1)).toEqual([2.25, 2.75]);
+      expect(ids(out).some((id) => id.endsWith("@cr"))).toBe(false);
     });
   });
 

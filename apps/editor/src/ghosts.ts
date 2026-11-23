@@ -1,9 +1,10 @@
 import {
   applyOverrides,
-  atSplitPoints,
+  pass1SplitPoints,
   splitCues,
   type OverrideDoc,
   type SceneCue,
+  type TimeMap,
 } from "@ossclip/core/browser";
 
 /**
@@ -45,14 +46,23 @@ import {
  * (`toLive`'s own doc). A hidden scene the user then cut away collapses to a
  * zero-width ghost rather than drawing at a stale window: honest, and the
  * Restore it offers still works, since `hidden` is keyed by id, not by time.
+ *
+ * `oldClock` (split-positions-by-source R8-2): the last render's clock, the
+ * one the base cues and every split's `at` speak. The split points are the
+ * live memo's graphic pass's (`pass1SplitPoints`), so a split inert on that
+ * clock cuts no ghost either — a ghost at a half the preview does not make
+ * would offer a Restore for a block that cannot appear. Null (no spans to
+ * build it from, App's `spansMap()`) filters nothing, as the memo's pass
+ * does; so does the omitted argument, which every pre-R8-2 call relied on.
  */
 export function ghostCues(
   cues: readonly SceneCue[],
   doc: OverrideDoc,
   toLive: (sec: number) => number = (sec) => sec,
+  oldClock: TimeMap | null = null,
 ): SceneCue[] {
   const { cues: applied } = applyOverrides(cues, doc);
-  const splitted = splitCues(applied, atSplitPoints(doc.splits));
+  const splitted = splitCues(applied, pass1SplitPoints(doc.splits, oldClock));
   return splitted
     .filter((c) => doc.scenes[c.id]?.hidden === true)
     .map((c) => ({ ...c, startSec: toLive(c.startSec), endSec: toLive(c.endSec) }));
