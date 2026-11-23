@@ -1,6 +1,6 @@
 # Each split cuts once, in one place
 
-Status: draft 7 (round 6 review: `split-positions-review-r6.md`). The "Draft 7 rulings" section at the end overrides earlier text where they differ. Draft 6 was a rewrite that replaced drafts 1–5, which took the exact-preservation route; their reviews are `~/ossclip-work/egm-short/split-positions-review-r1.md`…`r5.md`.
+Status: draft 8 (round 7 review: `split-positions-review-r7.md`). The rulings sections at the end override earlier text; later rulings override earlier ones. Draft 6 was a rewrite that replaced drafts 1–5, which took the exact-preservation route; their reviews are `~/ossclip-work/egm-short/split-positions-review-r1.md`…`r5.md`.
 
 On 2026-11-23 the author chose the simpler route and accepted a one-time change for splits that had already drifted. This can ship as a major update, and full backward compatibility is not required. Telemetry backs that up: in the last 30 days, about 12 installs outside the author's own ran `produce`.
 
@@ -189,3 +189,57 @@ One task, then the field check.
 **R7-11. Minor wording.**
 - Release: this ships as a MAJOR update (0.2.0), with a release note.
 - "Phase 1" means `take-framing-identity.md`.
+
+## Draft 8 rulings (round 7)
+
+**R8-1. Remap has three branches (B1).** For every split with both `at` and `src`, `remapOverridesThroughRecut` checks where `src` falls:
+
+| `src` on the old map | `src` on the new map | `at` becomes | Report |
+| --- | --- | --- | --- |
+| any | removed | unchanged | inert report only |
+| removed | kept | `newMap.toOutput(src)` | none (this is a restore) |
+| kept | kept | `remapPoint(at, oldMap, newMap)` | as D1 / R7-5 |
+
+At-only legacy splits keep today's path. Src-only splits are untouched.
+
+Tests with literals (FE Loop map):
+- **fc1 `{14.015, 16.5}`:** after a cut `src [16, 17]`, `at` stays 14.015 and fc1 is inert. After that cut is restored, `at = toOutput(16.5) = 14.015`.
+- **A take split:** the same cut-then-restore sequence.
+
+**R8-2. One pass-1 point helper (B2).** `pass1SplitPoints(splits, map: TimeMap | null)` returns `atSplitPoints` minus every split whose `src` maps to null on `map`. With no map, it returns all of `atSplitPoints`. It is used in three places, each with a source guard:
+- produce pass 1;
+- the editor graphic pass, on `oldClockMap`;
+- `ghosts.ts`, which gains a `clock` parameter.
+
+**R8-3. `reconcileSplitAnchors(doc, pass1Landed, pass2Landed, pass2Points, graphicWindows, map): { doc, notes, changed }` (S1–S3).**
+- **Eligible:** only splits with both `at` and `src` (S3).
+- **Pass-1 survivors:** `src = round(map.toSource(at), ms)` when it differs by more than 1 ms.
+- **Pass-2 landings** (`pass2Landed`, which is defined BEFORE the final hidden drop): `at = round(point, ms)` when it differs by more than 1 ms. This is skipped when the old `at` or the new point lies inside any pass-1 graphic window, hidden ones included. That keeps step 7's guard (S2).
+- **Note:** `split ${id} anchors reconciled (at ${a}s, source ${b}s)`.
+- **Write gate:** `splitsReconciled` is added to `OverridesWriteReasons`, `REASON_PHRASES` and the write `if`, and `apps/cli/test/overrides-write.test.ts` gains a case.
+
+**R8-4. Survival is checked against the host piece (S4, S5).**
+- `splitThenDropHidden` returns `SplitDropResult = DropHiddenResult & { landed: Map<splitId, hostCueId> }`, where `hostCueId` is the cue the split actually cut (it may be `root@other`).
+- `survivingLandings(landed, shownCues)` keeps a split when either piece of the host survives the hidden and overlap drops:
+  - the host id itself, or
+  - `${splitRootId(host)}@${splitId}`.
+
+**R8-5. Editor drop order (S6).** In `finishOnClock`, `dropHiddenCues` runs AFTER `previewItemTimings`, mirroring produce, which drops after `resolveItemTimings`.
+
+**R8-6. Build and tests (S7, S8).**
+- **Build list additions:**
+  - `apps/cli/src/overrides-write.ts` and `apps/cli/test/overrides-write.test.ts`;
+  - the step-7 tests (11b, 11d, 11e and "moved to 58.467s"), which live in `packages/core/test/take-halves.test.ts`;
+  - all round-6 comment rewrites;
+  - `~/ossclip-work/fe-loop/looks-field-check.sh`, whose `at` expectations change: 66055's `at` becomes 58.467 through reconciliation.
+- **Pipeline harness:** it calls `applyUserCuts` (or `remapOverridesThroughRecut` with the before and after maps), and recomputes take clip starts from the post-cut spans.
+- **Pipeline cases:**
+  - B2: an inert graphic split is not cut in pass 1;
+  - chained: fc2 cuts `shot-s1@fc1`;
+  - idempotence: a second run gives no change;
+  - parity runs with literal `Run` fixtures.
+
+**R8-7. Field check expectations (S9).**
+- **Run 1** also expects 66055 to be reconciled: `split 66055 anchors reconciled (at 58.467s, source 66.055s)`.
+- **Run 2** asserts that `overrides.json` is byte-identical before and after.
+- **Editor step,** run from the repo: `pnpm ossclip edit "<copy>/FE Loop-116d3cbc" --no-open --port 5182`.
