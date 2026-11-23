@@ -7548,7 +7548,19 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
     takeLooksMigrated
   ) {
     await writeOverrideDoc(overridesPath, overrideDoc, { refreshBackup: cutResult.changed });
-    console.log(overridesWriteLine(cutResult.changed));
+    // Every gate operand, so the line names why this run wrote (take-looks-
+    // by-source final review, Minor 1) — the gate above decides WHETHER.
+    console.log(
+      overridesWriteLine({
+        cutChanged: cutResult.changed,
+        captionKeysReanchored,
+        hidesPruned,
+        sceneKeysRemapped,
+        splitSrcResolved,
+        splitHalvesChanged,
+        takeLooksMigrated,
+      }),
+    );
   }
 
   // Resolved HERE — above the --no-render exit rather than at the thumbnail

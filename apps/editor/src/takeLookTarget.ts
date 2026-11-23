@@ -1,4 +1,4 @@
-import { pieceSourceRanges, type SceneCue, type SrcRange, type TimeMap } from "@ossclip/core/browser";
+import { isLookPieceKey, pieceSourceRanges, type SceneCue, type SrcRange, type TimeMap } from "@ossclip/core/browser";
 import type { Selection, VideoPreview } from "./Overlay";
 
 /**
@@ -164,6 +164,61 @@ export function walkPiece(
   if (idx === -1) return null;
   const next = cues[idx + dir];
   return next === undefined ? null : pieceSelection(next, clock);
+}
+
+/** What a look-mode stage press on scene `id` targets (take-looks-by-source
+ * final review, T3-M1). */
+export type StagePressTarget =
+  /** Not a take: a graphic keeps its id, as in legacy mode (R6-4). */
+  | { kind: "id" }
+  /** The take piece the press landed on, with source to write on the clock. */
+  | { kind: "piece"; piece: SceneCue }
+  /** A take, but which piece cannot be told (no frame, no clock, no
+   * footage): nothing may be selected or armed — refused out loud. */
+  | { kind: "unresolved" };
+
+/**
+ * The piece a look-mode press on the stage hit (take-looks-by-source R6-4;
+ * final review T3-M1). The DOM names only an id, and a carved lead and tail
+ * SHARE it — so the piece is the cue with that id at the playhead
+ * (`atSec`), or, when the playhead sits just outside every such cue (the
+ * frame the stage painted and the frame the Player reports can straddle a
+ * boundary or a transition), the one nearest it; a tie goes to the earlier
+ * `startSec` (R7-8).
+ *
+ * It never falls back to an id-only answer for a take. That fallback was the
+ * bug: an id-only selection revalidates to the LEAD even when the tail was
+ * clicked, the legacy drag reads an id-keyed base the migration emptied,
+ * previews by id onto lead and tail both, and the reducer then refuses the
+ * commit. With no frame (`atSec` null), no clock, or no footage under the
+ * piece, the answer is `unresolved`.
+ *
+ * A take is an `isLookPieceKey` id — the reducer's own refusal rule — or any
+ * id a plain cue carries, since a plain cue resolves its look by source in
+ * look mode (L2) whatever its id. Anything else is a graphic and keeps `id`.
+ */
+export function stagePressTarget(
+  cues: readonly SceneCue[],
+  id: string,
+  atSec: number | null,
+  clock: TimeMap | null,
+): StagePressTarget {
+  const candidates = cues.filter((c) => c.id === id && c.kind === "plain");
+  if (candidates.length === 0 && !isLookPieceKey(id)) return { kind: "id" };
+  if (atSec === null) return { kind: "unresolved" };
+  const distance = (c: SceneCue): number =>
+    atSec < c.startSec ? c.startSec - atSec : atSec >= c.endSec ? atSec - c.endSec : 0;
+  let best: SceneCue | null = null;
+  for (const c of candidates) {
+    if (
+      best === null ||
+      distance(c) < distance(best) ||
+      (distance(c) === distance(best) && c.startSec < best.startSec)
+    ) {
+      best = c;
+    }
+  }
+  return best !== null && pieceAnchor(best, clock) !== null ? { kind: "piece", piece: best } : { kind: "unresolved" };
 }
 
 /**

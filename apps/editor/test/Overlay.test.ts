@@ -12,6 +12,7 @@ import {
   type OverrideDoc,
   type SceneCue,
   type Segment,
+  type TimeMap,
 } from "@ossclip/core/browser";
 import {
   DYNAMIC_ID,
@@ -24,6 +25,7 @@ import {
   type VideoPreview,
 } from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
+import { LOOK_NEEDS_CLOCK, withVideoPreview } from "../src/takeLookTarget";
 import { onSaveEffect } from "../src/save";
 
 // Same one-time act() opt-in as project-picker.test.ts/Inspector.test.ts —
@@ -1099,6 +1101,11 @@ describe("stage drags in look mode write the piece under the playhead (take-look
     selection?: Selection | null;
     onVideoPreview?: (p: VideoPreview | null) => void;
     onSelect?: (s: Selection | null) => void;
+    /** Defaults to `CLOCK`; null is an unrendered workdir's. */
+    clock?: TimeMap | null;
+    /** The Player has no frame to report yet. */
+    noFrame?: boolean;
+    onClockRefused?: (message: string) => void;
   }) {
     const edits = useEdits();
     doc = edits.doc;
@@ -1109,7 +1116,7 @@ describe("stage drags in look mode write the piece under the playhead (take-look
     const stageRef = useRef<HTMLDivElement>(null);
     const playerRef = useRef({
       getScale: () => 0.5,
-      getCurrentFrame: () => Math.round(props.playheadSec * FPS),
+      getCurrentFrame: () => (props.noFrame ? undefined : Math.round(props.playheadSec * FPS)),
     } as unknown as PlayerRef);
     return React.createElement(
       "div",
@@ -1130,7 +1137,8 @@ describe("stage drags in look mode write the piece under the playhead (take-look
         onVideoPreview: props.onVideoPreview ?? vi.fn(),
         onGraphicPreview: vi.fn(),
         cue: null,
-        cueClock: CLOCK,
+        cueClock: props.clock === undefined ? CLOCK : props.clock,
+        onClockRefused: props.onClockRefused,
       }),
     );
   }
@@ -1202,6 +1210,62 @@ describe("stage drags in look mode write the piece under the playhead (take-look
     const tailLook = doc!.takeLooks!.find((e) => e.srcIn === 12)!.look;
     expect(tailLook.pip?.x).toBeGreaterThan(0);
     expect(tailLook.video).toEqual({ scale: 2, dx: 10 });
+    expect(doc!.scenes).toEqual({});
+  });
+
+  // take-looks-by-source final review T3-M1: the stage painted `take-1` but
+  // the Player reports a frame of the kept block between lead and tail (a
+  // boundary, a transition). This used to fall through to the legacy branch:
+  // an id-only selection that revalidates to the LEAD, an id preview on lead
+  // AND tail, and a commit the reducer refuses.
+  it("a press whose playhead is just off the carved tail selects the tail and previews the tail only", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const onSelect = vi.fn();
+    const refused = vi.fn();
+    const cues = cuesOf("full-bleed");
+    await drag(
+      { initial: lookDoc(), cues, playheadSec: 11.9, onVideoPreview: (p) => previews.push(p), onSelect, onClockRefused: refused },
+      20,
+    );
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith({ sceneId: "take-1", elementId: null, pieceExtent: { srcIn: 12, srcOut: 20 } });
+    expect(previews[0]).toEqual({ sceneId: "take-1", patch: { dx: 50, dy: 0 }, pieceExtent: { srcIn: 12, srcOut: 20 } });
+    // Laid over the cues the way App does: the tail moves, the lead does not.
+    const shown = withVideoPreview(cues, previews[0]!, CLOCK);
+    expect(shown[0]!.video).toBeUndefined();
+    expect(shown[2]!.video).toEqual({ scale: 2, dx: 50, dy: 0 });
+    expect(doc!.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 50, dy: 0 } } }]);
+    expect(doc!.scenes).toEqual({});
+    expect(refused).not.toHaveBeenCalled();
+  });
+
+  it("with no clock, a press on a take arms nothing, selects nothing and says why", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const onSelect = vi.fn();
+    const refused = vi.fn();
+    await drag(
+      { initial: lookDoc(), cues: cuesOf("full-bleed"), playheadSec: 15, clock: null, onVideoPreview: (p) => previews.push(p), onSelect, onClockRefused: refused },
+      20,
+    );
+    expect(refused).toHaveBeenCalledWith(LOOK_NEEDS_CLOCK);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(previews).toEqual([]);
+    expect(doc!.takeLooks).toEqual(lookDoc().takeLooks);
+    expect(doc!.scenes).toEqual({});
+  });
+
+  it("with no frame yet, a press on a take arms nothing, selects nothing and says why", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const onSelect = vi.fn();
+    const refused = vi.fn();
+    await drag(
+      { initial: lookDoc(), cues: cuesOf("pip-bubble"), playheadSec: 15, noFrame: true, onVideoPreview: (p) => previews.push(p), onSelect, onClockRefused: refused },
+      54,
+    );
+    expect(refused).toHaveBeenCalledWith(LOOK_NEEDS_CLOCK);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(previews).toEqual([]);
+    expect(doc!.takeLooks).toEqual(lookDoc().takeLooks);
     expect(doc!.scenes).toEqual({});
   });
 

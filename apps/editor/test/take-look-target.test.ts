@@ -6,6 +6,7 @@ import {
   pieceSelection,
   revalidateSelection,
   selectedPiece,
+  stagePressTarget,
   walkPiece,
 } from "../src/takeLookTarget";
 import type { Selection } from "../src/Overlay";
@@ -203,6 +204,35 @@ describe("walkPiece (R6-4, R7-8)", () => {
     expect(walkPiece(CUES, pieceSelection(CUES[4]!, CLOCK), 1, CLOCK)).toBeNull();
     const gone: Selection = { sceneId: "take-1", elementId: null, pieceExtent: { srcIn: 40, srcOut: 50 } };
     expect(walkPiece(CUES, gone, 1, CLOCK)).toBeNull();
+  });
+});
+
+describe("stagePressTarget (R6-4; final review T3-M1)", () => {
+  it("is the piece with the hit id at the playhead — the tail, though the lead shares its id", () => {
+    expect(stagePressTarget(CUES, "take-1", 15, CLOCK)).toEqual({ kind: "piece", piece: TAIL });
+    expect(stagePressTarget(CUES, "take-1", 5, CLOCK)).toEqual({ kind: "piece", piece: LEAD });
+  });
+
+  it("with the playhead just off every piece of that id, is the NEAREST one, never the first", () => {
+    // The stage painted `take-1` but the Player reports a kept-block frame:
+    // 11.9 is 0.1 s before the tail and 1.9 s after the lead.
+    expect(stagePressTarget(CUES, "take-1", 11.9, CLOCK)).toEqual({ kind: "piece", piece: TAIL });
+    expect(stagePressTarget(CUES, "take-1", 10.1, CLOCK)).toEqual({ kind: "piece", piece: LEAD });
+    // Equidistant: the earlier piece (R7-8).
+    expect(stagePressTarget(CUES, "take-1", 11, CLOCK)).toEqual({ kind: "piece", piece: LEAD });
+  });
+
+  it("is unresolved with no frame, no clock, or no footage under the piece — never an id-only take", () => {
+    expect(stagePressTarget(CUES, "take-1", null, CLOCK)).toEqual({ kind: "unresolved" });
+    expect(stagePressTarget(CUES, "take-1", 15, null)).toEqual({ kind: "unresolved" });
+    expect(stagePressTarget([plain("take-9", 40, 50)], "take-9", 45, CLOCK)).toEqual({ kind: "unresolved" });
+    // A take key no plain cue carries (yet): still a take, still refused.
+    expect(stagePressTarget(CUES, "take-7", 15, CLOCK)).toEqual({ kind: "unresolved" });
+  });
+
+  it("a graphic keeps its id, frame or not", () => {
+    expect(stagePressTarget(CUES, "scene-2", 22, CLOCK)).toEqual({ kind: "id" });
+    expect(stagePressTarget(CUES, "scene-2", null, null)).toEqual({ kind: "id" });
   });
 });
 

@@ -737,9 +737,12 @@ function idKeyedLookTarget(action: EditAction): string | null {
 }
 
 /** The refusal notice's sentences (R6-5). Said in the clock-refused
- * notice's voice: what failed, and the one thing that fixes it. */
-export const REFUSED_LOOK_WRITE =
-  "Can't save that look on this take: the project was reloaded under it — select the take again and retry.";
+ * notice's voice: what failed, and the one thing that fixes it.
+ * `REFUSED_LOOK_WRITE` names no cause: a reload under a gesture is the path
+ * it was written for, but any id-keyed look write on a take reaches it, and
+ * a "was reloaded" that is false for the others sent the author looking for
+ * a reload that never happened (take-looks-by-source final review T3-M2). */
+export const REFUSED_LOOK_WRITE = "Can't save that look on this take — select the take again and retry.";
 export const REFUSED_LEGACY_LOOK =
   "Can't save that look: this project's take looks are not on source time yet — render once and try again.";
 

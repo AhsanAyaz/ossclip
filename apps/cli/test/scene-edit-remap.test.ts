@@ -262,6 +262,15 @@ describe("produce's remap wiring (source-text guard)", () => {
     expect(gate![1]).toMatch(/\|\|\s*takeLooksMigrated\b/);
   });
 
+  it("the write line is told about the take-look migration (take-looks-by-source final review)", () => {
+    // Without the flag the line falls back to whatever else fired — on a
+    // migration-only run that was a false "caption keys" claim (`looks1.log`).
+    const line = /console\.log\(\s*overridesWriteLine\(\{([^}]*)\}\)/.exec(src);
+    expect(line).not.toBeNull();
+    expect(line![1]).toMatch(/\btakeLooksMigrated\b/);
+    expect(line![1]).toMatch(/cutChanged:\s*cutResult\.changed/);
+  });
+
   it("a take-half re-key earns the sanctioned write without spending the `.bak`", () => {
     expect(src).toMatch(/const splitHalvesChanged = takeRekey\.changed/);
     const gate = /if \(([^{]*)\)\s*\{\s*await writeOverrideDoc\(overridesPath, overrideDoc, \{ refreshBackup: cutResult\.changed \}\)/.exec(src);

@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
 import { lookAt, SPLIT_MIN_PIECE_SEC, type SceneCue, type SrcRange, type TimeMap } from "@ossclip/core/browser";
-import { activeCueAt } from "@ossclip/scenes";
 import { graphicClampFor, layoutSlots, safeAreaFor } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import { guideSnap, THRESHOLD_FRAC, type Guide } from "./guides";
@@ -14,7 +13,9 @@ import {
   lookCoalesceKey,
   pieceRanges,
   pieceSelection,
+  stagePressTarget,
   walkPiece,
+  type StagePressTarget,
 } from "./takeLookTarget";
 
 export interface Selection {
@@ -898,23 +899,29 @@ export const Overlay: React.FC<OverlayProps> = ({
         // Look mode: the take under the PLAYHEAD is the clicked piece
         // (R6-4) — a carved lead and tail render the same id, so the DOM
         // cannot say which one was hit, but only one is on screen. Resolved
-        // here, at the press, before any drag base is read. Null for a
-        // graphic, or on a legacy doc: those keep the id.
-        const playheadPiece = (): SceneCue | null => {
-          if (!lookMode) return null;
+        // here, at the press, before any drag base is read. A graphic, or
+        // any id on a legacy doc, keeps the id (`kind: "id"`).
+        const pressTarget = (id: string): StagePressTarget => {
+          if (!lookMode) return { kind: "id" };
           const frame = playerRef.current?.getCurrentFrame();
-          const at = frame === undefined ? null : activeCueAt(cues, frame / settings.fps);
-          return at?.kind === "plain" ? at : null;
+          return stagePressTarget(cues, id, frame === undefined ? null : frame / settings.fps, cueClock);
         };
         // Missed every tagged leaf — still select the scene itself if the
         // click landed inside one, so the Inspector can offer scene-level
         // controls instead of going straight back to the theme panel.
         const scene = el?.closest<HTMLElement>("[data-edit-scene]");
         if (scene) {
-          const piece = playheadPiece();
+          const target = pressTarget(scene.dataset.editScene!);
+          // An unresolved take selects nothing (take-looks-by-source final
+          // review T3-M1): an id-only selection on a take revalidates to the
+          // LEAD, whichever piece was pressed.
+          if (target.kind === "unresolved") {
+            onClockRefused(LOOK_NEEDS_CLOCK);
+            return;
+          }
           select(
-            piece !== null && piece.id === scene.dataset.editScene
-              ? pieceSelection(piece, cueClock)
+            target.kind === "piece"
+              ? pieceSelection(target.piece, cueClock)
               : { sceneId: scene.dataset.editScene!, elementId: null },
           );
           return;
@@ -925,17 +932,24 @@ export const Overlay: React.FC<OverlayProps> = ({
         const videoSceneId = findVideoFrom(el);
         const stageBottom = stage.getBoundingClientRect().bottom;
         if (videoSceneId && e.clientY < stageBottom - PLAYER_CONTROLS_STRIP_PX) {
-          const piece = playheadPiece();
-          if (piece !== null && piece.id === videoSceneId) {
+          const target = pressTarget(videoSceneId);
+          // A take whose piece cannot be told (no frame yet, no clock, no
+          // footage): no selection, no drag (take-looks-by-source final
+          // review T3-M1). The legacy branch below is NOT a fallback for a
+          // take in look mode — its id-only base is empty after the
+          // migration, its preview lands on lead and tail both, and the
+          // reducer refuses its commit.
+          if (target.kind === "unresolved") {
+            onClockRefused(LOOK_NEEDS_CLOCK);
+            return;
+          }
+          if (target.kind === "piece") {
+            const piece = target.piece;
             // Look mode: the drag bases are the resolved piece's own, and
-            // its ranges are captured now (R4-S3). No clock, no footage to
-            // write: selected, but no drag is armed — refused out loud.
+            // its ranges are captured now (R4-S3) — never empty, a resolved
+            // piece has footage on the clock.
             select(pieceSelection(piece, cueClock));
             const ranges = pieceRanges(piece, cueClock);
-            if (ranges.length === 0) {
-              onClockRefused(LOOK_NEEDS_CLOCK);
-              return;
-            }
             if (videoPressGesture(piece.layout, e.shiftKey) === "move-pip") {
               const slot = layoutSlots("pip-bubble", undefined, [], settings).video.rect;
               pipDragRef.current = {
