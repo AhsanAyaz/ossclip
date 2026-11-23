@@ -14,7 +14,10 @@ import {
   splitCuesWithLanding,
   SPLIT_MIN_PIECE_SEC,
   atSplitPoints,
+  doubleCutNotes,
+  pass1SplitPoints,
   splitThenDropHidden,
+  survivingLandings,
   stampSceneAnchors,
   dropHiddenCues,
   clearElementTransform,
@@ -35,7 +38,9 @@ import {
 } from "../src/overrides";
 import { remapOverridesThroughRecut } from "../src/recut";
 import { fillPlainCues } from "../src/fill";
+import { dropOverlappingAdded } from "../src/added-scenes";
 import { TimeMap } from "../src/timemap";
+import { FE_GRAPHICS, SPANS, TAKE_CLIP_STARTS, feMap } from "./take-looks.fixtures";
 import { defaultTheme, type SceneCue } from "../src/scene-schema";
 
 const cue = (id: string): SceneCue => ({
@@ -2469,5 +2474,111 @@ describe("reveal timing across edits (reveal-timing final review I-3, M-2)", () 
     expect("entryAtSec" in second!).toBe(false);
     // Items stay inherited (absolute seconds — no re-basing needed).
     expect(second!.reveal).toEqual({ itemAtSec: [6.85, 8.35] });
+  });
+});
+
+describe("each split cuts once: the pass-1 helpers (split-positions-by-source D2, R7–R9)", () => {
+  // FE Loop (take-looks.fixtures.ts): `shot-s1` at [10.085, 17.950]. fc1 is
+  // a normal ⌘B in it; fc2 drifted — its graphic cut at `at` 16.0, while
+  // `src` 14.0 now plays at 11.515.
+  const fc1 = { at: 14.015, src: 16.5, id: "fc1" };
+  const fc2 = { at: 16.0, src: 14.0, id: "fc2" };
+  const shotS1 = () => FE_GRAPHICS.filter((c) => c.id === "shot-s1");
+  const ids = (cues: readonly SceneCue[]) => cues.map((c) => c.id);
+
+  describe("pass1SplitPoints (R8-2)", () => {
+    const doc = OverrideDocSchema.parse({
+      splits: [fc1, { at: 30, id: "legacy" }, { src: 66.055, id: "srconly" }],
+    });
+    // The FE Loop clock with source [16, 17] cut: fc1's footage is gone.
+    const cutMap = new TimeMap(
+      SPANS.flatMap((s) =>
+        s.srcIn < 16 && s.srcOut > 17
+          ? [
+              { srcIn: s.srcIn, srcOut: 16, kind: "keep" as const },
+              { srcIn: 17, srcOut: s.srcOut, kind: "keep" as const },
+            ]
+          : [{ srcIn: s.srcIn, srcOut: s.srcOut, kind: "keep" as const }],
+      ),
+    );
+
+    it("is atSplitPoints when every `src` is playing", () => {
+      expect(pass1SplitPoints(doc.splits, feMap())).toEqual(atSplitPoints(doc.splits));
+    });
+
+    it("drops a split whose `src` the map removes — inert in pass 1 too (R7-3)", () => {
+      expect(pass1SplitPoints(doc.splits, cutMap)).toEqual([{ at: 30, id: "legacy" }]);
+    });
+
+    it("filters nothing with no map", () => {
+      expect(pass1SplitPoints(doc.splits, null)).toEqual(atSplitPoints(doc.splits));
+    });
+  });
+
+  it("splitThenDropHidden reports landed (roots) and landedHost (pieces) for a chained split (R9-1)", () => {
+    const doc = OverrideDocSchema.parse({ splits: [fc1, fc2] });
+    const out = splitThenDropHidden(shotS1(), doc, pass1SplitPoints(doc.splits, feMap()));
+    expect(ids(out.cues)).toEqual(["shot-s1", "shot-s1@fc1", "shot-s1@fc2"]);
+    expect(out.landed).toEqual(new Map([["fc1", "shot-s1"], ["fc2", "shot-s1"]]));
+    // fc2 cut the piece fc1 had already made.
+    expect(out.landedHost).toEqual(new Map([["fc1", "shot-s1"], ["fc2", "shot-s1@fc1"]]));
+  });
+
+  it("splitCuesWithLanding records nothing for a split the margin skips", () => {
+    const out = splitCuesWithLanding(shotS1(), [{ at: 17.8, id: "late" }]);
+    expect(out.landed.size).toBe(0);
+    expect(out.landedHost.size).toBe(0);
+  });
+
+  describe("survivingLandings (R7-2, R8-4)", () => {
+    it("a split whose host piece and half are both hidden no longer counts as landed", () => {
+      // fc2's pieces are `shot-s1@fc1` and `shot-s1@fc2`; testing the root
+      // `shot-s1` (still shown) would have kept it (r7 S4).
+      const doc = OverrideDocSchema.parse({
+        splits: [fc1, fc2],
+        scenes: { "shot-s1@fc1": { hidden: true }, "shot-s1@fc2": { hidden: true } },
+      });
+      const out = splitThenDropHidden(shotS1(), doc, pass1SplitPoints(doc.splits, feMap()));
+      expect(ids(out.cues)).toEqual(["shot-s1"]);
+      expect(survivingLandings(out.landedHost, out.cues)).toEqual(new Set(["fc1"]));
+    });
+
+    it("one surviving piece is enough", () => {
+      const doc = OverrideDocSchema.parse({ splits: [fc1, fc2], scenes: { "shot-s1@fc2": { hidden: true } } });
+      const out = splitThenDropHidden(shotS1(), doc, pass1SplitPoints(doc.splits, feMap()));
+      expect(survivingLandings(out.landedHost, out.cues)).toEqual(new Set(["fc1", "fc2"]));
+    });
+
+    it("an added graphic dropped for overlap takes its landing with it", () => {
+      // The split lands in `added-1` alone (the plan graphics either side
+      // are too close to it); both added pieces then overlap a plan graphic
+      // and give way (`dropOverlappingAdded`).
+      const g = (id: string, startSec: number, endSec: number): SceneCue => ({ ...cue(id), startSec, endSec });
+      const doc = OverrideDocSchema.parse({ splits: [{ at: 25, src: 25, id: "s" }] });
+      const shown = splitThenDropHidden([g("scene-0", 19, 24.9), g("added-1", 20, 30), g("scene-1", 25.1, 31)], doc);
+      expect(shown.landedHost).toEqual(new Map([["s", "added-1"]]));
+      const visible = dropOverlappingAdded(shown.cues);
+      expect(ids(visible.cues)).toEqual(["scene-0", "scene-1"]);
+      expect(survivingLandings(shown.landedHost, visible.cues)).toEqual(new Set());
+    });
+  });
+
+  describe("doubleCutNotes (D5, R7-1)", () => {
+    const run = (splits: unknown[]) => {
+      const map = feMap();
+      const doc = OverrideDocSchema.parse({ splits });
+      const pass1 = splitThenDropHidden(shotS1(), doc, pass1SplitPoints(doc.splits, map));
+      const surviving = survivingLandings(pass1.landedHost, pass1.cues);
+      const filled = fillPlainCues(pass1.cues, { outputDurationSec: map.outputDuration, clipStarts: TAKE_CLIP_STARTS });
+      return doubleCutNotes(doc.splits, surviving, pass1.landedHost, filled, map);
+    };
+
+    it("names fc2, which used to cut shot-s1 a second time at 11.515", () => {
+      expect(run([fc1, fc2])).toEqual(["split fc2 cuts only shot-s1 now (it used to cut shot-s1 too)"]);
+    });
+
+    it("is silent once fc2's `src` names its `at` — the reconciled doc", () => {
+      expect(run([fc1, { ...fc2, src: 18.485 }])).toEqual([]);
+    });
   });
 });

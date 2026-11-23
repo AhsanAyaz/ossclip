@@ -399,15 +399,18 @@ export const SplitSchema = z.union([
   // `src` (cut-review rework, 2026-08-26) is the split's SOURCE second — the
   // §155 principle ("key on the property the disruption cannot move")
   // applied to splits, the way `cuts[].src`, `cleanup.kept` and the caption
-  // keys already anchor. When present it is AUTHORITATIVE and the split is
-  // recut-immune (`remapOverridesThroughRecut` passes it through untouched);
-  // `at` then survives as the old-clock record, the `cuts[].startSec`
-  // posture — with one writer that refreshes it: produce's `rekeyTakeHalves`
-  // step 7 (take-framing-identity P2, R5-B1) moves a LANDED take split's `at`
-  // onto the clock that render split on, so the editor (which splits
-  // `{at, src}` at `at`) previews the piece where the render cut it. Never
-  // when either the old or the new `at` lies inside a graphic window
-  // (R6-B1, R7-B1), and never on a src-only split. Three shapes, all
+  // keys already anchor. `src` itself is recut-immune — no re-cut ever
+  // rewrites it. `at` is "output time on the last render's clock"
+  // (split-positions-by-source D1): `remapOverridesThroughRecut` moves it
+  // through every re-cut, three ways (R8-1) — unchanged while `src` sits in
+  // removed material, re-derived from `src` on the run that restores it,
+  // `remapPoint` otherwise. Each split then cuts in exactly ONE pass (D2):
+  // pass 1 cuts graphics at `at`, and a split that landed there (and whose
+  // piece survived, R8-4) never cuts again; every other split cuts its take
+  // at `toOutput(src)`. After both passes produce's `reconcileSplitAnchors`
+  // (R7-4, R8-3) writes the anchor that did NOT cut onto the one that did —
+  // `src` for a graphic split, `at` for a take split, never `at` into or out
+  // of a graphic window — so the two stop disagreeing. Three shapes, all
   // meaningful:
   //   {at}       — legacy doc; produce backfills `src` once via priorMap.
   //   {at, src}  — a normal ⌘B: the editor dual-writes both.
@@ -465,12 +468,31 @@ export interface ResolvedSplitPoint {
   id: string;
 }
 
-/** The splits that carry an old-clock `at` — the editor's pass-1 input (its
- * cue windows speak the last render's clock) and the no-map fallback. A
- * src-only split is NOT here by definition; it applies via
- * `resolveSplitPoints` on the clock the map defines. */
+/** The splits that carry an `at` — fresh on the last render's clock, since
+ * `remapOverridesThroughRecut` moves every one through each re-cut
+ * (split-positions-by-source D1) — at that `at`. A src-only split is NOT
+ * here by definition; it applies via `resolveSplitPoints` on the clock the
+ * map defines. The graphic pass reads it through `pass1SplitPoints`, which
+ * also skips the inert ones. */
 export function atSplitPoints(splits: readonly Split[]): ResolvedSplitPoint[] {
   return splits.flatMap((s) => (s.at !== undefined ? [{ at: s.at, id: s.id }] : []));
+}
+
+/**
+ * The graphic pass's points (split-positions-by-source R8-2): `atSplitPoints`
+ * minus every split whose `src` is in material `map` removes. Such a split
+ * is INERT this run in BOTH passes (R7-3) — the remap leaves its `at`
+ * untouched while `src` is gone (R8-1 row 1), so that `at` would cut a
+ * graphic at a moment whose footage is not even playing; pass 2 already
+ * skips it with `resolveSplitPoints`' inert report, the one report it gets.
+ * No map (an unrendered workdir in the editor) filters nothing: there is no
+ * clock to call anything removed on. One helper for produce's pass 1, the
+ * editor's graphic pass and `ghosts.ts`, so the three cannot disagree about
+ * which splits a graphic sees.
+ */
+export function pass1SplitPoints(splits: readonly Split[], map: TimeMap | null): ResolvedSplitPoint[] {
+  const live = map === null ? splits : splits.filter((s) => s.src === undefined || map.toOutput(s.src) !== null);
+  return atSplitPoints(live);
 }
 
 /**
@@ -479,9 +501,11 @@ export function atSplitPoints(splits: readonly Split[]): ResolvedSplitPoint[] {
  * material the CURRENT cut removes — the split is INERT this run, skipped
  * with a report, never clamped to a seam (`cleanup.kept`'s inert-entry
  * posture: the doc keeps it, and it wakes up when that material is kept
- * again). A src-less split passes its old-clock `at` through — meaningful
- * only when `map` IS that old clock, which is produce's situation after
- * `remapOverridesThroughRecut` re-anchored it, and the editor's pass-1.
+ * again). A src-less split passes its `at` through — meaningful only when
+ * `map` IS the clock `at` speaks, which is produce's situation after
+ * `remapOverridesThroughRecut` re-anchored it, and the editor's on the old
+ * clock. Pass 2 only (split-positions-by-source D2): callers hand it the
+ * splits that did not land in the graphic pass.
  */
 export function resolveSplitPoints(
   splits: readonly Split[],
@@ -1887,13 +1911,23 @@ export function splitCues(
  * inside `take-0@3000` still names its piece `take-0@<id>`. A split the
  * margin test skips or that misses every cue is absent: it made no piece, so
  * there is nothing to re-key it to.
+ *
+ * `landedHost` is the same map with the host cue's OWN id — the piece the
+ * split actually cut, which for a chained split is `root@other`
+ * (split-positions-by-source R9-1). A second map rather than a changed
+ * `landed`: `rekeyTakeHalves` builds `${root}@${sid}` from `landed` and
+ * would mint `take-3@5000@sid` from a host id. `survivingLandings` needs
+ * the host, because after fc1 cuts `shot-s1`, fc2's halves are
+ * `shot-s1@fc1` and `shot-s1@fc2` — testing the root `shot-s1` would count
+ * fc2 as landed with both of its halves hidden (R7 S4).
  */
 export function splitCuesWithLanding(
   cues: readonly SceneCue[],
   splits: readonly ResolvedSplitPoint[],
-): { cues: SceneCue[]; landed: Map<string, string> } {
+): { cues: SceneCue[]; landed: Map<string, string>; landedHost: Map<string, string> } {
   const out = [...cues];
   const landed = new Map<string, string>();
+  const landedHost = new Map<string, string>();
   for (const s of [...splits].sort((a, b) => a.at - b.at)) {
     const i = out.findIndex(
       (c) => s.at >= c.startSec + SPLIT_MIN_PIECE_SEC && s.at <= c.endSec - SPLIT_MIN_PIECE_SEC,
@@ -1901,6 +1935,7 @@ export function splitCuesWithLanding(
     if (i === -1) continue;
     const cue = out[i]!;
     landed.set(s.id, splitRootId(cue.id));
+    landedHost.set(s.id, cue.id);
     // Derive from the ROOT id, not the (possibly already-split) cue id:
     // `take-0@6000`, never `take-0@3000@6000` — so a half's id depends only
     // on the original cue and the split that made it, and adding an EARLIER
@@ -1917,7 +1952,7 @@ export function splitCuesWithLanding(
       { ...secondHalfBase(cue), id: `${cue.id.split("@")[0]}@${s.id}`, startSec: s.at },
     );
   }
-  return { cues: out, landed };
+  return { cues: out, landed, landedHost };
 }
 
 function secondHalfBase(cue: SceneCue): SceneCue {
@@ -1972,12 +2007,90 @@ export function dropHiddenCues(cues: readonly SceneCue[], doc: OverrideDoc): Dro
 export function splitThenDropHidden(
   cues: readonly SceneCue[],
   doc: OverrideDoc,
-  // Resolved points, when the caller holds a map (produce, the editor's
-  // post-carve pass). Default: the doc's old-clock `at` entries — src-only
-  // splits have no image on that clock and are correctly absent.
+  // The graphic pass's points: `pass1SplitPoints(doc.splits, map)` in
+  // produce and the editor (split-positions-by-source R8-2), so an inert
+  // split cuts nothing. Default: every `at` entry, unfiltered — src-only
+  // splits have no `at` and are correctly absent.
   points: readonly ResolvedSplitPoint[] = atSplitPoints(doc.splits),
-): DropHiddenResult {
-  return dropHiddenCues(splitCues(cues, points), doc);
+): SplitDropResult {
+  const split = splitCuesWithLanding(cues, points);
+  return { ...dropHiddenCues(split.cues, doc), landed: split.landed, landedHost: split.landedHost };
+}
+
+/** `splitThenDropHidden`'s result: the drop, plus where each split landed
+ * (split-positions-by-source R8-4, R9-1). Both maps are taken BEFORE the
+ * hidden drop — a landing whose pieces were all hidden still landed here,
+ * and `survivingLandings` is what decides whether it counts. */
+export type SplitDropResult = DropHiddenResult & {
+  /** Split id → the ROOT id of the cue it cut (`splitCuesWithLanding`). */
+  landed: Map<string, string>;
+  /** Split id → the id of the piece it actually cut. */
+  landedHost: Map<string, string>;
+};
+
+/**
+ * The graphic-pass landings that still count after the hidden drop and the
+ * overlap drop (split-positions-by-source R7-2, R8-4): a split stays
+ * "landed" only while its host piece (`landedHost`'s id) or the half it made
+ * (`${root}@${sid}`) is in `shown`. Every other split goes to pass 2 and
+ * cuts its take at `toOutput(src)` — the reason this exists: a split whose
+ * graphic halves are both hidden made nothing anyone sees, and treating it
+ * as landed would leave the take under them uncut (r6 B2). `shown` is the
+ * list after BOTH drops — produce's `visibleCues`, the editor's
+ * `covered.cues` — since an added graphic dropped for overlap is just as
+ * gone as a hidden one.
+ */
+export function survivingLandings(
+  landedHost: ReadonlyMap<string, string>,
+  shown: readonly SceneCue[],
+): Set<string> {
+  const ids = new Set(shown.map((c) => c.id));
+  const out = new Set<string>();
+  for (const [sid, host] of landedHost) {
+    if (ids.has(host) || ids.has(`${splitRootId(host)}@${sid}`)) out.add(sid);
+  }
+  return out;
+}
+
+/**
+ * The one-time change, said out loud (split-positions-by-source D5, R7-1):
+ * for each split that landed in the graphic pass and survived, dry-run
+ * where pass 2 WOULD have cut it — `toOutput(src)` on `pass2Input`, the
+ * filled and carved list pass 2 receives — and name it when that is a
+ * different cut. Before this design produce cut such a split twice, once at
+ * its stale `at` and again at `src`, minting two cues of one name; now it
+ * cuts only the graphic. `G` is the root of the piece pass 1 cut
+ * (`splitRootId(host)`, R9-1), `H` the root of the cue the dry run lands on,
+ * of any kind. Fires only for splits whose anchors had drifted apart, and
+ * once: `reconcileSplitAnchors` then writes `src` onto `at`, so the next
+ * run's dry-run point sits on the joint pass 1 made and lands nowhere.
+ *
+ * The 0.3 s test is the design's stated bar. The landing margin almost
+ * always implies it — a point within 0.3 s of the joint pass 1 made at `at`
+ * cannot clear the margin of the cue on either side of that joint — but it
+ * is stated, not assumed (r8 m5), for a list whose joint moved (a re-clamped
+ * pin).
+ */
+export function doubleCutNotes(
+  splits: readonly Split[],
+  pass1Surviving: ReadonlySet<string>,
+  landedHost: ReadonlyMap<string, string>,
+  pass2Input: readonly SceneCue[],
+  map: TimeMap,
+): string[] {
+  const landedInPass1 = splits.filter((s) => pass1Surviving.has(s.id));
+  const { points } = resolveSplitPoints(landedInPass1, map);
+  const dry = splitCuesWithLanding(pass2Input, points);
+  const notes: string[] = [];
+  for (const s of landedInPass1) {
+    const host = landedHost.get(s.id);
+    const wouldHave = dry.landed.get(s.id);
+    const point = points.find((p) => p.id === s.id);
+    if (host === undefined || wouldHave === undefined || point === undefined || s.at === undefined) continue;
+    if (Math.abs(point.at - s.at) <= SPLIT_MIN_PIECE_SEC) continue;
+    notes.push(`split ${s.id} cuts only ${splitRootId(host)} now (it used to cut ${wouldHave} too)`);
+  }
+  return notes;
 }
 
 /**
