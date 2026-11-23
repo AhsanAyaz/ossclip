@@ -1,6 +1,6 @@
 # Take looks attached to source time
 
-Status: draft 5. It revises draft 4 after review round 4 (`~/ossclip-work/egm-short/take-looks-review-r4.md`). This design replaces `take-framing-phase-2.md` (paused) and supersedes parts of phase 1 (`take-framing-identity.md`). The author approved the direction on 2026-11-23: "things are attached to chunks, and chunks attached at the TS on the timeline", modelled on how other editors work.
+Status: draft 6. It revises draft 5 after review round 5 (`~/ossclip-work/egm-short/take-looks-review-r5.md`, 0 blocking). **The "Draft 6 rulings" section at the end overrides earlier text wherever the two differ.** This design replaces `take-framing-phase-2.md` (paused) and supersedes parts of phase 1 (`take-framing-identity.md`). The author approved the direction on 2026-11-23: "things are attached to chunks, and chunks attached at the TS on the timeline", modelled on how other editors work.
 
 ## Why
 
@@ -342,3 +342,69 @@ The range is `pieceSourceRanges(piece window, cueClock)`. With a null clock the 
      - the cue covering source 66.055 has `{scale 2.2, dx -664.8}` and starts at 56.467 (±0.002);
      - no migration note;
      - no `dropped` or `parked` lines.
+
+## Draft 6 rulings (round 5)
+
+These override the sections above where they differ.
+
+**R6-1. The selection anchor is a source extent (S1).**
+- **The anchor.** In look mode, `Selection` gains `pieceExtent?: { srcIn, srcOut }`, replacing `pieceSrc`. It is the hull of `pieceSourceRanges(window, cueClock)`.
+- **The resolver.** `selectedPiece(cues, selection, clock)` returns the plain cue whose ranges overlap the extent most. It does not depend on ids. Overlaps under 1 ms count as none, and with no overlap it returns null.
+- **Revalidation.** `revalidateSelection` rewrites the extent to the resolved piece's own hull, or clears the selection when nothing resolves.
+- **After ⌘B,** the selection follows the half that holds more of the old extent.
+- **A selection from legacy mode** that has no extent gets one at the first revalidation in look mode, by id match (first cue with that id). This is the only place an id is used.
+
+**R6-2. Framing is one write unit (S5).** Any patch that touches `scale`, `dx` or `dy` writes all three. It takes the piece's currently resolved values and lays the patch over them. `volume` and `autoZoom` stay separate fields. `pip` `{x, y}` is also one unit; `cornerRadius` stays separate.
+
+**R6-3. Writes cover the piece's hull (S6).** `setTakeLook` and `clearTakeLookFields` write over the hull `[min srcIn, max srcOut]` of the piece's ranges, including any material a live cut removed in between. So restored material (`restoreChunk`) shows the look of the footage around it, and an older look cannot come back.
+
+**R6-4. Plumbing (S2, S3, S4).**
+- **Helpers.** `pieceAnchor(cue, clock)`, `revalidateSelection(sel, cues, clock)` and `walkPiece(cues, sel, dir, clock)` are exported from `apps/editor/src/takeLookTarget.ts`, and the call sites use them.
+- **Timeline.** It gets a `cueClock` prop (`App.tsx:~3570`).
+  - `isSelected(cue)` is `selectedPiece(...) === cue`.
+  - Block keys and testids are `${cue.id}:${cue.startSec.toFixed(3)}`.
+  - The scroll query (`Timeline.tsx:~690`) goes through the resolver.
+- **Stage click.** It resolves `activeCueAt(cues, frame / fps)` at mousedown, before the drag bases are read.
+- **Gating.** Every extent behaviour is gated on `takeLooks !== undefined` and applies to plain-cue selections only. Legacy mode is unchanged.
+
+**R6-5. The refusal notice (S7).** It is `lastRefusal: { message: string; seq: number } | null`, held as hook state outside the doc. App shows it once per `seq`. Tested.
+
+**R6-6. Apply captions to all (S8).** A single branch rule applies: in look mode, App passes an `allTakeRanges: SrcRange[][]` prop, with one entry per plain cue in `sceneCues` computed on `cueClock`. The reducer also drops any `isLookPieceKey` id from `sceneIds` in look mode.
+
+**R6-7. Tests (S9).**
+- `take-look-target.test.ts` tests the pure helpers:
+  - the tail resolves;
+  - a live cut in front;
+  - footage cut gives null and clears the selection;
+  - the walk;
+  - undo;
+  - ⌘B follows the larger half;
+  - a legacy selection gets an extent.
+- Task 2 adds `Inspector.test.ts` and `Overlay.test.ts` cases. Each look control in look mode dispatches only the look actions, legacy mode is unchanged, the Inspector shows the tail's values, and a scrub previews only the tail.
+- The migration tests add a flagged half that inherits `captionY`.
+
+**R6-8. Module boundary (S10).**
+- `isLookPieceKey` lives in `overrides.ts` (task 1).
+- `inScope(o?: SceneOverride): TakeLook` picks the five keys and drops `undefined` values and empty records. It lives in `take-looks.ts`.
+- `isEmptyEntry` moves from `useEdits.ts:491` to `take-looks.ts` and is re-exported.
+- `take-looks.ts` imports `overrides.ts` for types only, because the schema imports `normalizeTakeLooks`.
+- Task 2 adds `export * from "./take-looks-migrate"` to `index.ts`.
+
+**R6-9. Migration fixture (S11).**
+- Spans: the 10 literal spans from `work/FE Loop-116d3cbc/render-props.json:3-63`. The first is `{srcIn 1.30531, srcOut 9.51969, outIn 0}`.
+- Splits: as in `overrides.json:108-131`.
+- Clip starts: `spans.map(s => s.outIn)`. This equals produce's list here, because the kept-edge starts are already span `outIn`s.
+- The "1.30997" text above is wrong; these values replace it.
+
+**R6-10. Field check (S12).**
+- **Setup:** a script, `~/ossclip-work/fe-loop/looks-field-check.sh`. It:
+  - copies the workdir;
+  - rewrites `command.json` with python (the args and `"out"`);
+  - runs `pnpm ossclip` from the repo with the args passed as a bash array read from JSON, so paths with spaces stay intact (`--no-render` is added, and `--no-open-editor` is already present);
+  - writes logs into the copy;
+  - has no cleanup step, since the copy is disposable.
+- **Probes:** source 20.8 and 66.1.
+- **Run 2 expects, in addition:**
+  - the note `split 66055 moved to 56.467s on this cut`;
+  - `at: 56.467`;
+  - `takeLooks` byte-equal to run 1.
