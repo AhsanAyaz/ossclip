@@ -1,180 +1,213 @@
 # Splits land where their source time says
 
-Status: draft 2. It revises draft 1 after review round 1 (`~/ossclip-work/egm-short/split-positions-review-r1.md`). The author picked options 1B + 2A on 2026-11-23. Context:
-- `take-looks-by-source.md` (built);
-- `take-framing-identity.md` (phase 1, built);
-- the phase-2 review `framing-phase2-review-r1.md` (its B1, B2 and S1 hazards).
-
-Sites below are cited by symbol; line numbers drift.
+Status: draft 3. It revises draft 2 after review round 2 (`~/ossclip-work/egm-short/split-positions-review-r2.md`). The author picked options 1B + 2A on 2026-11-23. Context: `take-looks-by-source.md` and `take-framing-identity.md` (both built), and `framing-phase2-review-r1.md` (hazards B1, B2 and S1). Sites are cited by symbol.
 
 ## Problem
 
-A ⌘B split stores `{at, src, id}`: `src` is the source second, and `at` is the output second at the time the split was made. `recut.ts` never re-anchors `{at, src}` splits, so `at` goes stale after a cut in front. Two readers still trust it:
+A ⌘B split stores `{at, src, id}`: `src` is the source second, and `at` is the output second at the time the split was made. `recut.ts` passes `{at, src}` splits through unchanged, so after a cut in front `at` is stale. Two readers still trust it:
 
-1. **The render puts graphic splits at the wrong time.** Produce's first split pass (`splitThenDropHidden(editedCues, overrideDoc)` in `produce.ts`) uses the default `atSplitPoints`. After a cut in front, a graphic splits at the wrong time.
-2. **The editor shows splits the render doesn't make.** Its take pass (`splitCues(filled, atSplitPoints(...))` in the `App.tsx` memo) and `ghosts.ts` also use `atSplitPoints`. A split the render margin-skips or finds inert still splits in the editor (FE Loop 20752). Phase 1's step 7 papers over this by writing `at` back, but only for landed take splits.
+1. **The render puts graphic splits in the wrong place.** Produce's pass 1 (`splitThenDropHidden(editedCues, overrideDoc)`) uses the default `atSplitPoints`, so graphic splits render at a stale time.
+   - **Second cut on a drifted split.** Pass 2 (`resolveSplitPoints` on `filled`) then cuts the graphic AGAIN at `toOutput(src)`. Depending on the case, that gives a duplicate `G@sid`, a graphic cut short, or a stray take half.
+2. **The editor shows splits the render doesn't make.** Its take pass (`splitCues(filled, atSplitPoints(...))`) and `ghosts.ts` use `atSplitPoints`, so a split the render margin-skips still splits in the editor. FE Loop 20752 is one. Phase 1's step 7 papers over this only for take splits that landed.
 
 ## Goals
 
-- **G1.** A labelled graphic split renders at `toOutput(src)`, so it stays on the same footage moment after a cut in front.
-- **G2.** After a render, the editor's old-clock split cues match produce's, except for the listed exceptions.
-- **G3.** Output is identical on every run that has no new edit. That includes the label run AND the run after it (the drift is frozen, B4).
-- **G4.** No deleted graphic half comes back.
+- **G1.** A labelled graphic split renders at `toOutput(src)`, so it follows its footage after cuts in front.
+- **G2.** After a render, the editor's old-clock split cues equal produce's, except for the listed exceptions.
+- **G3.** Every run with no new edit renders identically to the run before it. One exception: on the first upgraded run, a graphic split that had already drifted stops being cut twice (problem 1's second cut). That is a declared one-time fix.
+- **G4.** No deleted graphic half comes back. Two limits are declared below.
 
-**Exceptions to G2 (B5):**
-- A `{at, src}` split inside a kept cleanup range is applied before the carve in the editor and after it in produce. It is rare: a split made before the range was kept.
-- Produce's `reclampPinnedTiming` is not run in the editor (today's gap).
+**G2 exceptions:**
+- Produce's `reclampPinnedTiming` does not run in the editor (today's gap).
 - During a live veto, a split that is inert on the old clock does not preview.
+
+**G4 limits:**
+- A labelled graphic split whose footage moves into a different, hidden graphic splits that one instead.
+- A label stays on a graphic that a re-plan removed. If the graphic returns, the split applies again.
 
 ## Design
 
-### Shared definitions and helpers (`packages/core/src/overrides.ts`)
+### Definitions and helpers (`packages/core/src/overrides.ts`)
 
-**Schema.** The `SplitSchema` object arm gains `on: z.enum(["take", "graphic"]).optional()`. The legacy number arm's transform emits `on: undefined`. `remapOverridesThroughRecut` passes the split through whole (`recut.ts`), so `on` survives. "Plain" means `isLookPieceKey(id)`.
+- **Schema.** The `SplitSchema` object arm gains `on: z.enum(["take", "graphic"]).optional()`. The legacy number arm emits `on: undefined`. `recut.ts` passes splits through whole.
+- **Plain.** A cue counts as plain when `isLookPieceKey(id)` is true.
+- **`keptSrc(s, doc)`.** True when `s.src` lies inside a `cleanup.kept` or `dismissed` range.
 
-**`graphicSplitPoints(splits, map: TimeMap | null): ResolvedSplitPoint[]`.** These are the pass-1 (graphic) points:
+**`graphicSplitPoints(splits, map: TimeMap | null): ResolvedSplitPoint[]`** gives the pass-1 points:
 
 | Split | Point |
 | --- | --- |
-| src-only (no `at`) | none (it stays in the post-carve pass) |
+| src-only (no `at`) | none (post-carve pass) |
 | at-only (legacy) | `at` |
 | `{at, src}`, `on: "graphic"`, `map` set, `toOutput(src)` not null | `toOutput(src)` |
-| `{at, src}`, `on: "graphic"`, inert or `map` null | `at` (keeps a deleted half hidden: r1 B2(a)) |
+| `{at, src}`, `on: "graphic"`, inert or `map` null | `at` (keeps a deleted half hidden) |
 | `{at, src}`, `on: "take"` | none |
 | `{at, src}`, unlabelled | `at` (today) |
 
-**`takeSplitPoints(splits, map: TimeMap | null): ResolvedSplitPoint[]`.** These are the editor's old-clock take-pass points. Take every split with `at`, whatever its label. With a map, use `resolveSplitPoints(thoseSplits, map).points` (`src` wins; inert ones are dropped; at-only passes `at`). With no map, use `atSplitPoints` (today).
+**`takeSplitPoints(splits, map: TimeMap | null, doc): ResolvedSplitPoint[]`** gives the editor's old-clock take-pass points.
+- **Which splits:** every split with `at`, except those with `keptSrc` (round-2 S3). Those go to the post-carve pass together with the src-only ones, matching produce, which applies every split after the carve.
+- **With a map:** `resolveSplitPoints(those, map).points`.
+- **Without a map:** `atSplitPoints(those)`.
+- **Graphic splits in this set** are no-ops here when they are labelled or undrifted, because they sit on a graphic joint. A drifted unlabelled split is the case problem 1 describes. After the labelling below, the only unlabelled graphic splits left are row-2 splits (see the table), whose second cut is today's behaviour on both sides.
 
-This matches produce's pass 2 (`resolveSplitPoints(overrideDoc.splits, map)` on `filled`), except that src-only splits stay in the editor's post-carve pass, as today (B1, B2). A graphic split in this set sits on a graphic joint, which is a no-op here, the same on both sides.
+**`splitThenDropHidden(cues, doc, points?)`** additionally returns `landed: Map<splitId, rootId>`, using `splitCuesWithLanding` internally. This is additive.
 
-**`splitThenDropHidden(cues, doc, points?)`** additionally returns `landed: Map<string, string>`. Internally it switches to `splitCuesWithLanding`. The return field is additive, so existing destructures are unaffected.
+### S1. Labels, in two steps (`packages/core/src/split-labels.ts`)
 
-### S1. Labels (`labelSplits`, run on every produce)
+**`labelGraphicSplits(doc, pass1Landed, pass1Cues, map, priorMap): { doc, notes, changed }`.**
+- **When:** it runs on every produce, right AFTER pass 1 and BEFORE pass 2 (B1). The freeze therefore applies within the same run.
+- **Which splits:** splits without `on` that have both `at` and `src`.
+- G is the pass-1 input cue named `pass1Landed.get(id)`, and its window is `[G.startSec, G.endSec]`. `out = map.toOutput(src)`.
 
-`labelSplits(doc, pass1Landed, pass1Cues, pass2Landed, map): { doc, notes, changed }`. It runs on every produce (S1), which makes it idempotent. Running it every time also re-labels a doc after a rollback strips `on`.
-- **Where:** right after the second split pass (`splitCuesWithLanding(filled, ...)` and `rekeyTakeHalves`), before `pinnedDoc` is rebuilt and before `migrateTakeLooks`.
-- **Write gate:** `splitsLabelled` is added to the produce reasons object and `overrides-write.ts` (`OverridesWriteReasons`, `REASON_PHRASES`: `splits labelled by what they cut`).
-
-**Which splits it handles:** only splits without `on`, and with both `at` and `src`.
-
-**Decision table (B3):**
-
-| Pass 1 (stale `at`) landed on | Pass 2 (`src`) landed on | Label |
+| Pass 1 landed on | `out` | Result |
 | --- | --- | --- |
-| graphic G, with `toOutput(src)` inside G's pass-1 window | anything | `"graphic"`, freezing any drift (see below) |
-| graphic G, with `toOutput(src)` outside G | anything | none (keeps `at` in pass 1, today) |
-| nothing | a plain cue (`isLookPieceKey`) | `"take"` |
-| nothing | a graphic joint, or nothing | none |
+| graphic G | inside G's window | `on: "graphic"`, then the freeze check |
+| graphic G | null (inert) | `on: "graphic"` (it keeps `at` in pass 1) |
+| graphic G | outside G | unlabelled. Note: `split ${id} left unlabelled — its source is outside the graphic it splits` |
+| nothing | any | left to the take step |
 
-**Drift freeze (B4).** When a split is labelled `"graphic"` and `|toOutput(src) − at| > 0.001`, set `src = round(map.toSource(at), ms)`. Today's render therefore stays put on the next run, and later cuts move it with its footage. Note: `split ${id} kept at ${at}s (source moved to ${src}s)`.
+- **Freeze (B1, round-2 S1).** If `|out − at| > 0.001`, then `src = round(ref.toSource(at), ms)`, where `ref` is `priorMap` when it exists and `map` otherwise.
+  - Using `priorMap` keeps the footage the LAST render showed at `at`. So a cut added in this same run still moves the split with that footage.
+  - Note: `split ${id} kept on the footage it showed (source ${old}s → ${new}s)`.
 
-The other note is `labelled ${n} split(s) by what they cut`. It is printed only when `n > 0`.
+**`labelTakeSplits(doc, pass2Landed): { doc, notes, changed }`.**
+- **When:** it runs after pass 2 and `rekeyTakeHalves`, and before `pinnedDoc` and `migrateTakeLooks`.
+- **Which splits:** splits without `on` and with `{at, src}` that landed in pass 2 on a plain root and not in pass 1 get `on: "take"`. All others stay as they are.
+
+**Notes and `changed`:** each step prints `labelled ${n} split(s) by what they cut` when `n > 0`. `changed` is true on any write.
 
 ### S2. Produce
 
-Pass 1 calls `splitThenDropHidden(editedCues, overrideDoc, graphicSplitPoints(overrideDoc.splits, map))`. Pass 2 is unchanged.
+- **Pass 1:** `splitThenDropHidden(editedCues, overrideDoc, graphicSplitPoints(overrideDoc.splits, map))`, followed by `labelGraphicSplits`.
+- **Pass 2:** unchanged, then `labelTakeSplits`.
+- **Write gate:** `const splitsLabelled = graphic.changed || take.changed`.
+  - It goes into the gate's `if (…)` condition and into the reasons object.
+  - `apps/cli/src/overrides-write.ts` gets `REASON_PHRASES.splitsLabelled = "splits labelled by what they cut"`.
+  - `.bak` is not refreshed (`refreshBackup` stays `cutResult.changed`).
+  - The gate regex in `apps/cli/test/caption-report.test.ts` gains `|| splitsLabelled`.
 
-**The label run is output-identical.** On that run every split is still unlabelled, so `graphicSplitPoints` returns today's `at` points.
-
-**The next run is output-identical too.** A labelled graphic split resolves `toOutput(src)`, and the freeze made that equal to `at`. A split labelled `"take"` gave no pass-1 point before (it landed nowhere in pass 1), and gives none now.
+**Output, run by run:**
+- **Label run.** Pass 1 uses today's `at` points, because nothing is labelled yet. Pass 2 sees frozen `src` values, so a drifted graphic split is no longer cut a second time. That is G3's one-time fix.
+- **Next run.** A labelled graphic split resolves `toOutput(src) = at`, a take-labelled split gives no pass-1 point (as before), and pass 2 is unchanged. So output is identical.
 
 ### S3. Editor
 
 - **Graphic pass:** `splitThenDropHidden(graphicCues, doc, graphicSplitPoints(doc.splits, oldClockMap))`.
-- **Take pass:** `splitCues(filled, takeSplitPoints(doc.splits, oldClockMap))`.
-- **Post-carve pass:** src-only splits, unchanged.
-- **Ghosts:** `ghostCues(..., clock)` gains a clock parameter and uses `graphicSplitPoints(doc.splits, clock)`. App passes `liveRetimed.oldClock` (S4).
+- **Take pass:** `splitCues(filled, takeSplitPoints(doc.splits, oldClockMap, doc))`.
+- **Post-carve pass (`finishOnClock`):** applies src-only splits plus `keptSrc` splits.
+- **Ghosts:** `ghostCues(..., clock)` uses `graphicSplitPoints(doc.splits, clock)`. App passes `liveRetimed.oldClock`.
 
-### S4. Reducer label
+### S4. Reducer
 
-`addSplit` with `targetId` sets `on: isLookPieceKey(targetId) ? "take" : "graphic"`. Without `targetId`, `on` stays undefined (S3).
+`addSplit` with `targetId` sets `on: isLookPieceKey(targetId) ? "take" : "graphic"`. Without `targetId`, no label is set.
 
 ### S5. Phase 1's step 7 removed
 
-`rekeyTakeHalves` drops step 7 and its `points`/`graphicWindows` parameters. The produce call site and its tests change accordingly:
-- `take-halves.test.ts` tests 11b, 11d and 11e are rewritten to assert that `at` is untouched;
-- `take-looks-migration` and the fixtures are updated.
+`rekeyTakeHalves` drops step 7 and its `points` and `graphicWindows` parameters. Its call site and these tests change:
+- `take-halves.test.ts`: 11b, 11d, 11e, and the "moved to 58.467s" assertion at about line 60;
+- `take-halves-pipeline.test.ts`;
+- `take-looks-migration.test.ts`;
+- `take-looks.fixtures.ts`;
+- `scene-edit-remap.test.ts`.
 
-The editor no longer reads `at` for resolvable splits, so nothing depends on step 7's writes. Unlabelled splits still use `at` in pass 1, by design.
+Supersede notes go into:
+- `take-framing-identity.md` (P2 step 7, lines about 44-45);
+- `take-looks-by-source.md` (L5, and the `at: 58.467` / `56.467` field-check expectations near line 339).
 
-**Supersede notes are added to:**
-- `take-framing-identity.md` (P2 step 7);
-- `take-looks-by-source.md` (L5, and its field check's `at: 58.467` expectations).
+### S6. Comments to rewrite
 
-### S6. Comments to rewrite (house rule)
-
-Each of these comments becomes false and gets rewritten in the same commit:
-- `SplitSchema`'s `src`/`at` comment;
+The house rule says comments stay true, so rewrite:
+- the `SplitSchema` `src`/`at` comment;
 - the `atSplitPoints` and `resolveSplitPoints` docs;
-- the `splitThenDropHidden` default-points comment;
-- `take-halves.ts`'s module and step docs;
-- produce's comments on the src backfill, on pass 2 / step 7, and at the write gate;
-- `App.tsx`'s comment on its pass-1 split.
+- the `splitThenDropHidden` comment on default points;
+- the module and step docs in `take-halves.ts`;
+- produce's comments on the src backfill, on pass 2 and step 7, and on the write gate;
+- `App.tsx`'s pass-1 split comment.
 
 ## Tests (inline values)
 
-**Core, `overrides.test.ts`:**
-- schema: `on` is kept, and the legacy arm gives `undefined`;
-- `graphicSplitPoints`, one case per table row;
-- `takeSplitPoints` with a map, without a map, and with an inert split;
+FE Loop numbers: the `shot-s1` output window is [10.085, 17.950] and `toOutput(16.5) = 14.015`.
+
+**`overrides.test.ts`:**
+- schema;
+- `graphicSplitPoints`, one case per row;
+- `takeSplitPoints` with a map, without a map, inert, and `keptSrc` excluded;
 - `splitThenDropHidden` returns `landed`.
 
-**Core, `split-labels.test.ts`** (new): one case per decision-table row.
-- Graphic: G `[10, 20]` output, a split with `at 15`, `src` mapping to 15 → `"graphic"`.
-- Drift: the same split, but `src` maps to 13 → `"graphic"`, `src` frozen to `toSource(15)`, and the note.
-- Outside: `src` maps to 25 → unlabelled.
-- Take: lands only in pass 2 on `take-2` → `"take"`.
-- Joint or nothing → unlabelled.
-- Idempotent: a second run gives no change.
+**`split-labels.test.ts` (new).** G is `scene-1` at `[10.085, 17.950]`, with identity-like maps built from FE Loop spans.
+- inside: `{at: 14.015, src: 16.5}` → `"graphic"`, no freeze;
+- drift: `{at: 15.0, src: 16.5}` → `"graphic"`, and `src` becomes `priorMap.toSource(15.0)`, with the note;
+- inert: `src` removed → `"graphic"`;
+- outside → unlabelled, with the note;
+- take: landed only in pass 2 on `take-2` → `"take"`;
+- idempotent: running again changes nothing.
 
-**Core pipeline, `split-positions-pipeline.test.ts`** (new):
-- the label run and the next run are both output-identical, for a fixture with a graphic split, a take split, a drifted graphic split and an inert graphic split with a hidden half;
-- after a 2 s cut in front, the labelled graphic split lands at `toOutput(src)`;
-- the hidden half stays hidden;
-- a `"take"` split never splits a graphic in pass 1.
+**`split-positions-pipeline.test.ts` (new).** A core pipeline mirroring produce (fill, carve, pass 1, label, pass 2, label), with inline FE Loop spans plus `scene-1` and these splits:
+- `fc1 {14.015, 16.5}`;
+- `fc2 {15.0, 16.5}` (drifted);
+- `fc3` inert, with `scene-1@fc3` hidden;
+- `66055`.
 
-**Editor parity (`item-timing-parity.test.ts`):** the editor's old-clock pipeline and produce's yield the same split cue ids and windows for:
+Asserts:
+- the label run gives no double cut for `fc2`;
+- the run after it is identical;
+- after cut `src [2, 4]`, `fc1` lands at 12.015 ± 0.002;
+- `scene-1@fc3` stays hidden;
+- the `"take"` split never cuts `scene-1` in pass 1.
+
+**Parity (`item-timing-parity.test.ts`).** The editor's old-clock pipeline and produce agree on split cue ids and windows for:
 - the 20752 shape (margin-skipped);
 - an inert split;
 - a labelled graphic split after a cut;
-- a src-only split.
+- a src-only split;
+- a `keptSrc` split.
 
 With no clock, the editor falls back to `at`.
 
 **`ghosts.test.ts`:** with a clock, a labelled graphic split resolves by `src`.
 
-**`useEdits.test.ts`:**
-- ⌘B on a take gives `on: "take"`;
-- ⌘B on a graphic gives `"graphic"`;
-- ⌘B with no `targetId` gives no label.
+**`useEdits.test.ts`:** ⌘B on a take gives `"take"`, on a graphic gives `"graphic"`, and with no `targetId` gives no label.
 
-**Source guards (`scene-edit-remap.test.ts`, `caption-report.test.ts` gate regex):**
-- `graphicSplitPoints(overrideDoc.splits, map)` is passed to `splitThenDropHidden(editedCues`;
-- `labelSplits(` comes after `rekeyTakeHalves(` and before `migrateTakeLooks(`;
-- `splitsLabelled` is in the write gate;
-- the editor uses `takeSplitPoints(` and `graphicSplitPoints(`.
+**Source guards (exact strings):**
+- `splitThenDropHidden(editedCues, overrideDoc, graphicSplitPoints(overrideDoc.splits, map))`;
+- `labelGraphicSplits(` comes before `resolveSplitPoints(overrideDoc.splits`;
+- `labelTakeSplits(` comes after `rekeyTakeHalves(` and before `migrateTakeLooks(`;
+- `splitsLabelled` is in the write `if (`;
+- `App.tsx` contains `takeSplitPoints(edits.doc.splits, oldClockMap` and `graphicSplitPoints(edits.doc.splits, oldClockMap`.
 
-## Field check (B6)
+## Field check (`~/ossclip-work/fe-loop/splits-field-check.sh`)
 
-A script, `~/ossclip-work/fe-loop/splits-field-check.sh`, modelled on `looks-field-check.sh`. It works on a fresh copy of the FE Loop workdir.
-
-1. **Setup.** Add a graphic split inside `shot-s1` (its source window is 12.57–20.435 in `overrides.json`) at source 16.5. Write it as `{at: toOutput(16.5), src: 16.5, id: "fc1"}`, where `at` is computed from the copy's render-props `spans`. Then confirm that `shot-s1`'s render-props cue covers that `at`.
-2. **Run 1.** Expect:
-   - `fc1` gets `on: "graphic"`;
+1. **Run A (baseline).** Make a fresh copy of the workdir (repointed as in `looks-field-check.sh`) and run `--no-render`. That absorbs phase 1 and the look migration. Save `render-props.A.json`.
+2. **Edit.** Add splits `fc1 {at: 14.015, src: 16.5}` and `fc2 {at: 15.0, src: 16.5}` to `overrides.json`. With these numbers fc2's `src` resolves inside `shot-s1`.
+3. **Run B (label run).** Expect:
+   - `fc1` and `fc2` both get `on: "graphic"`;
+   - fc2 gets the freeze note and `src` = `toSource(15.0)`;
    - 66055 gets `on: "take"`;
-   - 20752, 24518, 167648 and 176577 stay unlabelled (inert or src-only);
-   - `shot-s1` and `shot-s1@fc1` cues exist at the split point;
-   - no other cue changed against `render-props.before.json`.
-3. **Run 2.** Add the cut `src [2, 4]` and run again. Expect `shot-s1@fc1` to start at the run-1 start − 2.000 (±0.002), and 66055's half to sit on its footage.
-4. **Editor parity.** In a headless browser on the copy, the Timeline's block starts (`data-piece-start`) equal render-props' plain and graphic cue starts. The one known extra is the editor's src-only path, which is listed.
+   - 20752 stays unlabelled (margin-skipped);
+   - 24518, 167648 and 176577 stay unlabelled (src-only);
+   - `shot-s1@fc1` and `shot-s1@fc2` cues exist, starting at 14.015 and 15.0;
+   - against run A, no other cue changed.
+4. **Run C (no edit).** `render-props.json` cues equal run B's, and no notes appear.
+5. **Run D.** Add the cut `src [2, 4]` and run again. Expect:
+   - `shot-s1@fc1` starts at 12.015 ± 0.002, and `shot-s1@fc2` at 13.0 ± 0.002;
+   - the 66055 half is found by source 66.1 and is framed (its id is recorded, not asserted).
+6. **Editor parity.** Start the editor on the copy, wait for the Timeline, and read every block's `data-testid` id and `data-piece-start`. Compare them with render-props `sceneCues` ids and starts, rounded to the millisecond. The only allowed extra is `take-*@20752`, which must be ABSENT now. Pass/fail goes through a python checker, and the script exits 1 on failure.
 
 ## Build
 
 One task, then the field check.
-- **Files:**
-  - `packages/core/src/overrides.ts`, `take-halves.ts`, `overrides-write.ts`;
+- **Create:**
+  - `packages/core/src/split-labels.ts`;
+  - `packages/core/test/split-labels.test.ts`;
+  - `packages/core/test/split-positions-pipeline.test.ts`.
+- **Modify:**
+  - `packages/core/src/overrides.ts`;
+  - `packages/core/src/take-halves.ts`;
+  - `packages/core/src/index.ts`;
+  - `apps/cli/src/overrides-write.ts`;
   - `apps/cli/src/produce.ts`;
-  - `apps/editor/src/App.tsx`, `ghosts.ts`, `useEdits.ts`;
-  - the tests listed above, plus `take-looks-migration.test.ts` and the fixtures;
+  - `apps/editor/src/App.tsx`;
+  - `apps/editor/src/ghosts.ts`;
+  - `apps/editor/src/useEdits.ts`;
+  - the tests named above, plus `take-halves*.test.ts`, `take-looks-migration.test.ts`, `take-looks.fixtures.ts`, `scene-edit-remap.test.ts` and `caption-report.test.ts`;
   - the two design docs (supersede notes).
-- **Tests:** everything in the Tests section.
