@@ -1,6 +1,6 @@
 # Each split cuts once, in one place
 
-Status: draft 8 (round 7 review: `split-positions-review-r7.md`). The rulings sections at the end override earlier text; later rulings override earlier ones. Draft 6 was a rewrite that replaced drafts 1–5, which took the exact-preservation route; their reviews are `~/ossclip-work/egm-short/split-positions-review-r1.md`…`r5.md`.
+Status: draft 9, ready to plan (round 8 review: `split-positions-review-r8.md`, 0 blocking). The rulings sections at the end override earlier text; later rulings override earlier ones. Draft 6 was a rewrite that replaced drafts 1–5, which took the exact-preservation route; their reviews are `~/ossclip-work/egm-short/split-positions-review-r1.md`…`r5.md`.
 
 On 2026-11-23 the author chose the simpler route and accepted a one-time change for splits that had already drifted. This can ship as a major update, and full backward compatibility is not required. Telemetry backs that up: in the last 30 days, about 12 installs outside the author's own ran `produce`.
 
@@ -243,3 +243,23 @@ Tests with literals (FE Loop map):
 - **Run 1** also expects 66055 to be reconciled: `split 66055 anchors reconciled (at 58.467s, source 66.055s)`.
 - **Run 2** asserts that `overrides.json` is byte-identical before and after.
 - **Editor step,** run from the repo: `pnpm ossclip edit "<copy>/FE Loop-116d3cbc" --no-open --port 5182`.
+
+## Draft 9 rulings (round 8)
+
+**R9-1. `landed` keeps root ids, and a new `landedHost` map is added (S1).** `splitCuesWithLanding` and `splitThenDropHidden` return two maps:
+- `landed`, of root ids, as today (`rekeyTakeHalves` relies on it);
+- `landedHost`, of host cue ids.
+
+`survivingLandings` reads `landedHost`. The D5 note names `splitRootId(host)` as G.
+
+**R9-2. The restore value is rounded, and the remap stays quiet (S2).**
+- R8-1's restore branch sets `at = round(newMap.toOutput(src), ms)`. For fc1, that makes `at` 14.015.
+- The remap emits no inert report, because `resolveSplitPoints` already reports inert splits on every run.
+- The take-split case is `{at: 37.412, src: 45.0}`.
+
+**R9-3. Test plumbing (S4).**
+- The shared `runTakePipeline` helper gains the `reconcileSplitAnchors` step.
+- The parity editor mirror gets produce's computed `takeClipStarts`.
+- `FE_SPLITS_B` stays as it is, and its expectations are updated for reconciliation.
+
+S3 (the complete file list) and S5 (literal expected cue lists, the three added cases, and the per-case path assertions) are plan-level detail. The plan carries them from `split-positions-review-r8.md`.
