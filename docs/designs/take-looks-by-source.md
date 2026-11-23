@@ -89,7 +89,7 @@ Steps 8 and 9 sit right after `applyOverrides(split, pinnedDoc.doc)` (`produce.t
 
 **Editor order (B8):**
 - **Old-clock pass.** `splitCues` → `applyOverrides` → `dropHiddenCues` → `applyTakeLooks(cues, looks, oldClockMap)` → `withStagePreviews`. With no old-clock map (no spans: an unrendered workdir), the editor cannot place looks. It shows takes without looks and refuses look edits (L4). A migrated doc always has a prior render, because produce migrated it while writing one (N4).
-- **`finishOnClock` main path.** `carveKeptTakes` → `splitCues` → `applyOverrides` → `applyTakeLooks(merged, looks, clockMap)` → `previewItemTimings` → `withStagePreviews`.
+- **`finishOnClock` main path.** `carveKeptTakes` → `splitCues` → `applyOverrides` → `applyTakeLooks(merged, looks, clockMap)` → `previewItemTimings` → `withStagePreviews`. (Since `split-positions-by-source.md` R8-5, 2026-11-24: `dropHiddenCues` runs between `previewItemTimings` and `withStagePreviews`, and the old-clock pass's `splitCues` resolves take splits at `toOutput(src)`.)
 - **`finishOnClock` early exit.** This includes a live cut with no transcript loaded (S6). The cues are the old-clock pass's, retimed, so each piece keeps the look it resolved on the old clock. Under a live cut, a piece that straddles the new seam may show a look the render would split differently; that is the same class as every live-cut preview today. The parity test compares old-clock and kept-block cases by output time, not live seams.
 
 `withStagePreviews` stays last, so a mid-drag preview shows over the look.
@@ -199,9 +199,11 @@ The range is `pieceSourceRanges(piece window, cueClock)`. With a null clock the 
 
 ### L5. Phase 1 after this
 
+> **Superseded in part by `split-positions-by-source.md` (D4, R7-4), 2026-11-24.** Step 7's `at` refresh is no longer kept: it is removed, and `reconcileSplitAnchors` does its job after every produce. The field-check lines below that expect `split 66055 moved to 58.467s on this cut` (run 1) and `moved to 56.467s` (run 2) now expect `split 66055 anchors reconciled (at 58.467s, source 66.055s)` on run 1 and no move note on run 2. Split 66055's `at` is still 58.467 after run 1 (now the reconciled value) and 56.467 after run 2 (now moved by the re-cut remap, within ±0.002).
+
 - **Kept:**
   - P0 `takeClipStarts`: same pieces in the editor and the render.
-  - Step 7's `at` refresh.
+  - Step 7's `at` refresh (superseded, see the note above).
   - `rekeyTakeHalves` steps 1–3 and 5–6, which re-key half entries for non-look fields such as `hidden`.
   - Step 4 (materialization) and the `addSplit` take copy, **for legacy docs only.** In produce, step 4 runs in the same run as the migration, just before it, so a moved legacy half keeps its framing into the migration. After migration both are skipped (gated on `doc.takeLooks === undefined`).
 - **Inert after migration:** the `ownFraming` reading in `effectiveOverride`/`applyOverrides`, because takes carry no look fields.
@@ -330,7 +332,7 @@ The range is `pieceSourceRanges(piece window, cueClock)`. With a null clock the 
      - the notes, exactly:
        - `split 66055 now owns its framing`
        - `edit for take-2@66055 re-keyed to take-3@66055 — its split now falls in take-3`
-       - `split 66055 moved to 58.467s on this cut`
+       - `split 66055 moved to 58.467s on this cut` (now `split 66055 anchors reconciled (at 58.467s, source 66.055s)`, in the same place; see L5's supersede note)
        - `moved the look of 2 take piece(s) onto source time`
      - no `left … look edit(s)` note;
      - `overrides.json` `takeLooks` has exactly 2 entries: `[20.752, 24.518] → {video: {scale 2.2, dx 814.4}}` and `[66.055, 68.353] → {video: {scale 2.2, dx -664.8}}`, ±1 ms;
@@ -405,7 +407,7 @@ These override the sections above where they differ.
   - has no cleanup step, since the copy is disposable.
 - **Probes:** source 20.8 and 66.1.
 - **Run 2 expects, in addition:**
-  - the note `split 66055 moved to 56.467s on this cut`;
+  - the note `split 66055 moved to 56.467s on this cut` (superseded: no note now, as the re-cut remap moves `at` silently; see L5);
   - `at: 56.467`;
   - `takeLooks` byte-equal to run 1.
 

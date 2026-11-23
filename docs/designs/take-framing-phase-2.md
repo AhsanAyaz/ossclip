@@ -158,5 +158,5 @@ Signature: `rekeyRootTakes(doc, prior: Record<string, Span> | null, current: Rec
 ## Deferred, for the author (analysis in the phase 2 review reports)
 
 - **Graphic splits render at a stale `at` after a cut in front.** Produce's first pass uses `atSplitPoints`. The fix changes output for inert, src-only and graphic-window splits (r1 B2).
-- **Editor parity for skipped and inert splits.** Read-time resolution in the editor is recommended (r1 S1), and it would replace phase 1's step 7.
+- **Editor parity for skipped and inert splits.** Read-time resolution in the editor is recommended (r1 S1), and it would replace phase 1's step 7. (Done another way by `split-positions-by-source.md`, 2026-11-24: the editor resolves take splits at `toOutput(src)` on the old clock, and step 7 is replaced by `reconcileSplitAnchors`.)
 - **Graphic halves owning their framing.** There is no field case; the cheapest route is r1 B7.

@@ -888,9 +888,10 @@ export const OverrideDocSchema = z.object({
    * cut-review rework (2026-08-26) `src` — SOURCE seconds — is the
    * authoritative anchor when present (recut-immune, the `cleanup.kept`
    * trick; see SplitSchema for the three shapes and the editor-may-write-src
-   * divergence). `at` is the old-clock output second: authoritative only on
-   * src-less legacy entries, where it still moves under
-   * `remapOverridesThroughRecut`. `id` is minted once when the split is
+   * divergence). `at` is the output second on the last render's clock,
+   * moved through every re-cut by `remapOverridesThroughRecut`: the anchor
+   * a graphic split cuts at, and the only one a src-less legacy entry has
+   * (split-positions-by-source D1, D2). `id` is minted once when the split is
    * created and NEVER recomputed (§137). The split half is named
    * `${rootId}@${id}`, so re-anchoring cannot rename the half out from under
    * a `hidden` (or any other) override on it — the bug that resurrected a

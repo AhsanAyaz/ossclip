@@ -112,6 +112,8 @@ Out of scope: graphic splits (overrides apply before their split, `produce.ts:54
    - Note: `edit for take-2@66055 parked — take-3@66055 already has its own edit`.
    - If that park slot is already held, the entry stays where it is, as an orphan that `applyOverrides` reports (today's posture). Note: `edit for take-2@66055 left as an orphan — its park slot is taken`. This one does not set `changed`.
 
+> **Superseded by `split-positions-by-source.md` (D4, R7-4, R8-3), 2026-11-24.** Step 7 is removed and `rekeyTakeHalves` lost its `points` and `graphicWindows` parameters. `remapOverridesThroughRecut` now moves every split's `at` through each re-cut (D1, R8-1), and `reconcileSplitAnchors`, called right after `rekeyTakeHalves`, writes a pass-2 landing's `at` onto its cut with this step's graphic-window guard, and a pass-1 survivor's `src` onto its `at`. Its note is `split 66055 anchors reconciled (at 58.467s, source 66.055s)`, not the `moved to` line below. The step is kept below as the record of the guard's reasoning.
+
 7. **Refresh `at` (take splits only, R5-B1).** For this landed split:
    - **Condition:** it has both `at` and `src`; neither the stored `at` nor `resolvedAt` lies in any `graphicWindows` window (closed interval); and `round(resolvedAt, ms) !== at`.
    - **Write:** `at = round(resolvedAt, ms)`.
