@@ -65,9 +65,10 @@ export function migrateTakeLooks(
   // time on one map, so no write competes with another (S3).
   let takeLooks: TakeLookEntry[] = [];
   let moved = 0;
-  // Every key some current piece resolves through: its own and its root's
-  // (a half inherits from its root, N2). These are the keys the strip
-  // empties — anything else names no piece this run.
+  // Every key some current piece resolves through — its own and its root's
+  // (a half inherits from its root, N2) — once that piece's look has a home
+  // on source time. These are the keys the strip empties; anything else is
+  // left as it is and, if it holds a look, named in the note.
   const resolvedThrough = new Set<string>();
   for (const piece of cues) {
     if (piece.kind !== "plain" || !isLookPieceKey(piece.id)) continue;
