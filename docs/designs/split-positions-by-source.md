@@ -1,6 +1,6 @@
 # Each split cuts once, in one place
 
-Status: draft 6. This is a rewrite: it replaces drafts 1–5, which took the exact-preservation route; their reviews are `~/ossclip-work/egm-short/split-positions-review-r1.md`…`r5.md`.
+Status: draft 7 (round 6 review: `split-positions-review-r6.md`). The "Draft 7 rulings" section at the end overrides earlier text where they differ. Draft 6 was a rewrite that replaced drafts 1–5, which took the exact-preservation route; their reviews are `~/ossclip-work/egm-short/split-positions-review-r1.md`…`r5.md`.
 
 On 2026-11-23 the author chose the simpler route and accepted a one-time change for splits that had already drifted. This can ship as a major update, and full backward compatibility is not required. Telemetry backs that up: in the last 30 days, about 12 installs outside the author's own ran `produce`.
 
@@ -110,3 +110,82 @@ One task, then the field check.
   - tests: those named above, plus the `rekeyTakeHalves` call sites in tests and fixtures;
   - docs: the two supersede notes.
 - **Release:** ships as the next minor or major bump, with a release note for the one-time change.
+
+## Draft 7 rulings (round 6)
+
+**R7-1. The D5 note uses a dry-run helper (B1).**
+- `doubleCutNotes(splits, pass1Landed, pass2Input, map): string[]` is a pure core helper.
+- It dry-runs `splitCuesWithLanding(pass2Input, resolveSplitPoints(pass1-landed splits, map).points)`. For each landing whose point differs from the pass-1 point by more than 0.3 s, it notes `split ${id} cuts only ${G} now (it used to cut ${H} too)`, where `H` is the cue it would have landed on, of any kind.
+- For fc2, the note is exactly `split fc2 cuts only shot-s1 now (it used to cut shot-s1 too)`.
+- The Problem section now also states that today's code makes two cues both named `shot-s1@fc2`.
+
+**R7-2. A landing counts only if one of its pieces survives (B2).** In both produce and the editor, the pass-1 landing set is filtered after the hidden drop and the overlap drop. A split stays "landed" only if `root` or `root@sid` is still in the shown list. Otherwise it goes to pass 2.
+
+**R7-3. Splits in removed material (B3).**
+- `remapOverridesThroughRecut` leaves `at` UNCHANGED for a split whose `src` is in removed material on the new map. The split is skipped in BOTH passes for that run: it is inert, with the existing inert report and no snap report.
+- When the material is restored, the split comes back at `toOutput(src)`, and R7-4 then reconciles `at`.
+- Tests cover a cut over a graphic split's `src` followed by a restore, and the same for a take split.
+
+**R7-4. The two anchors are reconciled on every produce (S3).** This replaces D4's "goes away".
+- After both passes, for every split that landed and survived:
+  - a pass-1 split (graphic) gets `src = round(map.toSource(at), ms)` if it differs by more than 1 ms;
+  - a pass-2 split (take) gets `at = round(resolvedPoint, ms)` if it differs by more than 1 ms.
+- A split that landed nowhere is left as it is.
+- **Write gate:** a new reason, `splitsReconciled`, with the phrase `split anchors reconciled to where they cut`. `refreshBackup` stays as it is.
+- **Consequences:**
+  - after one run, the D5 note never repeats, and no stale anchor lingers;
+  - step 7 of `rekeyTakeHalves` is removed, because this pass subsumes it;
+  - existing drift is repaired once: graphics keep their rendered position, and take splits sit on their footage.
+- It is a pure core function: `reconcileSplitAnchors(doc, pass1Landed, pass2Points, map): { doc, notes, changed }`. It is called after `rekeyTakeHalves`, before `migrateTakeLooks`.
+
+**R7-5. Wording fixes (S1, S2, S4).**
+- **S1.** The editor does not call `remapOverridesThroughRecut`. Its live preview moves cues through `retimeForPreview`. The editor reads `at` as written by the last produce, which is enough for parity on the old clock.
+- **S2.** On a merged take piece, the look with the larger overlap shows (`take-looks.ts`). This is declared as part of the accepted one-time change.
+- **S4.** `{at, src}` splits now get `remapPoint`'s "too close" report and, when the remap moves them onto a seam, the "snapped" report.
+
+**R7-6. Editor details (S5, S6).**
+- **Post-carve set:** src-only splits, plus splits whose `src` is in the carved ranges, minus the graphic-pass landings.
+- **Containment:** closed, `srcIn ≤ src ≤ srcOut`.
+- **`dropHiddenCues`** in `finishOnClock` goes after the look pass and before `previewItemTimings`.
+- **Early-exit condition:** uses the same post-carve set.
+- **No `oldClockMap`:** `atSplitPoints` for all splits, as today.
+- **20752:** in FE Loop its `src` lies inside `cleanup.kept`, so the editor handles it in the post-carve path. There it is margin-skipped against the carved block, the same as in produce. The parity case uses that shape.
+
+**R7-7. Declared live-recut gaps (S7).** During a live cut that has not been rendered yet, two cases preview on the old clock and settle on the next render:
+- a user cut removed live;
+- a live cut over a split's `src`.
+
+**R7-8. Tests (S8, S9).**
+- **Pipeline harness** (`split-positions-pipeline.test.ts`):
+  - flow: `applyOverrides`, then pass 1 with landing, the survival filter, fill with the fixture's `TAKE_CLIP_STARTS`, carve, pass 2 over the non-landed splits, `doubleCutNotes`, then `reconcileSplitAnchors`;
+  - after the cut, it uses the map with `src [2, 4]` removed, where every `outIn` after source 4.0 drops by 2.000 and `shot-s1` becomes [8.085, 15.950];
+  - it asserts the full cue lists.
+- **Parity mirror:** uses `editorTakeClipStarts` with the fixture's `takeClipStarts`, so take ids match. The comparator compares the full sorted `(id, start, end)` list, rounded to the millisecond.
+
+**R7-9. Build list (S10).**
+- **Tests to invert or delete:**
+  - the `recut.test.ts` case asserting that `{at, src}` splits pass through unchanged (about lines 847–871);
+  - step 7's tests in `take-halves.test.ts` and the pipeline tests (11b, 11d, 11e, the "moved to 58.467s" assertion).
+- **New signatures:** `splitThenDropHidden` gains `landed`; plus `doubleCutNotes` and `reconcileSplitAnchors`.
+- **Source guards** (`apps/cli/test/scene-edit-remap.test.ts`):
+  - `resolveSplitPoints(` over `notLandedInPass1`;
+  - `reconcileSplitAnchors(` after `rekeyTakeHalves(`;
+  - `splitsReconciled` in the write gate.
+- **Comments:** every comment that claims `{at, src}` splits are not remapped is rewritten. That covers `recut.ts`, `SplitSchema`, `atSplitPoints`/`resolveSplitPoints`, and produce's pass comments.
+
+**R7-10. Field check (S11).** It is a script, `~/ossclip-work/fe-loop/splits-field-check.sh`, with a python checker that exits 1 on any failure.
+1. **Copy:** copy the workdir and repoint it, as in `looks-field-check.sh`.
+2. **Add two splits** to `overrides.json` `splits`: `{"at": 14.015, "src": 16.5, "id": "fc1"}` and `{"at": 16.0, "src": 14.0, "id": "fc2"}`.
+3. **Run 1 (`--no-render`).** Expect:
+   - `shot-s1` [10.085, 14.015], `shot-s1@fc1` [14.015, 16.000], and exactly one `shot-s1@fc2`, at [16.000, 17.950];
+   - the R7-1 note for fc2;
+   - fc2's `src` reconciled to 18.485.
+4. **Run 2, no edit.** Same cues, and no `cuts only` or `reconciled` notes.
+5. **Run 3,** with the cut `{"startSec": 0, "endSec": 0, "src": {"startSec": 2.0, "endSec": 4.0}}` added. Expect:
+   - fc1 `at` 12.015 and fc2 `at` 14.000 (±0.002);
+   - the cues are at those positions.
+6. **Editor.** Run `pnpm build`, then start the editor on the copy at port 5182. In headless Chromium, read the `[data-testid^="timeline-block-"]` ids and their `data-piece-start`. They must equal render-props `sceneCues` within 0.001, with no `@20752` block.
+
+**R7-11. Minor wording.**
+- Release: this ships as a MAJOR update (0.2.0), with a release note.
+- "Phase 1" means `take-framing-identity.md`.
