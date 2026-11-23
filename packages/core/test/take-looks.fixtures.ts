@@ -8,7 +8,7 @@ import {
 } from "../src/overrides";
 import { fillPlainCues } from "../src/fill";
 import { carveKeptTakes, type KeptRange } from "../src/kept-takes";
-import { rekeyTakeHalves, type TakeRekeyResult } from "../src/take-halves";
+import { reconcileSplitAnchors, rekeyTakeHalves, type TakeRekeyResult } from "../src/take-halves";
 import { applyTakeLooks } from "../src/take-looks";
 import { migrateTakeLooks } from "../src/take-looks-migrate";
 import { TimeMap, mapFromKeptSpans, type KeptSpan } from "../src/timemap";
@@ -60,8 +60,10 @@ export const FE_SPLITS_A = [
   { src: 176.577, id: "176577" },
 ];
 
-/** Fixture (b): the same splits after phase 1 ran once — `66055` flagged
- * and its `at` refreshed onto this clock. */
+/** Fixture (b): the same splits after one upgraded run — `66055` flagged
+ * by phase 1, and its `at` on this clock. Phase 1's step 7 wrote that
+ * 58.467 once; `reconcileSplitAnchors` now does (split-positions-by-source
+ * R7-4, R9-3), so the fixture is the same value with a new writer. */
 export const FE_SPLITS_B = FE_SPLITS_A.map((s) =>
   s.id === "66055" ? { ...s, at: 58.467, ownFraming: true } : s,
 );
@@ -108,6 +110,8 @@ export interface PipelineRun {
   /** The cues `resolveItemTimings` receives: looked when migrated. */
   cues: SceneCue[];
   rekey: TakeRekeyResult;
+  /** `reconcileSplitAnchors`, run right after the re-key as produce does. */
+  reconcile: TakeRekeyResult;
   migration: ReturnType<typeof migrateTakeLooks>;
   /** The doc produce writes back. */
   doc: OverrideDoc;
@@ -116,9 +120,13 @@ export interface PipelineRun {
 /**
  * Produce's take steps, in produce's order (take-looks-by-source L2 "Produce
  * order", L3 "Where"): fill → carve → `resolveSplitPoints` →
- * `splitCuesWithLanding` → `rekeyTakeHalves` → the second `applyOverrides`
- * (on the src-pinned doc) → `migrateTakeLooks` → the gated
- * `applyTakeLooks`.
+ * `splitCuesWithLanding` → `rekeyTakeHalves` → `reconcileSplitAnchors`
+ * (split-positions-by-source R9-3) → the second `applyOverrides` (on the
+ * src-pinned doc) → `migrateTakeLooks` → the gated `applyTakeLooks`.
+ *
+ * The graphic pass is not modelled: `graphics` arrive unsplit and no split
+ * here lands on one, so every split is a pass-2 split and the pass-1
+ * survivor set is empty. `split-positions-pipeline.test.ts` runs both.
  */
 export function runTakePipeline(
   doc: OverrideDoc,
@@ -137,17 +145,20 @@ export function runTakePipeline(
   const { cues: filled } = carveKeptTakes(filled0, kept, map);
   const resolved = resolveSplitPoints(doc.splits, map);
   const { cues: split, landed } = splitCuesWithLanding(filled, resolved.points);
-  const rekey = rekeyTakeHalves(
-    doc,
+  const rekey = rekeyTakeHalves(doc, landed);
+  const reconcile = reconcileSplitAnchors(
+    rekey.doc,
+    new Set(),
     landed,
     resolved.points,
     graphics.map((g) => ({ startSec: g.startSec, endSec: g.endSec })),
+    map,
   );
-  const { cues: overridden } = applyOverrides(split, resolveSrcTimingPins(rekey.doc, map).doc);
-  const migration = migrateTakeLooks(rekey.doc, overridden, map, ownFramingSplitIds(rekey.doc.splits));
+  const { cues: overridden } = applyOverrides(split, resolveSrcTimingPins(reconcile.doc, map).doc);
+  const migration = migrateTakeLooks(reconcile.doc, overridden, map, ownFramingSplitIds(reconcile.doc.splits));
   const looks = migration.doc.takeLooks;
   const cues = looks !== undefined ? applyTakeLooks(overridden, looks, map) : overridden;
-  return { overridden, cues, rekey, migration, doc: migration.doc };
+  return { overridden, cues, rekey, reconcile, migration, doc: migration.doc };
 }
 
 /** The plain cue playing source second `src` on `map`. */

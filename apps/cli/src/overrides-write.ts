@@ -76,6 +76,9 @@ export interface OverridesWriteReasons {
   splitSrcResolved: boolean;
   splitHalvesChanged: boolean;
   takeLooksMigrated: boolean;
+  /** `reconcileSplitAnchors` wrote a split's idle anchor onto where it cut
+   * (split-positions-by-source R7-4, R8-3). */
+  splitsReconciled: boolean;
 }
 
 /** What each non-cut reason did, in the order the gate lists them. */
@@ -86,6 +89,8 @@ const REASON_PHRASES: ReadonlyArray<[Exclude<keyof OverridesWriteReasons, "cutCh
   ["splitSrcResolved", "split source anchors recorded"],
   ["splitHalvesChanged", "take halves re-keyed to their splits"],
   ["takeLooksMigrated", "take looks moved onto source time"],
+  // Last, as the gate lists it last.
+  ["splitsReconciled", "split anchors reconciled to where they cut"],
 ];
 
 /**

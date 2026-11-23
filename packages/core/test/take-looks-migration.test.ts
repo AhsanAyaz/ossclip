@@ -108,12 +108,22 @@ describe("migrateTakeLooks (take-looks-by-source L3)", () => {
     });
   }
 
-  it("1 (a): phase 1's notes come first, exactly as the field check expects", () => {
-    expect(run(fixtureA()).rekey.notes).toEqual([
+  it("1 (a): phase 1's notes come first, then the reconcile's, exactly as the field check expects", () => {
+    const r = run(fixtureA());
+    // Step 7's "moved to 58.467s" is gone (split-positions-by-source D4);
+    // `reconcileSplitAnchors` writes the same 58.467 and says so (R8-7).
+    expect(r.rekey.notes).toEqual([
       "split 66055 now owns its framing",
       "edit for take-2@66055 re-keyed to take-3@66055 — its split now falls in take-3",
-      "split 66055 moved to 58.467s on this cut",
     ]);
+    expect(r.reconcile.notes).toEqual(["split 66055 anchors reconciled (at 58.467s, source 66.055s)"]);
+    expect(r.doc.splits.find((s) => s.id === "66055")?.at).toBe(58.467);
+  });
+
+  it("1 (b): FE_SPLITS_B already holds the reconciled 58.467, so nothing is reconciled (R9-3)", () => {
+    const r = run(fixtureB());
+    expect(r.reconcile.changed).toBe(false);
+    expect(r.reconcile.notes).toEqual([]);
   });
 
   it("R6-7: a flagged half inheriting captionY gets it in its look, beside its own framing", () => {

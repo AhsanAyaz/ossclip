@@ -30,6 +30,7 @@ import {
   isPlainTakeKey,
   parkedOverrideBaseKey,
   rekeyTakeHalves,
+  reconcileSplitAnchors,
   migrateTakeLooks,
   ownFramingSplitIds,
   remapSceneOverrides,
@@ -72,6 +73,9 @@ import {
   detectSilences,
   dropHiddenCues,
   splitThenDropHidden,
+  pass1SplitPoints,
+  survivingLandings,
+  doubleCutNotes,
   emptyOverrideDoc,
   type OverrideDoc,
   extractAudio,
@@ -5143,9 +5147,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // (remapped when the frames differed), so `map.toSource(at)` is exact.
   // Gated on `priorMap` like the cuts resolution: with no prior render-props
   // the frame `at` was drawn against is unknowable, and a guessed src would
-  // be a wrong anchor forever. `at` stays verbatim HERE — the old-clock
-  // record, per SplitSchema; the one pass that rewrites it is
-  // `rekeyTakeHalves` step 7 below, for a landed take split only.
+  // be a wrong anchor forever. `at` stays verbatim HERE: `applyUserCuts`
+  // has already moved it onto this clock (split-positions-by-source D1), and
+  // the one pass that rewrites it afterwards is `reconcileSplitAnchors`
+  // below, onto where its split actually cut (R7-4).
   let splitSrcResolved = false;
   if (priorMap !== null) {
     const withSrc = overrideDoc.splits.map((s) => {
@@ -5500,7 +5505,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // whole pre-split window — both the half it names and the half a stored
   // split (R16 §61) had already carved off — before that split ever got a
   // chance to separate them (PLAN 2026-08-04 Task 1, bug 3).
-  const { cues: shownCues, hidden: hiddenIds } = splitThenDropHidden(editedCues, overrideDoc);
+  // Pass 1 of two (split-positions-by-source D2): the graphic pass, at each
+  // split's `at` on this clock, minus the inert ones (`pass1SplitPoints`,
+  // R8-2). Where each landed (`landedHost`) decides, after the overlap drop
+  // below, which splits pass 2 never sees.
+  const {
+    cues: shownCues,
+    hidden: hiddenIds,
+    landedHost: pass1LandedHost,
+  } = splitThenDropHidden(editedCues, overrideDoc, pass1SplitPoints(overrideDoc.splits, map));
   if (hiddenIds.length > 0) {
     console.log(`▸ ${hiddenIds.length} scene(s) hidden by the edit layer: ${hiddenIds.join(", ")}`);
   }
@@ -5519,6 +5532,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (!addedSceneIssues.some((i) => i.id === id)) addedSceneIssues.push({ id, reason: d.reason });
     console.log(`  ⚠ added graphic ${id} not shown: ${d.reason}`);
   }
+  // A graphic landing counts only while a piece it cut is still shown —
+  // after BOTH drops (split-positions-by-source R7-2, R8-4). A split whose
+  // graphic halves are all hidden, or dropped for overlap, made nothing
+  // anyone sees, so it goes to pass 2 and cuts the take under them.
+  const pass1Surviving = survivingLandings(pass1LandedHost, visibleCues);
   // Config theme as the BASE (F6): overrides.json > config theme >
   // defaultTheme. The same `configBaseTheme` feeds props.baseTheme below.
   const theme = resolveTheme(configBaseTheme, overrideDoc);
@@ -5576,43 +5594,64 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   for (const r of carveReports) console.log(`  ⚠ ${r}`);
   // User splits (R16 §61) — after the fill so takes split like scenes, and
   // before the final override pass so edits on the `id@<split id>` halves land
-  // (the suffix is the split's own minted id, §137, not its time). A
-  // split whose ROOT was a graphic scene already happened once inside
-  // `splitThenDropHidden` above (PLAN 2026-08-04 Task 1) — re-running it here
-  // is a no-op for that scene (the split point sits exactly on the joint
-  // between the two halves, matching neither), so this call stays the one
-  // that actually cuts TAKE ids, which don't exist until the fill just ran.
-  // Resolved onto THIS run's clock: `src` (the recut-immune anchor) wins,
-  // src-less legacy entries pass their re-anchored `at` through, and a src
-  // sitting in removed material is inert with a report (resolveSplitPoints'
-  // doc owns the posture).
-  const resolvedSplits = resolveSplitPoints(overrideDoc.splits, map);
+  // (the suffix is the split's own minted id, §137, not its time).
+  // Pass 2 of two (split-positions-by-source D2): every split that did NOT
+  // land in the graphic pass above, and only those. A graphic landing is
+  // never cut again — before this, a split whose `at` and `src` had drifted
+  // apart cut its graphic at `at` and then a second time here at
+  // `toOutput(src)`, minting two cues of one name. Resolved onto THIS run's
+  // clock: `src` (the recut-immune anchor) wins, src-less legacy entries
+  // pass their re-anchored `at` through, and a src sitting in removed
+  // material is inert with a report (resolveSplitPoints' doc owns the
+  // posture). This call is the one that cuts TAKE ids, which don't exist
+  // until the fill just ran.
+  const notLandedInPass1 = overrideDoc.splits.filter((s) => !pass1Surviving.has(s.id));
+  const resolvedSplits = resolveSplitPoints(notLandedInPass1, map);
   for (const r of resolvedSplits.reports) console.log(`  ⚠ ${r}`);
   // `splitLanded`, not the spec's `landed`: this function already binds
   // `landed` further down (the transcript repairs that applied).
   const { cues: split, landed: splitLanded } = splitCuesWithLanding(filled, resolvedSplits.points);
+  // The one-time change, named (D5, R7-1): a graphic split that pass 2
+  // would ALSO have cut, somewhere else, before this design. Dry-run over
+  // the same `filled` list pass 2 just cut; silent once the reconcile below
+  // has written `src` onto `at`.
+  for (const n of doubleCutNotes(overrideDoc.splits, pass1Surviving, pass1LandedHost, filled, map)) {
+    console.log(`  ▸ ${n}`);
+  }
   // Take halves re-keyed by where their split LANDED (take-framing-identity
   // P2): a cut in front renumbers the root, so the half above may carry a
   // different root than its edit's key — the FE Loop half rendered as
   // `take-3@66055` while its framing sat orphaned on `take-2@66055`. Legacy
-  // take splits migrate to own framing here, and a landed take split's
-  // `at` is refreshed to this clock (R5-B1). The graphic windows are pass
-  // 1's, BEFORE hidden ones drop — the list `splitThenDropHidden` received —
-  // so no refreshed `at` moves into or out of any graphic (R6-B1, R7-B1).
+  // take splits migrate to own framing here.
   //
   // This late position is safe: pass 1's `remapSceneOverrides` reads only
   // anchored graphic cues, and the first `applyOverrides` and
   // `splitThenDropHidden` run on graphic cues, where a plain-take key
   // matches nothing — so nothing above read the keys this moves.
-  const takeRekey = rekeyTakeHalves(
-    overrideDoc,
-    splitLanded,
-    resolvedSplits.points,
-    editedCues.map((c) => ({ startSec: c.startSec, endSec: c.endSec })),
-  );
+  const takeRekey = rekeyTakeHalves(overrideDoc, splitLanded);
   for (const n of takeRekey.notes) console.log(`  ▸ ${n}`);
   overrideDoc = takeRekey.doc;
   const splitHalvesChanged = takeRekey.changed;
+  // Each split's idle anchor written onto the one that cut
+  // (split-positions-by-source R7-4, R8-3): a graphic landing's `src` onto
+  // its `at`, a take landing's `at` onto its cut. This subsumes phase 1's
+  // step 7 (D4). The graphic windows are pass 1's, BEFORE hidden ones drop —
+  // the list `splitThenDropHidden` received — so no `at` is written into or
+  // out of any graphic (R6-B1, R7-B1). `splitLanded` is pass 2's landing,
+  // taken before the final hidden drop below (R7 S1). After the re-key, so
+  // its doc is the one reconciled; before `migrateTakeLooks` and the
+  // `pinnedDoc` rebuild, which then read the final splits.
+  const splitReconcile = reconcileSplitAnchors(
+    overrideDoc,
+    pass1Surviving,
+    splitLanded,
+    resolvedSplits.points,
+    editedCues.map((c) => ({ startSec: c.startSec, endSec: c.endSec })),
+    map,
+  );
+  for (const n of splitReconcile.notes) console.log(`  ▸ ${n}`);
+  overrideDoc = splitReconcile.doc;
+  const splitsReconciled = splitReconcile.changed;
   // Rebuilt from the re-keyed doc so the final override pass below joins on
   // the new keys (`resolveItemTimings` and `dropHiddenCues` read
   // `overrideDoc`, reassigned just above). Its reports already printed: the
@@ -7528,9 +7567,9 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
   // — backfilling adds an anchor, it rewrites no value a user would need to
   // recover.
   // `splitHalvesChanged` joins for the same reason (take-framing-identity
-  // P2): a re-keyed, parked or migrated take half and a refreshed split
-  // `at` are right in memory and wrong on disk. It does NOT spend the
-  // `.bak` — the move rewrites keys and copies framing, nothing to recover.
+  // P2): a re-keyed, parked or migrated take half is right in memory and
+  // wrong on disk. It does NOT spend the `.bak` — the move rewrites keys
+  // and copies framing, nothing to recover.
   // `takeLooksMigrated` joins for the same reason (take-looks-by-source L3,
   // S5): the looks on source time and the stripped take keys are right in
   // memory and wrong on disk, and the marker must reach disk or every run
@@ -7538,6 +7577,14 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
   // It does NOT spend the `.bak` (L3 "Rollback limit", the existing
   // posture): the move changes where the looks are stored, not what any
   // piece shows, and the `.bak` stays the pre-cut save it exists to be.
+  // `splitsReconciled` joins for the same reason (split-positions-by-source
+  // R7-4, R8-3): an anchor written onto where its split cut is right in
+  // memory and wrong on disk, and the D5 note would repeat every run until
+  // it lands. It does NOT spend the `.bak` (`refreshBackup` unchanged,
+  // R7-4): the value it replaces is the stale anchor the run just named,
+  // printed with its new one. When the same run also changed the cut, the
+  // refresh copies the file from BEFORE this run, so the drifted original
+  // is in the `.bak` then (r8 m24).
   if (
     cutResult.changed ||
     captionKeysReanchored ||
@@ -7545,7 +7592,8 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
     sceneKeysRemapped ||
     splitSrcResolved ||
     splitHalvesChanged ||
-    takeLooksMigrated
+    takeLooksMigrated ||
+    splitsReconciled
   ) {
     await writeOverrideDoc(overridesPath, overrideDoc, { refreshBackup: cutResult.changed });
     // Every gate operand, so the line names why this run wrote (take-looks-
@@ -7559,6 +7607,7 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
         splitSrcResolved,
         splitHalvesChanged,
         takeLooksMigrated,
+        splitsReconciled,
       }),
     );
   }

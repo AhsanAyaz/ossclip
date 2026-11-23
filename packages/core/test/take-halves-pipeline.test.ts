@@ -5,13 +5,14 @@ import {
   splitCuesWithLanding,
   type ResolvedSplitPoint,
 } from "../src/overrides";
-import { rekeyTakeHalves } from "../src/take-halves";
+import { reconcileSplitAnchors, rekeyTakeHalves } from "../src/take-halves";
 import { fillPlainCues } from "../src/fill";
+import { feMap } from "./take-looks.fixtures";
 
 /**
  * Test 27 (take-framing-identity): the FE Loop short as produce runs it —
  * `fillPlainCues` → `splitCuesWithLanding` → `rekeyTakeHalves` →
- * `applyOverrides`. Every value is inline: the clip starts are the field
+ * `reconcileSplitAnchors` → `applyOverrides`. Every value is inline: the clip starts are the field
  * workdir's span boundaries (not half starts), and the resolved point is
  * where `src` 66.055 lands on that render's clock. The edit was keyed
  * `take-2@66055` on an older clock; on this one the split falls in take-3,
@@ -33,8 +34,11 @@ describe("FE Loop through produce's pipeline (take-framing-identity test 27)", (
     clipStarts: [0, 8.21438, 17.94988, 21.71588, 60.76448],
   });
   const { cues: split, landed } = splitCuesWithLanding(filled, points);
-  const rekey = rekeyTakeHalves(doc, landed, points, []);
-  const { cues, orphans } = applyOverrides(split, rekey.doc);
+  const rekey = rekeyTakeHalves(doc, landed);
+  // The `at` the old step 7 refreshed is now the reconcile's to write
+  // (split-positions-by-source D4, R7-4).
+  const reconcile = reconcileSplitAnchors(rekey.doc, new Set(), landed, points, [], feMap());
+  const { cues, orphans } = applyOverrides(split, reconcile.doc);
   const byId = (id: string) => cues.find((c) => c.id === id);
 
   it("the half renders as take-3@66055 with the framing the author gave it", () => {
@@ -50,9 +54,11 @@ describe("FE Loop through produce's pipeline (take-framing-identity test 27)", (
     expect(orphans).toEqual([]);
   });
 
-  it("the split is migrated to own framing and its `at` speaks this render's clock", () => {
-    const s = rekey.doc.splits.find((x) => x.id === "66055");
+  it("the split is migrated to own framing, and reconciled so its `at` speaks this render's clock", () => {
+    expect(rekey.doc.splits.find((x) => x.id === "66055")?.at).toBe(58.784);
+    const s = reconcile.doc.splits.find((x) => x.id === "66055");
     expect(s?.ownFraming).toBe(true);
     expect(s?.at).toBe(58.467);
+    expect(reconcile.notes).toEqual(["split 66055 anchors reconciled (at 58.467s, source 66.055s)"]);
   });
 });

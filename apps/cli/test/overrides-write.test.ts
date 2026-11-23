@@ -116,6 +116,7 @@ describe("overridesWriteLine", () => {
     splitSrcResolved: false,
     splitHalvesChanged: false,
     takeLooksMigrated: false,
+    splitsReconciled: false,
   };
   const cut = { ...none, cutChanged: true };
   const captions = { ...none, captionKeysReanchored: true };
@@ -141,6 +142,16 @@ describe("overridesWriteLine", () => {
     expect(line).not.toContain("caption");
     expect(line).not.toContain("new cut");
     expect(line).toContain("left alone");
+  });
+
+  it("a reconcile-only write names the split anchors (split-positions-by-source R8-3)", () => {
+    // The run after the upgrade: the drifted split's `src` was written onto
+    // its `at`, and nothing else moved.
+    const line = overridesWriteLine({ ...none, splitsReconciled: true });
+    expect(line).toBe(
+      "▸ overrides.json saved — split anchors reconciled to where they cut " +
+        "(overrides.json.bak left alone — it may be an older, pre-cut copy worth more than this one)",
+    );
   });
 
   it("lists every reason that fired, the cut's .bak claim first", () => {

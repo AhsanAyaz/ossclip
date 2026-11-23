@@ -8,6 +8,7 @@ import {
   type SceneOverride,
   type Split,
 } from "./overrides";
+import type { TimeMap } from "./timemap";
 
 /**
  * Take halves keyed by where their split LANDED (take-framing-identity P2).
@@ -18,15 +19,20 @@ import {
  * root than the one its edit was keyed to — the FE Loop short (2026-11-22):
  * `take-2@66055`'s split resolves inside take-3, the half renders as
  * `take-3@66055` unframed, and the edit orphans. This pass moves the edit
- * onto the key the render actually has, migrates a legacy split (no
- * `ownFraming`) to own its framing without changing what it shows, and
- * refreshes a landed take split's `at` so the editor previews it where the
- * render put it (R5-B1).
+ * onto the key the render actually has, and migrates a legacy split (no
+ * `ownFraming`) to own its framing without changing what it shows.
+ *
+ * Its step 7 (refresh a landed take split's `at`, R5-B1) is gone
+ * (split-positions-by-source D4): `remapOverridesThroughRecut` now moves
+ * every `at` through each re-cut, and `reconcileSplitAnchors` below, run
+ * right after this, writes a landed take split's `at` onto its cut with
+ * step 7's graphic-window guard — and a graphic split's `src` onto its
+ * `at`, which step 7 never reached.
  */
 
 export interface TakeRekeyResult {
   doc: OverrideDoc;
-  /** Human sentences for produce to print, one per migration, move, park or refresh. */
+  /** Human sentences for produce to print, one per migration, move or park. */
   notes: string[];
   /** Set by WRITES, never by a deep compare (take-framing-identity "`changed`"):
    * a flag-only migration counts, a left-in-place orphan does not. */
@@ -64,16 +70,14 @@ const inAnyWindow = (t: number, windows: ReadonlyArray<{ startSec: number; endSe
   windows.some((w) => t >= w.startSec && t <= w.endSec);
 
 /**
- * Re-key every plain take half to the root its split landed in, migrate
- * legacy take splits to own framing, and refresh a landed take split's `at`
- * (take-framing-identity P2 steps 1–7).
+ * Re-key every plain take half to the root its split landed in, and migrate
+ * legacy take splits to own framing (take-framing-identity P2 steps 1–6;
+ * step 7 moved to `reconcileSplitAnchors`, split-positions-by-source D4).
  *
- * `landed` is `splitCuesWithLanding`'s map for THIS run; `points` the
- * resolved split points it consumed; `graphicWindows` the windows of
- * produce's pass-1 graphic cues BEFORE hidden ones drop (step 7). Only
- * landings on a plain take are handled: graphic halves have their overrides
- * applied before their split, and `take-kept-*` pieces are a different
- * ordinal space.
+ * `landed` is pass 2's `splitCuesWithLanding` map for THIS run — root ids,
+ * never host ids (R9-1). Only landings on a plain take are handled: graphic
+ * halves have their overrides applied before their split, and
+ * `take-kept-*` pieces are a different ordinal space.
  *
  * Every choice is made from the INPUT doc before anything is written
  * (R4-B3), so the order splits are visited in cannot change who wins.
@@ -83,12 +87,7 @@ const inAnyWindow = (t: number, windows: ReadonlyArray<{ startSec: number; endSe
  * `remapSceneOverrides` drops its quiet orphans, because the collision is
  * actionable and the orphan report keeps telling the author.
  */
-export function rekeyTakeHalves(
-  doc: OverrideDoc,
-  landed: ReadonlyMap<string, string>,
-  points: readonly ResolvedSplitPoint[],
-  graphicWindows: ReadonlyArray<{ startSec: number; endSec: number }>,
-): TakeRekeyResult {
+export function rekeyTakeHalves(doc: OverrideDoc, landed: ReadonlyMap<string, string>): TakeRekeyResult {
   const input = doc.scenes;
   const scenes: Record<string, SceneOverride> = { ...input };
   const splits: Split[] = [...doc.splits];
@@ -171,29 +170,83 @@ export function rekeyTakeHalves(
       notes.push(`edit for ${k} parked — ${target} already has its own edit`);
       changed = true;
     }
-
-    // Step 7: refresh `at` onto the clock this render split on (R5-B1), so
-    // the editor — which splits `{at, src}` splits at `at` — puts the piece
-    // where the render did and shows the edit just moved to `target`. Take
-    // splits that landed only, and only with both anchors: a src-only split
-    // has no `at` to refresh, and graphic, inert and unlanded splits were
-    // never reached (R4-B1, B2). Both points are checked against the
-    // pass-1 graphic windows, hidden ones included: an old `at` inside a
-    // graphic splits that graphic today, and moving it would remove that
-    // split (R6-B1); a new point inside one — even a hidden graphic a take
-    // now covers — would split it on the next run and bring a deleted half
-    // back (R7-B1).
-    const point = points.find((p) => p.id === sid);
-    const cur = splits[idx]!;
-    if (point && cur.at !== undefined && cur.src !== undefined) {
-      const next = Math.round(point.at * 1000) / 1000;
-      if (!inAnyWindow(cur.at, graphicWindows) && !inAnyWindow(point.at, graphicWindows) && next !== cur.at) {
-        splits[idx] = { ...cur, at: next };
-        notes.push(`split ${sid} moved to ${next.toFixed(3)}s on this cut`);
-        changed = true;
-      }
-    }
   }
 
   return { doc: { ...doc, scenes, splits }, notes, changed };
+}
+
+/** What `reconcileSplitAnchors` hands back — `TakeRekeyResult`'s shape and
+ * its `changed`-by-writes rule. */
+export type SplitReconcileResult = TakeRekeyResult;
+
+/** How far apart the two anchors may sit before one is rewritten: a
+ * millisecond, the precision every split writer rounds to. Under it, the
+ * float residue of a `toOutput`/`toSource` round trip (FE Loop: 0.12 ms for
+ * fc1 and 66055) would otherwise rewrite the file on every run. */
+const RECONCILE_EPS_SEC = 0.001;
+
+const roundMs = (t: number): number => Math.round(t * 1000) / 1000;
+
+/**
+ * Write each split's idle anchor onto the one that cut
+ * (split-positions-by-source R7-4, R8-3), after both passes of THIS run.
+ *
+ * Every split cuts in exactly one pass (D2), with one of its two anchors:
+ * a graphic split at `at`, a take split at `toOutput(src)`. The other anchor
+ * is unread that run, and left alone it drifts — which is how a split came
+ * to be cut twice in two places (the D5 note). So, for splits carrying BOTH
+ * anchors only (R7 S3 — a src-only split gains no `at`, the "none is
+ * invented" rule in `SplitSchema`, and a src-less one gains no `src` here):
+ *
+ *  - a pass-1 survivor (`pass1Surviving`, `survivingLandings`' set) gets
+ *    `src = round(map.toSource(at))` — the graphic keeps its rendered
+ *    position, and the source anchor now names that footage;
+ *  - a pass-2 landing (`pass2Landed`, pass 2's `landed`, taken BEFORE the
+ *    final hidden drop — eligibility is the landing, R7 S1) gets
+ *    `at = round(point)`, so the next graphic pass and the editor read the
+ *    moment the take was cut. NOT when the old `at` or the new point lies
+ *    in any of `graphicWindows` — the pass-1 graphic cues' windows before
+ *    any hidden drop, closed: an old `at` there is what keeps that split off
+ *    the graphic's footage today, and a new one there would cut a hidden
+ *    graphic on the next run and bring its deleted half back (step 7's
+ *    guard, R6-B1, R7-B1, r7 S2). Such a split keeps a stale `at`,
+ *    harmlessly: pass 1 cannot land it (r8 m11).
+ *
+ * A split that landed nowhere is left as it is. A difference of
+ * `RECONCILE_EPS_SEC` or less writes nothing, which is what makes a second
+ * run on the same clock a no-op. `map` is this run's final map.
+ */
+export function reconcileSplitAnchors(
+  doc: OverrideDoc,
+  pass1Surviving: ReadonlySet<string>,
+  pass2Landed: ReadonlyMap<string, string>,
+  pass2Points: readonly ResolvedSplitPoint[],
+  graphicWindows: ReadonlyArray<{ startSec: number; endSec: number }>,
+  map: TimeMap,
+): SplitReconcileResult {
+  const notes: string[] = [];
+  let changed = false;
+  const splits = doc.splits.map((s): Split => {
+    if (s.at === undefined || s.src === undefined) return s;
+    let next: Split | undefined;
+    if (pass1Surviving.has(s.id)) {
+      const exact = map.toSource(s.at);
+      if (Math.abs(exact - s.src) > RECONCILE_EPS_SEC) next = { ...s, src: roundMs(exact) };
+    } else if (pass2Landed.has(s.id)) {
+      const point = pass2Points.find((p) => p.id === s.id);
+      if (
+        point !== undefined &&
+        Math.abs(point.at - s.at) > RECONCILE_EPS_SEC &&
+        !inAnyWindow(s.at, graphicWindows) &&
+        !inAnyWindow(point.at, graphicWindows)
+      ) {
+        next = { ...s, at: roundMs(point.at) };
+      }
+    }
+    if (next === undefined) return s;
+    notes.push(`split ${s.id} anchors reconciled (at ${next.at!.toFixed(3)}s, source ${next.src!.toFixed(3)}s)`);
+    changed = true;
+    return next;
+  });
+  return { doc: changed ? { ...doc, splits } : doc, notes, changed };
 }

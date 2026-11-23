@@ -9,11 +9,11 @@ import {
   resolveSplitPoints,
   splitCuesWithLanding,
   type OverrideDoc,
-  type ResolvedSplitPoint,
 } from "../src/overrides";
-import { rekeyTakeHalves } from "../src/take-halves";
+import { reconcileSplitAnchors, rekeyTakeHalves } from "../src/take-halves";
 import { fillPlainCues } from "../src/fill";
 import { TimeMap } from "../src/timemap";
+import { feMap } from "./take-looks.fixtures";
 
 /**
  * `rekeyTakeHalves` (take-framing-identity P2), one rule per test. Inputs are
@@ -44,27 +44,31 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       splits: [{ at: 58.784, src: 66.055, id: "66055" }],
     });
   const feLanded = landedOf([["66055", "take-3"]]);
-  const fePoints: ResolvedSplitPoint[] = [{ at: 58.467, id: "66055" }];
 
   it("1: the FE Loop half re-keys to the root its split landed in, framing intact", () => {
-    const out = rekeyTakeHalves(feLoop(), feLanded, fePoints, []);
+    const out = rekeyTakeHalves(feLoop(), feLanded);
     expect(out.doc.scenes["take-3@66055"]?.video).toEqual({ scale: 2.2, dx: -664.8 });
     expect(out.doc.scenes["take-2@66055"]).toBeUndefined();
     expect(out.doc.scenes["take-2"]).toEqual(feLoop().scenes["take-2"]);
     expect(splitOf(out.doc, "66055").ownFraming).toBe(true);
     expect(out.changed).toBe(true);
-    // Steps 4, 5 and 7 in order — the third is the `at` refresh (R5-B1).
+    // Steps 4 and 5 in order. Step 7's `at` refresh is gone
+    // (split-positions-by-source D4): `reconcileSplitAnchors` writes it now.
     expect(out.notes).toEqual([
       "split 66055 now owns its framing",
       "edit for take-2@66055 re-keyed to take-3@66055 — its split now falls in take-3",
-      "split 66055 moved to 58.467s on this cut",
     ]);
+  });
+
+  it("1c: re-keying leaves both anchors as they were (split-positions-by-source D4)", () => {
+    const out = rekeyTakeHalves(feLoop(), feLanded);
+    expect(splitOf(out.doc, "66055")).toMatchObject({ at: 58.784, src: 66.055 });
   });
 
   it("1b: a framed new root does not leak into the mover, and the mover is not parked", () => {
     const doc = feLoop();
     doc.scenes["take-3"] = { props: {}, elements: {}, video: { dy: 50 } };
-    const out = rekeyTakeHalves(doc, feLanded, fePoints, []);
+    const out = rekeyTakeHalves(doc, feLanded);
     expect(out.doc.scenes["take-3@66055"]?.video).toEqual({ scale: 2.2, dx: -664.8 });
     expect(framing(out.doc, "take-3@66055").video).toEqual({ scale: 2.2, dx: -664.8 });
     expect(Object.keys(out.doc.scenes).some((k) => k.endsWith("#orphaned"))).toBe(false);
@@ -76,7 +80,7 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       splits: [{ at: 12, src: 12, id: "12000" }],
     });
     const before = framing(doc, "take-1@12000");
-    const out = rekeyTakeHalves(doc, landedOf([["12000", "take-1"]]), [{ at: 12, id: "12000" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["12000", "take-1"]]));
     expect(out.doc.scenes["take-1@12000"]).toEqual({
       props: {},
       elements: {},
@@ -94,7 +98,7 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       scenes: { "take-1": { video: { scale: 2 } }, "take-1@s": { video: { dx: -30 } } },
       splits: [{ at: 12, src: 12, id: "s" }],
     });
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-1"]]), [{ at: 12, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-1"]]));
     expect(out.doc.scenes["take-1@s"]?.video).toEqual({ scale: 2, dx: -30 });
     expect(framing(out.doc, "take-1@s").video).toEqual({ scale: 2, dx: -30 });
   });
@@ -110,7 +114,7 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       splits: [{ at: 30, src: 30, id: "s" }],
     });
     const before = framing(doc, "take-3@s");
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]), [{ at: 30, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]));
     expect(framing(out.doc, "take-3@s")).toEqual(before);
     expect(out.doc.scenes["take-2@s"]).toBeUndefined();
     // Parked whole and materialized against its OWN root (take-2), from the
@@ -133,7 +137,7 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       scenes: { "take-10@s": { video: { dx: 1 } }, "take-2@s": { video: { dx: 2 } } },
       splits: [{ at: 30, src: 30, id: "s", ownFraming: true }],
     });
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-5"]]), [{ at: 30, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-5"]]));
     expect(out.doc.scenes["take-5@s"]?.video).toEqual({ dx: 2 });
     expect(out.doc.scenes["take-10@s#orphaned"]?.video).toEqual({ dx: 1 });
     expect(out.notes).toEqual([
@@ -147,7 +151,7 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       scenes: { "take-2-1@s": { video: { dx: 1 } }, "take-2@s": { video: { dx: 2 } } },
       splits: [{ at: 30, src: 30, id: "s", ownFraming: true }],
     });
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-5"]]), [{ at: 30, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-5"]]));
     expect(out.doc.scenes["take-5@s"]?.video).toEqual({ dx: 2 });
     expect(out.doc.scenes["take-2-1@s#orphaned"]?.video).toEqual({ dx: 1 });
   });
@@ -157,7 +161,7 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       scenes: { "take-2-10@s": { video: { dx: 1 } }, "take-2-2@s": { video: { dx: 2 } } },
       splits: [{ at: 30, src: 30, id: "s", ownFraming: true }],
     });
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-5"]]), [{ at: 30, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-5"]]));
     expect(out.doc.scenes["take-5@s"]?.video).toEqual({ dx: 2 });
     expect(out.doc.scenes["take-2-10@s#orphaned"]?.video).toEqual({ dx: 1 });
   });
@@ -176,20 +180,20 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
 
   it("6: a held park slot leaves the entry as an orphan; on a flagged split nothing changes", () => {
     const doc = heldSlot(true);
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]), [{ at: 30, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]));
     expect(out.notes).toEqual([orphanNote]);
     expect(out.changed).toBe(false);
     expect(out.doc).toEqual(doc);
   });
 
   it("6b: on a legacy split the first call materializes and flags; the second changes nothing", () => {
-    const first = rekeyTakeHalves(heldSlot(), landedOf([["s", "take-3"]]), [{ at: 30, id: "s" }], []);
+    const first = rekeyTakeHalves(heldSlot(), landedOf([["s", "take-3"]]));
     expect(first.changed).toBe(true);
     expect(first.notes).toEqual(["split s now owns its framing", orphanNote]);
     // A left-in-place orphan is materialized like any candidate (R5-S9).
     expect(first.doc.scenes["take-2@s"]?.video).toEqual({ scale: 1.5, dx: 5 });
     expect(first.doc.scenes["take-2@s#orphaned"]?.video).toEqual({ dx: 99 });
-    const second = rekeyTakeHalves(first.doc, landedOf([["s", "take-3"]]), [{ at: 30, id: "s" }], []);
+    const second = rekeyTakeHalves(first.doc, landedOf([["s", "take-3"]]));
     expect(second.changed).toBe(false);
     expect(second.notes).toEqual([orphanNote]);
     expect(second.doc).toEqual(first.doc);
@@ -197,7 +201,7 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
 
   it("6c: a flag-only legacy migration — nothing to copy, nothing moves — still counts as changed", () => {
     const doc = parse({ splits: [{ at: 30, src: 30, id: "s" }] });
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]), [{ at: 30, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]));
     expect(out.changed).toBe(true);
     // The landed root has no framing: an empty entry is not stored.
     expect(out.doc.scenes).toEqual({});
@@ -215,7 +219,7 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       },
       splits: [{ at: 30, src: 30, id: "s", ownFraming: true }],
     });
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]), [{ at: 30, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]));
     expect(out.doc).toEqual(doc);
     expect(out.notes).toEqual([]);
     expect(out.changed).toBe(false);
@@ -233,13 +237,13 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       },
       splits: [{ at: 30, src: 30, id: "s", ownFraming: true }],
     });
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]), [{ at: 30, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-3"]]));
     expect(out.doc.scenes["take-3@s"]).toEqual(doc.scenes["take-2@s"]);
   });
 
   it("9: a second call on its own output changes nothing (Review Focus 3)", () => {
-    const first = rekeyTakeHalves(feLoop(), feLanded, fePoints, []);
-    const second = rekeyTakeHalves(first.doc, feLanded, fePoints, []);
+    const first = rekeyTakeHalves(feLoop(), feLanded);
+    const second = rekeyTakeHalves(first.doc, feLanded);
     expect(second.changed).toBe(false);
     expect(second.notes).toEqual([]);
     expect(second.doc).toEqual(first.doc);
@@ -250,68 +254,110 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       scenes: { "take-2": { video: { scale: 1.5 } }, "take-2@s": { video: { dx: 5 } } },
       splits: [{ at: 30, src: 30, id: "s" }],
     });
-    const out = rekeyTakeHalves(doc, landedOf([["s", "take-2"]]), [{ at: 30, id: "s" }], []);
+    const out = rekeyTakeHalves(doc, landedOf([["s", "take-2"]]));
     expect(out.doc.scenes["take-2@s"]?.video).toEqual({ scale: 1.5, dx: 5 });
     expect(Object.keys(out.doc.scenes).sort()).toEqual(["take-2", "take-2@s"]);
     expect(out.notes).toEqual(["split s now owns its framing"]);
   });
 
-  describe("11b: `at` refresh (take splits only, R5-B1)", () => {
-    const doc = parse({
-      splits: [
-        { at: 10, src: 12, id: "a", ownFraming: true },
-        { src: 12.5, id: "b", ownFraming: true },
-        { at: 20, src: 22, id: "c", ownFraming: true },
-        { at: 30, src: 31, id: "d", ownFraming: true },
-        { at: 40, src: 41, id: "e", ownFraming: true },
-      ],
-    });
-    const points: ResolvedSplitPoint[] = [
-      { at: 9.5, id: "a" },
-      { at: 11, id: "b" },
-      { at: 19, id: "c" },
-      { at: 29, id: "d" },
-      { at: 40.0004, id: "e" },
-    ];
-    // `c` did not land; `d` landed in a graphic.
-    const landed = landedOf([
-      ["a", "take-1"],
-      ["b", "take-1"],
-      ["d", "scene-1"],
-      ["e", "take-4"],
+  it("11e: across two clocks the half's key and framing hold, and `at` is never touched here", () => {
+    // Step 7 used to refresh `at` on each run (R5-B1); the re-key now moves
+    // keys only (split-positions-by-source D4), and `reconcileSplitAnchors`
+    // owns the anchor. The take holding the split is take-2 on both clocks:
+    // run 2's cut trims the head of take-0, which moves every later output
+    // time back 2 s but adds no clip start, so no ordinal changes.
+    const oneRun = (doc: OverrideDoc, map: TimeMap) => {
+      const filled = fillPlainCues([], {
+        outputDurationSec: map.outputDuration,
+        clipStarts: map.spans.map((s) => s.outIn),
+      });
+      const { points } = resolveSplitPoints(doc.splits, map);
+      const { cues, landed } = splitCuesWithLanding(filled, points);
+      const out = rekeyTakeHalves(doc, landed);
+      const applied = applyOverrides(cues, out.doc);
+      return { out, half: applied.cues.find((c) => c.id === "take-2@s"), orphans: applied.orphans };
+    };
+    const run1Map = new TimeMap([
+      { srcIn: 0, srcOut: 10, kind: "keep" },
+      { srcIn: 12, srcOut: 22, kind: "keep" },
+      { srcIn: 24, srcOut: 44, kind: "keep" },
     ]);
-    const out = rekeyTakeHalves(doc, landed, points, []);
-
-    it("a landed {at, src} take split gets `at` = the resolved point", () => {
-      expect(splitOf(out.doc, "a").at).toBe(9.5);
-      expect(out.notes).toEqual(["split a moved to 9.500s on this cut"]);
-      expect(out.changed).toBe(true);
+    const run2Map = new TimeMap([
+      { srcIn: 2, srcOut: 10, kind: "keep" },
+      { srcIn: 12, srcOut: 22, kind: "keep" },
+      { srcIn: 24, srcOut: 44, kind: "keep" },
+    ]);
+    const doc0 = parse({
+      scenes: { "take-2@s": { video: { scale: 2, dx: -40 } } },
+      // A stale `at` from an older clock; `src` 30 is output 26 on run 1.
+      splits: [{ at: 25, src: 30, id: "s", ownFraming: true }],
     });
 
-    it("src-only, not-landed and graphic-root splits are untouched (R4-B1, B2)", () => {
-      for (const id of ["b", "c", "d"]) expect(splitOf(out.doc, id), id).toEqual(splitOf(doc, id));
-    });
+    const r1 = oneRun(doc0, run1Map);
+    expect(splitOf(r1.out.doc, "s").at).toBe(25);
+    expect(r1.half?.video).toEqual({ scale: 2, dx: -40 });
+    expect(r1.orphans).toEqual([]);
 
-    it("a difference under 0.5 ms writes nothing", () => {
-      expect(splitOf(out.doc, "e")).toEqual(splitOf(doc, "e"));
-      const only = rekeyTakeHalves(
-        parse({ splits: [{ at: 40, src: 41, id: "e", ownFraming: true }] }),
-        landedOf([["e", "take-4"]]),
-        [{ at: 40.0004, id: "e" }],
-        [],
-      );
-      expect(only.changed).toBe(false);
-      expect(only.notes).toEqual([]);
-    });
+    const r2 = oneRun(r1.out.doc, run2Map);
+    expect(splitOf(r2.out.doc, "s").at).toBe(25);
+    expect(r2.out.notes).toEqual([]);
+    expect(r2.out.changed).toBe(false);
+    expect(r2.half?.video).toEqual({ scale: 2, dx: -40 });
+    expect(r2.orphans).toEqual([]);
+  });
+});
+
+describe("reconcileSplitAnchors (split-positions-by-source R7-4, R8-3)", () => {
+  const map = feMap();
+  // The FE Loop graphic `shot-s1`, the run's pass-1 window.
+  const shotS1 = [{ startSec: 10.084879999999998, endSec: 17.949879999999997 }];
+  const none = new Set<string>();
+  const noLanding = new Map<string, string>();
+
+  it("a pass-1 survivor's `src` is written onto its `at` (fc2: 14.0 → 18.485)", () => {
+    // fc2 drifted: its graphic cut at `at` 16.0, whose footage is source
+    // 18.48512 on this clock, not 14.0.
+    const doc = parse({ splits: [{ at: 16.0, src: 14.0, id: "fc2" }] });
+    const out = reconcileSplitAnchors(doc, new Set(["fc2"]), noLanding, [], shotS1, map);
+    expect(splitOf(out.doc, "fc2")).toEqual({ at: 16.0, src: 18.485, id: "fc2" });
+    expect(out.notes).toEqual(["split fc2 anchors reconciled (at 16.000s, source 18.485s)"]);
+    expect(out.changed).toBe(true);
   });
 
-  describe("11d: graphic exclusion (R6-B1, R7-B1)", () => {
+  it("a pass-1 survivor within 1 ms of its `at` is left alone (fc1: 0.12 ms)", () => {
+    const doc = parse({ splits: [{ at: 14.015, src: 16.5, id: "fc1" }] });
+    const out = reconcileSplitAnchors(doc, new Set(["fc1"]), noLanding, [], shotS1, map);
+    expect(out.changed).toBe(false);
+    expect(out.notes).toEqual([]);
+    expect(out.doc).toBe(doc);
+  });
+
+  it("a pass-2 landing's `at` is written onto its cut (66055: 58.784 → 58.467)", () => {
+    const doc = parse({ splits: [{ at: 58.784, src: 66.055, id: "66055", ownFraming: true }] });
+    const point = { at: map.toOutput(66.055)!, id: "66055" };
+    const out = reconcileSplitAnchors(doc, none, new Map([["66055", "take-3"]]), [point], shotS1, map);
+    expect(splitOf(out.doc, "66055")).toEqual({ at: 58.467, src: 66.055, id: "66055", ownFraming: true });
+    expect(out.notes).toEqual(["split 66055 anchors reconciled (at 58.467s, source 66.055s)"]);
+    expect(out.changed).toBe(true);
+  });
+
+  it("a resolved point that landed nowhere moves nothing (20752, margin-skipped)", () => {
+    const doc = parse({ splits: [{ at: 18.267, src: 20.752, id: "20752" }] });
+    const point = { at: map.toOutput(20.752)!, id: "20752" };
+    const out = reconcileSplitAnchors(doc, none, noLanding, [point], shotS1, map);
+    expect(out.changed).toBe(false);
+    expect(splitOf(out.doc, "20752").at).toBe(18.267);
+  });
+
+  describe("the graphic-window guard on a pass-2 landing (step 7's, R6-B1, R7-B1)", () => {
     const run = (windows: Array<{ startSec: number; endSec: number }>) =>
-      rekeyTakeHalves(
+      reconcileSplitAnchors(
         parse({ splits: [{ at: 10, src: 12, id: "a", ownFraming: true }] }),
+        none,
         landedOf([["a", "take-1"]]),
         [{ at: 8, id: "a" }],
         windows,
+        map,
       );
 
     it("keeps `at` when the stored `at` lies in a graphic window — that split cuts the graphic today", () => {
@@ -333,57 +379,42 @@ describe("rekeyTakeHalves (take-framing-identity P2)", () => {
       expect(out.changed).toBe(false);
     });
 
-    it("a window touching neither point does not block the refresh", () => {
+    it("a window touching neither point does not block it", () => {
       expect(splitOf(run([{ startSec: 20, endSec: 25 }]).doc, "a").at).toBe(8);
     });
   });
 
-  it("11e: two runs refresh `at` on each clock; the half's key and framing hold", () => {
-    // The take holding the split is take-2 on both clocks: run 2's cut trims
-    // the head of take-0, which moves every later output time back 2 s but
-    // adds no clip start, so no ordinal changes.
-    const oneRun = (doc: OverrideDoc, map: TimeMap) => {
-      const filled = fillPlainCues([], {
-        outputDurationSec: map.outputDuration,
-        clipStarts: map.spans.map((s) => s.outIn),
-      });
-      const { points } = resolveSplitPoints(doc.splits, map);
-      const { cues, landed } = splitCuesWithLanding(filled, points);
-      const out = rekeyTakeHalves(doc, landed, points, []);
-      const applied = applyOverrides(cues, out.doc);
-      return { out, half: applied.cues.find((c) => c.id === "take-2@s"), orphans: applied.orphans };
-    };
-    const run1Map = new TimeMap([
-      { srcIn: 0, srcOut: 10, kind: "keep" },
-      { srcIn: 12, srcOut: 22, kind: "keep" },
-      { srcIn: 24, srcOut: 44, kind: "keep" },
-    ]);
-    const run2Map = new TimeMap([
-      { srcIn: 2, srcOut: 10, kind: "keep" },
-      { srcIn: 12, srcOut: 22, kind: "keep" },
-      { srcIn: 24, srcOut: 44, kind: "keep" },
-    ]);
-    const doc0 = parse({
-      scenes: { "take-2@s": { video: { scale: 2, dx: -40 } } },
-      // A stale `at` from an older clock; `src` 30 is output 26 on run 1.
-      splits: [{ at: 25, src: 30, id: "s", ownFraming: true }],
+  it("single-anchor splits are never reconciled (R7 S3)", () => {
+    // A src-only split that landed in pass 2 gains no `at` ("none is
+    // invented"), and a src-less legacy one gains no `src`.
+    const doc = parse({ splits: [{ src: 66.055, id: "srconly" }, 16.0] });
+    const out = reconcileSplitAnchors(
+      doc,
+      new Set(["16000"]),
+      new Map([["srconly", "take-3"]]),
+      [{ at: map.toOutput(66.055)!, id: "srconly" }],
+      [],
+      map,
+    );
+    expect(out.changed).toBe(false);
+    expect(out.doc.splits).toEqual(doc.splits);
+  });
+
+  it("is idempotent: a second call on its own output changes nothing", () => {
+    const doc = parse({
+      splits: [
+        { at: 16.0, src: 14.0, id: "fc2" },
+        { at: 58.784, src: 66.055, id: "66055" },
+      ],
     });
-
-    const r1 = oneRun(doc0, run1Map);
-    expect(splitOf(r1.out.doc, "s").at).toBe(26);
-    expect(r1.half?.video).toEqual({ scale: 2, dx: -40 });
-    expect(r1.orphans).toEqual([]);
-
-    const r2 = oneRun(r1.out.doc, run2Map);
-    expect(splitOf(r2.out.doc, "s").at).toBe(24);
-    expect(r2.out.notes).toEqual(["split s moved to 24.000s on this cut"]);
-    expect(r2.half?.video).toEqual({ scale: 2, dx: -40 });
-    expect(r2.orphans).toEqual([]);
-
-    // Same clock again: the refreshed value equals the stored `at`.
-    const r3 = oneRun(r2.out.doc, run2Map);
-    expect(r3.out.changed).toBe(false);
-    expect(r3.out.notes).toEqual([]);
-    expect(r3.out.doc).toEqual(r2.out.doc);
+    const landed2 = new Map([["66055", "take-3"]]);
+    const points = [{ at: map.toOutput(66.055)!, id: "66055" }];
+    const first = reconcileSplitAnchors(doc, new Set(["fc2"]), landed2, points, shotS1, map);
+    expect(first.notes).toEqual([
+      "split fc2 anchors reconciled (at 16.000s, source 18.485s)",
+      "split 66055 anchors reconciled (at 58.467s, source 66.055s)",
+    ]);
+    const second = reconcileSplitAnchors(first.doc, new Set(["fc2"]), landed2, points, shotS1, map);
+    expect(second).toEqual({ doc: first.doc, notes: [], changed: false });
   });
 });

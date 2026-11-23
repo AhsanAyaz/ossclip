@@ -211,7 +211,9 @@ describe("produce's remap wiring (source-text guard)", () => {
     // or run either after `applyOverrides(split`. Each typechecks and prints
     // truthful notes. `splitLanded` is the landing map (`landed` was taken).
     const splitAt = src.indexOf("splitCuesWithLanding(filled");
-    const rekeyAt = src.search(/rekeyTakeHalves\(\s*overrideDoc,\s*splitLanded,/);
+    // Two arguments since split-positions-by-source D4 (step 7's `points`
+    // and `graphicWindows` went), so the trailing comma is optional.
+    const rekeyAt = src.search(/rekeyTakeHalves\(\s*overrideDoc,\s*splitLanded\s*,?\s*\)/);
     const adoptAt = src.indexOf("overrideDoc = takeRekey.doc");
     const pinAt = src.indexOf("pinnedDoc = resolveSrcTimingPins(overrideDoc", adoptAt);
     const applyAt = src.indexOf("applyOverrides(split");
@@ -220,6 +222,53 @@ describe("produce's remap wiring (source-text guard)", () => {
     expect(adoptAt).toBeGreaterThan(rekeyAt);
     expect(pinAt).toBeGreaterThan(adoptAt);
     expect(applyAt).toBeGreaterThan(pinAt);
+  });
+
+  it("pass 1 cuts graphics at the live `at` points and pass 2 takes only the splits that did not land (split-positions-by-source D2, R8-2)", () => {
+    // Each claim typechecks wrong: the default points (inert splits cut a
+    // graphic), the root-checking `landed` (a chained split's hidden halves
+    // still count), the unfiltered set in pass 2 (a drifted split cuts
+    // twice, the bug), or the filter computed and left unused.
+    expect(src).toMatch(/splitThenDropHidden\(editedCues, overrideDoc, pass1SplitPoints\(overrideDoc\.splits, map\)\)/);
+    const dropAt = src.indexOf("dropOverlappingAdded(shownCues)");
+    const survAt = src.search(/const pass1Surviving = survivingLandings\(pass1LandedHost, visibleCues\)/);
+    const filterAt = src.search(/const notLandedInPass1 = overrideDoc\.splits\.filter\(\(s\) => !pass1Surviving\.has\(s\.id\)\)/);
+    const resolveAt = src.indexOf("resolveSplitPoints(notLandedInPass1, map)");
+    const splitAt = src.indexOf("splitCuesWithLanding(filled, resolvedSplits.points)");
+    expect(dropAt).toBeGreaterThan(-1);
+    expect(survAt).toBeGreaterThan(dropAt);
+    expect(filterAt).toBeGreaterThan(survAt);
+    expect(resolveAt).toBeGreaterThan(filterAt);
+    expect(splitAt).toBeGreaterThan(resolveAt);
+    // The only `resolveSplitPoints(` call: no second, unfiltered pass.
+    expect(src.match(/resolveSplitPoints\(/g)).toHaveLength(1);
+  });
+
+  it("names the one-time double cut, and reconciles the anchors after the re-key and before the migration, adopting the doc (R7-1, R7-4)", () => {
+    const splitAt = src.indexOf("splitCuesWithLanding(filled, resolvedSplits.points)");
+    const notesAt = src.search(/doubleCutNotes\(overrideDoc\.splits, pass1Surviving, pass1LandedHost, filled, map\)/);
+    const rekeyAt = src.search(/rekeyTakeHalves\(\s*overrideDoc,\s*splitLanded\s*,?\s*\)/);
+    const reconcileAt = src.search(
+      /reconcileSplitAnchors\(\s*overrideDoc,\s*pass1Surviving,\s*splitLanded,\s*resolvedSplits\.points,\s*editedCues\.map\(/,
+    );
+    const adoptAt = src.indexOf("overrideDoc = splitReconcile.doc");
+    const pinAt = src.indexOf("pinnedDoc = resolveSrcTimingPins(overrideDoc", adoptAt);
+    const migrateAt = src.indexOf("migrateTakeLooks(");
+    expect(notesAt).toBeGreaterThan(splitAt);
+    expect(rekeyAt).toBeGreaterThan(notesAt);
+    expect(reconcileAt).toBeGreaterThan(rekeyAt);
+    expect(adoptAt).toBeGreaterThan(reconcileAt);
+    expect(pinAt).toBeGreaterThan(adoptAt);
+    expect(migrateAt).toBeGreaterThan(pinAt);
+    expect(src).toMatch(/const splitsReconciled = splitReconcile\.changed/);
+  });
+
+  it("a split reconcile earns the sanctioned write without spending the `.bak`, and the line says so (R8-3)", () => {
+    const gate = /if \(([^{]*)\)\s*\{\s*await writeOverrideDoc\(overridesPath, overrideDoc, \{ refreshBackup: cutResult\.changed \}\)/.exec(src);
+    expect(gate).not.toBeNull();
+    expect(gate![1]).toMatch(/\|\|\s*splitsReconciled\b/);
+    const line = /console\.log\(\s*overridesWriteLine\(\{([^}]*)\}\)/.exec(src);
+    expect(line![1]).toMatch(/\bsplitsReconciled\b/);
   });
 
   it("resolves take looks after the final join, gated on the marker, and feeds the item times (take-looks-by-source L2, R7-6)", () => {
