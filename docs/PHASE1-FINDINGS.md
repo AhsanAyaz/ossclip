@@ -2145,3 +2145,28 @@ Whisper closed the flubbed line with a period, so the marker was a sentence of i
 *   A framed whole take (not a half) still drifts after a cut in front — phase 2 R1–R4 (source-span re-key).
 *   Graphic splits still render at a stale `at` after a cut in front (produce's first pass uses `atSplitPoints`); skipped and inert splits can still preview differently in the editor; graphic halves still inherit framing. All three change output in more cases than the bug and are left for the author.
 *   An older build strips `ownFraming` and `takeClipStarts`.
+
+## 173. Take looks attached to source time (2026-11-23)
+
+**Why.** ossclip derives takes each run as the gaps graphics leave and names them by position (`take-2`, `take-2-1`, `take-2@split`). A take's look (`video`, `pip`, `layout`, `captionY`, `captionScale`) was keyed by that name, so a cut in front, a graphic change or a kept cleanup range renumbered takes and moved or dropped their looks (§172 patched only split halves; phase-2 re-keying drafts kept finding new identity cases). The author's direction: attach looks to footage, the way NLE clips carry their effects. Design: `docs/designs/take-looks-by-source.md` (six review rounds).
+
+**What.**
+
+*   `doc.takeLooks`: source-time ranges with a look. Every plain take piece shows the look with the largest source overlap; on migrated docs that is the only source of those five fields on takes.
+*   Produce migrates a legacy doc once (marker: `takeLooks` present), on the current run's pieces, after phase 1's half re-key: each piece's id-keyed values become a look on its footage; the take keys are stripped. Output identical.
+*   The editor in look mode addresses a piece by its source extent (carved lead and tail no longer collide), writes looks over the piece's hull, and refuses id-keyed look writes. Legacy docs behave exactly as before.
+
+**Field check** (`~/ossclip-work/fe-loop/looks-field-check.sh`, copy `work-looks-test`, `--no-render`), 0 failures:
+
+*   run 1: phase-1 notes, `moved the look of 2 take piece(s) onto source time`; `takeLooks` = `[20.752, 24.518] → {scale 2.2, dx 814.4}`, `[66.055, 68.353] → {scale 2.2, dx -664.8}`; every other take's `video` unchanged; the 58.467 s piece framed;
+*   run 2 after a 2 s source cut in `take-0`: takes renumber (`take-3@66055` becomes `take-4@66055`), and both framings stay on their footage, at 15.950 s and 56.467 s; no migration note; no dropped or parked lines.
+*   Headless browser: the Inspector shows `take-4@66055` at 2.2× / dx −664.8; setting zoom 1.5 on `take-5` and saving wrote `takeLooks [71.006, 81.061] → {scale 1.5}` and no id key.
+
+**Limits.**
+
+*   A piece spanning two looks shows the larger one (after deleting a graphic between differently-looked pieces, or a cut joining them); ⌘B separates them.
+*   Material restored at a piece's edge shows the look it had before it was cut.
+*   Existing drift is frozen, not repaired, at migration.
+*   An older build drops `takeLooks`; with the take fields already stripped, takes render unframed after a downgrade.
+*   `scale`, `dx` and `dy` are one undo/coalesce unit.
+*   Still deferred: graphic splits render at a stale `at` after a cut in front; editor parity for skipped and inert splits (FE Loop 20752 still previews as a piece); graphic halves owning their speaker inset framing.
