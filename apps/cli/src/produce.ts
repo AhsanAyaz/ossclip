@@ -30,6 +30,8 @@ import {
   isPlainTakeKey,
   parkedOverrideBaseKey,
   rekeyTakeHalves,
+  migrateTakeLooks,
+  ownFramingSplitIds,
   remapSceneOverrides,
   assembleScenes,
   buildCaptionLines,
@@ -5624,6 +5626,24 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // as the first (the split above does not move time), and a src pin that
   // reached here unresolved would be ignored rather than applied.
   const { cues: overriddenCues, orphans: rawOrphans } = applyOverrides(split, pinnedDoc.doc);
+  // A legacy doc's take looks move onto source time ONCE, here
+  // (take-looks-by-source L3): after the cut remap, `resolveSplitPoints`,
+  // `rekeyTakeHalves` and the splits, so the pieces are this run's pieces
+  // on this run's map and always exist (N3, N4). From the re-keyed
+  // `overrideDoc`, not `pinnedDoc.doc` — the doc written back — read
+  // against the cues the merge just produced. It checks the marker itself
+  // and hands a migrated doc back untouched (R4-S9), so it runs every time;
+  // adopted before the look pass and every later read of `overrideDoc`,
+  // the write below included.
+  const migration = migrateTakeLooks(
+    overrideDoc,
+    overriddenCues,
+    map,
+    ownFramingSplitIds(overrideDoc.splits),
+  );
+  for (const n of migration.notes) console.log(`  ▸ ${n}`);
+  overrideDoc = migration.doc;
+  const takeLooksMigrated = migration.changed;
   // Take looks from SOURCE time (take-looks-by-source L2), right after this
   // last override pass — and only for a migrated doc: absent `takeLooks` is
   // the legacy marker (L3), and a legacy doc keeps its id-keyed look fields
@@ -7511,13 +7531,21 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
   // P2): a re-keyed, parked or migrated take half and a refreshed split
   // `at` are right in memory and wrong on disk. It does NOT spend the
   // `.bak` — the move rewrites keys and copies framing, nothing to recover.
+  // `takeLooksMigrated` joins for the same reason (take-looks-by-source L3,
+  // S5): the looks on source time and the stripped take keys are right in
+  // memory and wrong on disk, and the marker must reach disk or every run
+  // would migrate again. True once per project, even for `takeLooks: []`.
+  // It does NOT spend the `.bak` (L3 "Rollback limit", the existing
+  // posture): the move changes where the looks are stored, not what any
+  // piece shows, and the `.bak` stays the pre-cut save it exists to be.
   if (
     cutResult.changed ||
     captionKeysReanchored ||
     hidesPruned ||
     sceneKeysRemapped ||
     splitSrcResolved ||
-    splitHalvesChanged
+    splitHalvesChanged ||
+    takeLooksMigrated
   ) {
     await writeOverrideDoc(overridesPath, overrideDoc, { refreshBackup: cutResult.changed });
     console.log(overridesWriteLine(cutResult.changed));

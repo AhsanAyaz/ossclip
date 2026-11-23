@@ -7,6 +7,10 @@ export * from "./take-halves";
 // Take looks attached to source time (take-looks-by-source L1, L2, S12):
 // produce resolves them with the same pass the editor previews with.
 export * from "./take-looks";
+// Produce's one-time move of id-keyed take looks onto source time
+// (take-looks-by-source L3, R6-8). Not on browser.ts: the editor never
+// migrates (N7).
+export * from "./take-looks-migrate";
 export * from "./scene-registry";
 export * from "./assemble";
 export * from "./fill";

@@ -238,6 +238,30 @@ describe("produce's remap wiring (source-text guard)", () => {
     );
   });
 
+  it("migrates take looks after the final join and before the look pass, and adopts the doc (take-looks-by-source L3, R7-6)", () => {
+    // Three ways to compute the migration and still render or write the
+    // legacy doc: run it before `applyOverrides(split` (its pieces are not
+    // this run's yet — N3), after `applyTakeLooks(` (the marker this run
+    // sets never reaches the gate, so the first run renders the id-keyed
+    // fields and the next one SETs them from source time), or drop
+    // `migration.doc`, which typechecks and prints a truthful note.
+    const applyAt = src.indexOf("applyOverrides(split");
+    const migrateAt = src.search(/migrateTakeLooks\(\s*overrideDoc,\s*overriddenCues,\s*map,\s*ownFramingSplitIds\(overrideDoc\.splits\),?\s*\)/);
+    const adoptAt = src.indexOf("overrideDoc = migration.doc");
+    const lookAt = src.indexOf("applyTakeLooks(");
+    expect(applyAt).toBeGreaterThan(-1);
+    expect(migrateAt).toBeGreaterThan(applyAt);
+    expect(adoptAt).toBeGreaterThan(migrateAt);
+    expect(lookAt).toBeGreaterThan(adoptAt);
+    expect(src).toMatch(/const takeLooksMigrated = migration\.changed/);
+  });
+
+  it("a take-look migration earns the sanctioned write without spending the `.bak` (L3 rule 7)", () => {
+    const gate = /if \(([^{]*)\)\s*\{\s*await writeOverrideDoc\(overridesPath, overrideDoc, \{ refreshBackup: cutResult\.changed \}\)/.exec(src);
+    expect(gate).not.toBeNull();
+    expect(gate![1]).toMatch(/\|\|\s*takeLooksMigrated\b/);
+  });
+
   it("a take-half re-key earns the sanctioned write without spending the `.bak`", () => {
     expect(src).toMatch(/const splitHalvesChanged = takeRekey\.changed/);
     const gate = /if \(([^{]*)\)\s*\{\s*await writeOverrideDoc\(overridesPath, overrideDoc, \{ refreshBackup: cutResult\.changed \}\)/.exec(src);

@@ -122,7 +122,15 @@ export function rekeyTakeHalves(
     // key's OWN root from the input doc — what that half rendered with — so
     // flagging the split changes nothing on screen. A candidate whose merged
     // framing is empty keeps its other fields and gets no video/pip (R5-S9).
-    if (splits[idx]!.ownFraming !== true) {
+    //
+    // Legacy docs only (take-looks-by-source L5, S4): once `takeLooks` is
+    // present nothing reads take-keyed framing, and a look-mode split is
+    // never flagged — so the WHOLE block is gated, the flag as well as the
+    // copy, or every ⌘B split would be flagged, announced and written on
+    // its first run for framing no take key holds. On a legacy doc this
+    // runs in the same produce run as the migration, just before it, so a
+    // moved legacy half carries its framing into the migration.
+    if (doc.takeLooks === undefined && splits[idx]!.ownFraming !== true) {
       for (const k of candidates) {
         const f = mergedFraming(input, k);
         if (f) scenes[k] = { ...input[k]!, ...f };
