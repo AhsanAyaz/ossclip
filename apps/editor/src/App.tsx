@@ -18,6 +18,7 @@ import {
   resolveSplitPoints,
   resolveSrcTimingPins,
   carveKeptTakes,
+  applyTakeLooks,
   dismissedRemovals,
   vetoedRemovals,
   resolveTheme,
@@ -1514,7 +1515,20 @@ export const App: React.FC = () => {
     const splitted = splitCues(filled, atSplitPoints(edits.doc.splits));
     // `oldClockDoc` again — same clock as pass 1 (a split does not move time).
     const { cues: mergedCues } = applyOverrides(splitted, oldClockDoc);
-    const { cues } = dropHiddenCues(mergedCues, edits.doc);
+    const { cues: shownTakes } = dropHiddenCues(mergedCues, edits.doc);
+    // Take looks from SOURCE time (take-looks-by-source L2, B8), on the last
+    // render's clock — the clock these cues are on — after the hidden drop
+    // and before the stage previews, so a mid-drag preview shows over the
+    // look. Only for a migrated doc: a legacy one keeps its id-keyed look
+    // fields exactly as the pass above merged them (N1). With no old-clock
+    // map (an unrendered workdir) nothing can be placed, so the takes show
+    // without looks; a migrated doc always has a prior render, because
+    // produce migrated it while writing one (N4). Produce runs this pass at
+    // the same step (produce.ts, after `applyOverrides(split`).
+    const cues =
+      edits.doc.takeLooks !== undefined && oldClockMap !== null
+        ? applyTakeLooks(shownTakes, edits.doc.takeLooks, oldClockMap)
+        : shownTakes;
     // The framing preview applies LAST, onto the fully-merged cue, so what
     // the Player shows mid-gesture is exactly what committing would store.
     //
@@ -1685,7 +1699,18 @@ export const App: React.FC = () => {
       // that did not exist until `carveKeptTakes` ran a moment ago. These
       // reports DO surface: this clock is the one the user is watching.
       const pinned = resolveSrcTimingPins(edits.doc, clockMap);
-      const { cues: merged } = applyOverrides(splitted2, pinned.doc);
+      const { cues: overridden } = applyOverrides(splitted2, pinned.doc);
+      // The look pass again, on THIS clock (take-looks-by-source L2, B8):
+      // the carve just minted `take-kept-*` blocks and src-only halves the
+      // old-clock pass never saw, and under a live cut a piece's footage is
+      // this clock's, not the last render's. SET semantics, so the framing a
+      // carve copied from its host does not survive (S14). Before the item
+      // times and the stage previews, as on the old-clock path; legacy docs
+      // skip it (N1).
+      const merged =
+        edits.doc.takeLooks !== undefined
+          ? applyTakeLooks(overridden, edits.doc.takeLooks, clockMap)
+          : overridden;
       // Item times AFTER that pass (§4), so a src timing pin that resolves
       // only on this clock has applied and a half's own swap has happened —
       // produce resolves after its second pass for the same reason — and

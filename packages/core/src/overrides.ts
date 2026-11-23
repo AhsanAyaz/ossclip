@@ -29,6 +29,7 @@ import { ITEM_LEAD_SEC, maxCueSec, wordOutputStart } from "./assemble";
 import { resolveItemWords, revealItemTexts, type RevealItem } from "./reveal-match";
 import { keepsBoxAcross } from "./framing";
 import { AddedSceneSchema, isAddedKey } from "./added-scenes";
+import { normalizeTakeLooks } from "./take-looks";
 import {
   captionKeyFor,
   CaptionThemeIdSchema,
@@ -670,6 +671,19 @@ export function stripFilledThemeDefaults(theme: Partial<Theme>): Partial<Theme> 
   ) as Partial<Theme>;
 }
 
+/**
+ * One stored take look as parsed, before `normalizeTakeLooks` (see
+ * `OverrideDocSchema.takeLooks`). The look is `SceneOverrideSchema`'s own
+ * five fields, so a take look is valid exactly when the same values on a
+ * scene would be — no second copy of their limits. Lives here, not in
+ * take-looks.ts, which imports this module for types only (R6-8).
+ */
+const TakeLookEntryInputSchema = z.object({
+  srcIn: z.number(),
+  srcOut: z.number(),
+  look: SceneOverrideSchema.pick({ video: true, pip: true, layout: true, captionY: true, captionScale: true }),
+});
+
 export const OverrideDocSchema = z.object({
   /**
    * Global style tokens — the look is a system, so these are not per-element.
@@ -1086,6 +1100,39 @@ export const OverrideDocSchema = z.object({
    * not move, so it has no entry in `remapOverridesThroughRecut`.
    */
   addedScenes: z.array(AddedSceneSchema).optional(),
+  /**
+   * Take looks attached to SOURCE time (take-looks-by-source L1): `video`,
+   * `pip`, `layout`, `captionY` and `captionScale` for whatever take piece
+   * plays that footage, resolved by `applyTakeLooks` — instead of under the
+   * positional `take-*` keys in `scenes`, which a cut in front, a graphic
+   * change or a kept range renumbered onto other footage.
+   *
+   * PRESENT, even `[]`, is the "migrated" marker (L3); absent is a legacy doc,
+   * for which both pipelines skip the look pass and behave exactly as before.
+   * So it is optional with NO default — a default would migrate every doc on
+   * parse — the `sfx`/`captionsHidden` rule for a second reason.
+   *
+   * Normalized, never rejected (S9): one bad entry must not fail the parse
+   * every reader of this file makes (the `addedScenes` reasoning). Each item
+   * is checked on its own against the look fields' own schema — a look value
+   * out of range drops its entry — and `normalizeTakeLooks` then drops
+   * non-finite, inverted and empty entries, sorts, resolves overlaps (the
+   * later entry wins) and coalesces equal neighbours.
+   *
+   * Recut-immune by construction: source seconds only, so it has no entry in
+   * `remapOverridesThroughRecut` (the `cleanup.kept` property).
+   */
+  takeLooks: z
+    .array(z.unknown())
+    .transform((raw) =>
+      normalizeTakeLooks(
+        raw.flatMap((item) => {
+          const parsed = TakeLookEntryInputSchema.safeParse(item);
+          return parsed.success ? [parsed.data] : [];
+        }),
+      ),
+    )
+    .optional(),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 
@@ -1179,6 +1226,20 @@ export function plainTakeOrdinal(key: string): { n: number; k: number } | null {
   const m = /^take-(\d+)(?:-(\d+))?$/.exec(splitRootId(key));
   if (!m) return null;
   return { n: Number(m[1]), k: m[2] === undefined ? 0 : Number(m[2]) };
+}
+
+/**
+ * A key that names a take PIECE whose look comes from source time in a
+ * migrated doc (take-looks-by-source R4-S4, R7-5): a plain take or its half
+ * (`plainTakeOrdinal`), or a kept cleanup block or its half (`take-kept-<ms>`,
+ * which `isPlainTakeKey` leaves out on purpose — its ids are a different
+ * ordinal space). Never a parked key: `#orphaned` is bookkeeping that names no
+ * piece. Migration (L3) reads look fields off these keys, and in look mode the
+ * editor refuses the id-keyed look actions on them, so a write cannot land
+ * on a key nothing reads any more.
+ */
+export function isLookPieceKey(id: string): boolean {
+  return !isParkedOverrideKey(id) && (plainTakeOrdinal(id) !== null || /^take-kept-\d+$/.test(splitRootId(id)));
 }
 
 /** The ids of the splits whose take halves own their framing

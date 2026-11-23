@@ -4,6 +4,9 @@ export * from "./look";
 export * from "./overrides";
 // Produce's take-half re-keying (take-framing-identity P2).
 export * from "./take-halves";
+// Take looks attached to source time (take-looks-by-source L1, L2, S12):
+// produce resolves them with the same pass the editor previews with.
+export * from "./take-looks";
 export * from "./scene-registry";
 export * from "./assemble";
 export * from "./fill";

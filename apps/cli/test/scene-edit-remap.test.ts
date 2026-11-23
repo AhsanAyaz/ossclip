@@ -222,6 +222,22 @@ describe("produce's remap wiring (source-text guard)", () => {
     expect(applyAt).toBeGreaterThan(pinAt);
   });
 
+  it("resolves take looks after the final join, gated on the marker, and feeds the item times (take-looks-by-source L2, R7-6)", () => {
+    // Three ways to compute the looks and still render the id-keyed ones:
+    // run the pass before `applyOverrides(split` (the merge then writes the
+    // stale fields back over it), hand `resolveItemTimings` the unlooked
+    // cues, or run it ungated, which strips every legacy doc's framing.
+    const applyAt = src.indexOf("applyOverrides(split");
+    const lookAt = src.indexOf("applyTakeLooks(");
+    const itemsAt = src.indexOf("resolveItemTimings(lookedCues,");
+    expect(applyAt).toBeGreaterThan(-1);
+    expect(lookAt).toBeGreaterThan(applyAt);
+    expect(itemsAt).toBeGreaterThan(lookAt);
+    expect(src).toMatch(
+      /const lookedCues =\s*overrideDoc\.takeLooks !== undefined\s*\?\s*applyTakeLooks\(overriddenCues, overrideDoc\.takeLooks, map\)\s*:\s*overriddenCues;/,
+    );
+  });
+
   it("a take-half re-key earns the sanctioned write without spending the `.bak`", () => {
     expect(src).toMatch(/const splitHalvesChanged = takeRekey\.changed/);
     const gate = /if \(([^{]*)\)\s*\{\s*await writeOverrideDoc\(overridesPath, overrideDoc, \{ refreshBackup: cutResult\.changed \}\)/.exec(src);

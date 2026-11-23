@@ -23,6 +23,7 @@ import {
   analyze,
   applyOverrides,
   applyRepairs,
+  applyTakeLooks,
   captionWordsDiffer,
   saveConfigPatch,
   isParkedOverrideKey,
@@ -5623,6 +5624,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // as the first (the split above does not move time), and a src pin that
   // reached here unresolved would be ignored rather than applied.
   const { cues: overriddenCues, orphans: rawOrphans } = applyOverrides(split, pinnedDoc.doc);
+  // Take looks from SOURCE time (take-looks-by-source L2), right after this
+  // last override pass — and only for a migrated doc: absent `takeLooks` is
+  // the legacy marker (L3), and a legacy doc keeps its id-keyed look fields
+  // exactly as `applyOverrides` just merged them (N1, Review Focus 1). On
+  // THIS run's map, so a piece shows the look of the footage it plays here,
+  // and SET semantics, so a carve's or split's copied framing cannot leak.
+  // The editor runs the same pass in both memo paths (App.tsx).
+  const lookedCues =
+    overrideDoc.takeLooks !== undefined
+      ? applyTakeLooks(overriddenCues, overrideDoc.takeLooks, map)
+      : overriddenCues;
   // After this LAST override pass, as the editor resolves after its own: a
   // split half's own component swap has happened, so `withSwappedReveal`
   // met the same cue in both pipelines. Resolved before the split, a
@@ -5630,7 +5642,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // none in the preview (build ruling 2026-11-22, item-timing-parity).
   // Reclamp, fill, carve and split above never touch `reveal`. A project
   // without `itemPins` gets the very same list back (AG1).
-  const itemTimed = resolveItemTimings(overriddenCues, overrideDoc, transcript.words, map, itemRoots);
+  const itemTimed = resolveItemTimings(lookedCues, overrideDoc, transcript.words, map, itemRoots);
   // One line per note, as override orphans print: a pin that turned auto,
   // a graphic with no block to time.
   for (const n of itemTimed.notes) console.log(`  ⚠ ${n}`);

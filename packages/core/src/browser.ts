@@ -12,6 +12,11 @@ export * from "./scene-props-controls";
 // preview resolves items with the very pass produce runs, and their runtime
 // imports (./assemble, ./reveal-match) are already on this surface.
 export * from "./overrides";
+// Take looks (take-looks-by-source L2, S12): the editor's memo resolves a
+// take's look with the SAME `applyTakeLooks` produce renders with, and its
+// writes go through the same `setTakeLook`/`clearTakeLookFields`. Browser-
+// safe: take-looks.ts has no runtime imports at all (types only, R6-8).
+export * from "./take-looks";
 // The editor derives its plain takes with the SAME function the pipeline
 // uses — a copy would drift and the two timelines would disagree.
 export * from "./fill";
