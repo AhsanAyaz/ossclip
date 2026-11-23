@@ -1,16 +1,34 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
-import { SPLIT_MIN_PIECE_SEC, type SceneCue } from "@ossclip/core/browser";
+import { lookAt, SPLIT_MIN_PIECE_SEC, type SceneCue, type SrcRange, type TimeMap } from "@ossclip/core/browser";
+import { activeCueAt } from "@ossclip/scenes";
 import { graphicClampFor, layoutSlots, safeAreaFor } from "@ossclip/renderer/composition";
 import { findEditableFrom, findVideoFrom, rectOf } from "./hitTest";
 import { guideSnap, THRESHOLD_FRAC, type Guide } from "./guides";
 import { captionSrcFromAttribute } from "./captionAnchors";
 import { deletePlanFor, type DeletePlan } from "./deleteScene";
 import type { GraphicRect, useEdits } from "./useEdits";
+import {
+  LOOK_NEEDS_CLOCK,
+  hullOf,
+  lookCoalesceKey,
+  pieceRanges,
+  pieceSelection,
+  walkPiece,
+} from "./takeLookTarget";
 
 export interface Selection {
   sceneId: string;
   elementId: string | null;
+  /**
+   * LOOK MODE ONLY (take-looks-by-source R6-1): the hull of the selected
+   * PLAIN piece's source ranges. Carved lead and tail pieces share an id,
+   * and cuts, keeps and ⌘B renumber pieces, so a take is named by the
+   * footage it plays; `selectedPiece` (takeLookTarget.ts) resolves it by
+   * largest overlap. Absent on graphic selections and on every selection of
+   * a legacy doc, which keeps matching by id.
+   */
+  pieceExtent?: SrcRange;
 }
 
 /** A live, uncommitted framing tweak (PLAN 2026-07-30 Task B): applied onto
@@ -19,6 +37,11 @@ export interface Selection {
 export interface VideoPreview {
   sceneId: string;
   patch: { scale?: number; dx?: number; dy?: number };
+  /** LOOK MODE ONLY (take-looks-by-source R4-S1, R7-1): the previewed
+   * piece's extent. Lead and tail share an id, so an id match would preview
+   * the scrub on both; with this set the preview lands only on the piece
+   * that resolves it (`withVideoPreview`, takeLookTarget.ts). */
+  pieceExtent?: SrcRange;
 }
 
 /** A live, uncommitted graphic-box transform (R11 Task 2) — same lifecycle
@@ -146,6 +169,13 @@ interface OverlayProps {
    * App renders it as a dismissible notice beside its other non-fatal
    * banners, never `setError` (that path is fatal, the `onSave` rule). */
   onClockRefused?: (message: string) => void;
+  /**
+   * The clock `cues` are on (`liveRetimed.cueClock`, take-looks-by-source L4
+   * "Clock"). In look mode a take piece is selected, dragged and written by
+   * the source ranges its window plays on it; null refuses look drags out
+   * loud. Defaults to null, so every legacy harness is untouched.
+   */
+  cueClock?: TimeMap | null;
 }
 
 const HANDLE = 9;
@@ -480,7 +510,12 @@ export const Overlay: React.FC<OverlayProps> = ({
   toSourceSec = null,
   onClockRefused = (): void => {},
   onOverlayPress,
+  cueClock = null,
 }) => {
+  // Look mode (take-looks-by-source L3 marker, R6-4): a migrated doc. Every
+  // piece-by-footage behaviour below is gated on it; a legacy doc keeps id
+  // matching and id-keyed writes exactly as before.
+  const lookMode = edits.doc.takeLooks !== undefined;
   const [rect, setRect] = useState<DOMRect | null>(null);
   /** An in-progress drag-to-pan on the video slot (PLAN Task B). `base` is
    * the override's dx/dy at mousedown, so the drag ADDS to it. */
@@ -492,6 +527,9 @@ export const Overlay: React.FC<OverlayProps> = ({
     dy: number;
     baseDx: number;
     baseDy: number;
+    /** Look mode: the piece's source ranges, captured at the press
+     * (R4-S3) — the commit writes exactly the footage that was grabbed. */
+    ranges?: SrcRange[];
   } | null>(null);
   const videoRafRef = useRef(0);
   /** An in-progress drag of the PiP bubble itself (R21 §107): in the
@@ -504,6 +542,8 @@ export const Overlay: React.FC<OverlayProps> = ({
     y: number;
     base: { x: number; y: number };
     slot: { w: number; h: number };
+    /** Look mode: captured at the press, like the video drag's. */
+    ranges?: SrcRange[];
   } | null>(null);
   const pipRafRef = useRef(0);
   /** An in-progress transform of the graphic box (R11 Task 2). `start` is
@@ -855,12 +895,28 @@ export const Overlay: React.FC<OverlayProps> = ({
       }
       const hit = findEditableFrom(el);
       if (!hit) {
+        // Look mode: the take under the PLAYHEAD is the clicked piece
+        // (R6-4) — a carved lead and tail render the same id, so the DOM
+        // cannot say which one was hit, but only one is on screen. Resolved
+        // here, at the press, before any drag base is read. Null for a
+        // graphic, or on a legacy doc: those keep the id.
+        const playheadPiece = (): SceneCue | null => {
+          if (!lookMode) return null;
+          const frame = playerRef.current?.getCurrentFrame();
+          const at = frame === undefined ? null : activeCueAt(cues, frame / settings.fps);
+          return at?.kind === "plain" ? at : null;
+        };
         // Missed every tagged leaf — still select the scene itself if the
         // click landed inside one, so the Inspector can offer scene-level
         // controls instead of going straight back to the theme panel.
         const scene = el?.closest<HTMLElement>("[data-edit-scene]");
         if (scene) {
-          select({ sceneId: scene.dataset.editScene!, elementId: null });
+          const piece = playheadPiece();
+          select(
+            piece !== null && piece.id === scene.dataset.editScene
+              ? pieceSelection(piece, cueClock)
+              : { sceneId: scene.dataset.editScene!, elementId: null },
+          );
           return;
         }
         // No element, no scene box — the picture itself. Grab it (PLAN Task
@@ -869,6 +925,44 @@ export const Overlay: React.FC<OverlayProps> = ({
         const videoSceneId = findVideoFrom(el);
         const stageBottom = stage.getBoundingClientRect().bottom;
         if (videoSceneId && e.clientY < stageBottom - PLAYER_CONTROLS_STRIP_PX) {
+          const piece = playheadPiece();
+          if (piece !== null && piece.id === videoSceneId) {
+            // Look mode: the drag bases are the resolved piece's own, and
+            // its ranges are captured now (R4-S3). No clock, no footage to
+            // write: selected, but no drag is armed — refused out loud.
+            select(pieceSelection(piece, cueClock));
+            const ranges = pieceRanges(piece, cueClock);
+            if (ranges.length === 0) {
+              onClockRefused(LOOK_NEEDS_CLOCK);
+              return;
+            }
+            if (videoPressGesture(piece.layout, e.shiftKey) === "move-pip") {
+              const slot = layoutSlots("pip-bubble", undefined, [], settings).video.rect;
+              pipDragRef.current = {
+                sceneId: piece.id,
+                x: e.clientX,
+                y: e.clientY,
+                base: { x: piece.pip?.x ?? slot.x, y: piece.pip?.y ?? slot.y },
+                slot: { w: slot.w, h: slot.h },
+                ranges,
+              };
+              return;
+            }
+            // The STORED look, the doc layer the legacy base reads too —
+            // never the cue's, which may carry an uncommitted preview.
+            const prior = lookAt(edits.doc.takeLooks ?? [], ranges).video;
+            videoDragRef.current = {
+              sceneId: piece.id,
+              x: e.clientX,
+              y: e.clientY,
+              dx: 0,
+              dy: 0,
+              baseDx: prior?.dx ?? 0,
+              baseDy: prior?.dy ?? 0,
+              ranges,
+            };
+            return;
+          }
           select({ sceneId: videoSceneId, elementId: null });
           // The pip bubble (R21 §107): plain drag repositions the bubble,
           // Shift-drag pans the picture inside it (`videoPressGesture` has
@@ -911,7 +1005,22 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("mousedown", onWindowMouseDown);
     return () => window.removeEventListener("mousedown", onWindowMouseDown);
-  }, [stageRef, select, edits, canvasBox, cues, settings]);
+  }, [stageRef, select, edits, canvasBox, cues, settings, lookMode, cueClock, playerRef, onClockRefused]);
+
+  // A `load` ends every gesture in flight (take-looks-by-source R4-S3): a
+  // drag captured its piece and base on the doc it started on, and must not
+  // commit onto the one that replaced it. App drops the previews itself.
+  useEffect(() => {
+    videoDragRef.current = null;
+    pipDragRef.current = null;
+    rectDragRef.current = null;
+    elResizeRef.current = null;
+    dragRef.current = null;
+    setDragOffset({ dx: 0, dy: 0 });
+    setRectDragging(false);
+    setElResizeFactor(null);
+    setGuides([]);
+  }, [edits.loadCount]);
 
   useEffect(() => {
     // Page px → composition px. The factor comes from the Player's own
@@ -1024,14 +1133,17 @@ export const Overlay: React.FC<OverlayProps> = ({
             if (!drag || !canvas) return;
             const fx = (e.clientX - drag.x) / canvas.w;
             const fy = (e.clientY - drag.y) / canvas.h;
-            edits.patchPip(
-              drag.sceneId,
-              {
-                x: round4(Math.min(Math.max(drag.base.x + fx, 0), 1 - drag.slot.w)),
-                y: round4(Math.min(Math.max(drag.base.y + fy, 0), 1 - drag.slot.h)),
-              },
-              `pip:${drag.sceneId}:drag`,
-            );
+            const pos = {
+              x: round4(Math.min(Math.max(drag.base.x + fx, 0), 1 - drag.slot.w)),
+              y: round4(Math.min(Math.max(drag.base.y + fy, 0), 1 - drag.slot.h)),
+            };
+            // Look mode: onto the footage captured at the press, under the
+            // piece's `pipPos` unit key (R7-3) — still one drag, one undo.
+            if (drag.ranges !== undefined) {
+              edits.patchTakeLook(drag.ranges, { pip: pos }, lookCoalesceKey(drag.ranges, "pipPos"));
+            } else {
+              edits.patchPip(drag.sceneId, pos, `pip:${drag.sceneId}:drag`);
+            }
           });
         }
         return;
@@ -1054,12 +1166,16 @@ export const Overlay: React.FC<OverlayProps> = ({
             // the video slot has no scaled wrapper (`cue.video.dx/dy` apply
             // via a plain translate), so dividing here would land every pan
             // short by the fit factor. Do not "fix" this into that bug.
+            // Look mode names the piece by its extent (R4-S1), so the pan
+            // previews on the grabbed piece only, not every piece of its id.
+            const extent = drag.ranges !== undefined ? hullOf(drag.ranges) : null;
             onVideoPreview({
               sceneId: drag.sceneId,
               patch: {
                 dx: drag.baseDx + drag.dx * scale,
                 dy: drag.baseDy + drag.dy * scale,
               },
+              ...(extent !== null ? { pieceExtent: extent } : {}),
             });
           });
         }
@@ -1148,10 +1264,14 @@ export const Overlay: React.FC<OverlayProps> = ({
         if (videoDrag.dx !== 0 || videoDrag.dy !== 0) {
           const scale = pageToComposition();
           // ONE patch per gesture — one undo step (PLAN Task B2.4).
-          edits.patchVideo(videoDrag.sceneId, {
+          const pan = {
             dx: round1(videoDrag.baseDx + videoDrag.dx * scale),
             dy: round1(videoDrag.baseDy + videoDrag.dy * scale),
-          });
+          };
+          // Look mode: the footage captured at the press (R4-S3), as a
+          // framing-unit write (R6-2) — `setTakeLook` keeps the stored scale.
+          if (videoDrag.ranges !== undefined) edits.patchTakeLook(videoDrag.ranges, { video: pan });
+          else edits.patchVideo(videoDrag.sceneId, pan);
         }
         onVideoPreview(null);
         return;
@@ -1393,12 +1513,24 @@ export const Overlay: React.FC<OverlayProps> = ({
         // first scene, ← the last, instead of doing nothing.
         if (isTextEntry()) return;
         const sel = selectionRef.current;
+        const dir = e.key === "ArrowRight" ? 1 : -1;
+        if (lookMode) {
+          // Look mode walks PIECES (R6-4, R7-8): from the selected piece,
+          // not the first cue holding its id — which is the lead, so a walk
+          // from the tail would step back into the kept block forever.
+          const start = cues[dir === 1 ? 0 : cues.length - 1];
+          const target = sel ? walkPiece(cues, sel, dir, cueClock) : start ? pieceSelection(start, cueClock) : null;
+          if (!target) return;
+          e.preventDefault();
+          select(target);
+          return;
+        }
         const next = sel
           ? (() => {
               const idx = cues.findIndex((c) => c.id === sel.sceneId);
-              return idx === -1 ? undefined : cues[idx + (e.key === "ArrowRight" ? 1 : -1)];
+              return idx === -1 ? undefined : cues[idx + dir];
             })()
-          : cues[e.key === "ArrowRight" ? 0 : cues.length - 1];
+          : cues[dir === 1 ? 0 : cues.length - 1];
         if (!next) return;
         e.preventDefault();
         select({ sceneId: next.id, elementId: null });
@@ -1417,7 +1549,9 @@ export const Overlay: React.FC<OverlayProps> = ({
         const target = cues[(idx === -1 ? 0 : idx) + (e.key === "ArrowRight" ? 1 : -1)];
         if (!target) return;
         player.seekTo(Math.round(target.startSec * settings.fps));
-        select({ sceneId: target.id, elementId: null });
+        // The target is a cue OBJECT, so look mode can name the very piece
+        // (R4-S2) rather than an id its lead shares.
+        select(lookMode ? pieceSelection(target, cueClock) : { sceneId: target.id, elementId: null });
       } else if (!mod && !e.altKey && e.key === "?") {
         // The keybinds reference (R16 §63).
         if (isTypingContext()) return;
@@ -1444,7 +1578,7 @@ export const Overlay: React.FC<OverlayProps> = ({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue, cues, settings, onToggleHelp, onRequestDelete, fromLive, hasOldClockPreimage, toSourceSec, onClockRefused]);
+  }, [select, edits, captionEdit, onSave, playerRef, stageRef, onTransport, cue, cues, settings, onToggleHelp, onRequestDelete, fromLive, hasOldClockPreimage, toSourceSec, onClockRefused, lookMode, cueClock]);
 
   return (
     <div

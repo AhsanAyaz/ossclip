@@ -9,6 +9,7 @@ import {
   addedSceneToScene,
   applyCleanupChoices,
   applyOverrides,
+  applyTakeLooks,
   applyUserCuts,
   assembleScenes,
   atSplitPoints,
@@ -156,7 +157,12 @@ function producePipeline(run: Run): Outcome {
   });
   const { cues: filled } = carveKeptTakes(filled0, keptRangesForCarve, map);
   const split = splitCues(filled, resolveSplitPoints(doc.splits, map).points);
-  const { cues: mergedCues } = applyOverrides(split, pinnedDoc.doc);
+  const { cues: overriddenCues } = applyOverrides(split, pinnedDoc.doc);
+  // Take looks from source time (take-looks-by-source L2), produce's step 9:
+  // after the second pass, on the run's map, migrated docs only (N1). Every
+  // fixture here that predates looks is legacy, so for them this is a no-op.
+  const mergedCues =
+    doc.takeLooks !== undefined ? applyTakeLooks(overriddenCues, doc.takeLooks, map) : overriddenCues;
   // After the second pass, as the editor resolves after its last one: a
   // half's own swap has already happened, so `withSwappedReveal` sees the
   // same cue in both pipelines (resolved before the split, a reveal-less
@@ -200,7 +206,9 @@ function editorPipeline(run: Run, viaPreview = false): Outcome & { exit: "early"
   });
   const splitted = splitCues(filled, atSplitPoints(doc.splits));
   const { cues: mergedCues } = applyOverrides(splitted, oldClockDoc);
-  const { cues } = dropHiddenCues(mergedCues, doc);
+  const { cues: shownTakes } = dropHiddenCues(mergedCues, doc);
+  // The memo's old-clock look pass (take-looks-by-source L2, B8).
+  const cues = doc.takeLooks !== undefined ? applyTakeLooks(shownTakes, doc.takeLooks, oldClockMap) : shownTakes;
 
   const captionLines: CaptionLine[] = [];
   let props = { outputDurationSec: oldMap.outputDuration, captionLines, sceneCues: cues };
@@ -228,7 +236,9 @@ function editorPipeline(run: Run, viaPreview = false): Outcome & { exit: "early"
   const resolved = resolveSplitPoints(srcOnly, clockMap);
   const splitted2 = splitCues(carved.cues, resolved.points);
   const pinned = resolveSrcTimingPins(doc, clockMap);
-  const { cues: merged } = applyOverrides(splitted2, pinned.doc);
+  const { cues: overridden } = applyOverrides(splitted2, pinned.doc);
+  // finishOnClock's look pass, on this clock (L2, B8).
+  const merged = doc.takeLooks !== undefined ? applyTakeLooks(overridden, doc.takeLooks, clockMap) : overridden;
   if (viaPreview) {
     const timed = previewItemTimings({ sceneCues: merged }, doc, roots, run.words, clockMap);
     return { cues: timed.props.sceneCues, notes: timed.notes, exit: "main" };
@@ -568,6 +578,57 @@ describe("item timing parity: produce and the editor preview (graphic-editor-mod
       expect(produce["take-3"]).toEqual(root);
       expect(produce["take-3@s"]).toEqual({ video: half?.video, pip: undefined });
     }
+  });
+
+  describe("take looks resolve the same by output time (take-looks-by-source Tests, Parity)", () => {
+    // A migrated doc (the marker present). The graphic sits late, over
+    // "then we ship it fast", so the takes before it are plain footage the
+    // first pause's kept block can carve.
+    const looks = [
+      { srcIn: 0, srcOut: 2.25, look: { video: { scale: 1.5, dx: -20 } } },
+      { srcIn: 2.25, srcOut: 3.5, look: { video: { dx: 40 }, captionY: 0.3 } },
+      { srcIn: 3.5, srcOut: 8.75, look: { layout: "pip-bubble" as const, pip: { x: 0.2, y: 0.6 } } },
+    ];
+    const graphic = bullets({ anchor: { startWord: 15, endWord: 19 }, props: { items: ["SHIP IT"] }, cue: { entryWord: 16 } });
+    const LOOK_KEYS = ["layout", "video", "pip", "captionY", "captionScale"] as const;
+    const lookOf = (c: SceneCue) => Object.fromEntries(LOOK_KEYS.map((k) => [k, c[k]]));
+    /** Each produce plain cue's midpoint, and the look each pipeline shows
+     * there: produce and the editor need not cut the takes at the same ids,
+     * only show the same footage the same way at the same moment. */
+    const looksByTime = (run: Run, exit: "early" | "main") => {
+      const produce = producePipeline(run).cues;
+      const editor = editorPipeline(run);
+      expect(editor.exit).toBe(exit);
+      const at = (cues: readonly SceneCue[], t: number) => cues.find((c) => c.startSec <= t && t < c.endSec)!;
+      const mids = produce.filter((c) => c.kind === "plain").map((c) => (c.startSec + c.endSec) / 2);
+      for (const t of mids) {
+        expect(at(editor.cues, t).kind, `t=${t}`).toBe("plain");
+        expect(lookOf(at(editor.cues, t)), `t=${t}`).toEqual(lookOf(at(produce, t)));
+      }
+      return { produce, at };
+    };
+
+    it("on the old clock (the early exit)", () => {
+      const run: Run = { words: WORDS, proposal: PROPOSAL, scenes: [graphic], doc: docOf({ takeLooks: looks }) };
+      const { produce, at } = looksByTime(run, "early");
+      // Exercised: the first take shows its framing, the next its pip.
+      expect(at(produce, 1).video).toEqual({ scale: 1.5, dx: -20 });
+      expect(at(produce, 3).layout).toBe("pip-bubble");
+    });
+
+    it("with a kept block (the main path): the revived pause shows its own footage's look", () => {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [graphic],
+        doc: docOf({ takeLooks: looks, cleanup: keep(PAUSE_1) }),
+      };
+      const { produce } = looksByTime(run, "main");
+      const kept = produce.find((c) => c.id.startsWith("take-kept-"))!;
+      expect(kept.video).toEqual({ dx: 40 });
+      expect(kept.captionY).toBe(0.3);
+      expect(kept.layout).toBe("full-bleed");
+    });
   });
 
   it("invariant: a BulletList with neither itemWords nor itemPins has no reveal after both pipelines", () => {

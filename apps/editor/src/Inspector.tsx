@@ -6,6 +6,7 @@ import {
   cutRangeToOldClock,
   isBackdropLayout,
   LayoutSchema,
+  lookAt,
   scriptComponentIds,
   scalarPropControls,
   SCENE_REGISTRY,
@@ -15,7 +16,10 @@ import {
   type ScriptComponentId,
   type SceneComponentId,
   type SceneCue,
+  type SrcRange,
+  type TakeLook,
   type Theme,
+  type TimeMap,
 } from "@ossclip/core/browser";
 import {
   belowFaceBox,
@@ -47,6 +51,7 @@ import { handPlacedStartRect } from "./overlayBox";
 import { DYNAMIC_ID, buildArrayPatch, elementTextOf, type Selection, type VideoPreview } from "./Overlay";
 import { addedSkippedHeading, type AddedSkippedRow } from "./addedGraphics";
 import { graphicDeleteFor } from "./deleteScene";
+import { LOOK_NEEDS_CLOCK, lookCoalesceKey, pieceAnchor, pieceRanges, type LookUnit } from "./takeLookTarget";
 
 /** What planned this video and what it cost (R21 §104) — `/api/usage`'s
  * shape, read straight off the workdir's own artefacts. */
@@ -80,6 +85,19 @@ interface InspectorProps {
   frame: { width: number; height: number };
   /** Every live cue id, in time order — the §56b "apply to all" fan-out list. */
   allSceneIds: string[];
+  /**
+   * Look mode's half of "apply to all" (take-looks-by-source R4-S5, R6-6):
+   * one source-range list per plain cue on screen, on `cueClock`. Empty on a
+   * legacy doc, and with no clock.
+   */
+  allTakeRanges?: SrcRange[][];
+  /**
+   * The clock the live cues are on (`liveRetimed.cueClock`, L4 "Clock",
+   * S5): in look mode a take's look is read and written on the source
+   * ranges its window plays on it. Null — no spans, an unrendered workdir —
+   * refuses look edits out loud. Defaults to null.
+   */
+  cueClock?: TimeMap | null;
   edits: ReturnType<typeof useEdits>;
   /**
    * Drops the ELEMENT half of the selection (PLAN Task 2): the "Delete
@@ -735,6 +753,8 @@ export const Inspector: React.FC<InspectorProps> = ({
   cue,
   frame,
   allSceneIds,
+  allTakeRanges = [],
+  cueClock = null,
   edits,
   onSelect,
   resolvedTheme,
@@ -1297,6 +1317,58 @@ export const Inspector: React.FC<InspectorProps> = ({
 
   if (selection && cue) {
     const isPlain = cue.kind === "plain";
+    // Look mode (take-looks-by-source L4, S10): a take piece's look lives on
+    // the SOURCE footage it plays, so on a migrated doc every look control
+    // on a plain cue writes `patchTakeLook`/`clearTakeLookFields` over the
+    // piece's ranges, never an id key (the reducer would refuse it, R4-S4).
+    // `cue` is App's resolved piece (`selectedPiece`), so a tail selected
+    // reads and writes the tail, not the lead sharing its id. A legacy doc,
+    // or a graphic, takes the id-keyed path exactly as before.
+    const lookPiece = isPlain && edits.doc.takeLooks !== undefined;
+    const lookRanges = lookPiece ? pieceRanges(cue, cueClock) : [];
+    // No ranges means no clock (or a window that plays nothing): refused out
+    // loud, never written to a guessed range.
+    const lookReady = (): boolean => {
+      if (lookRanges.length > 0) return true;
+      onClockRefused(LOOK_NEEDS_CLOCK);
+      return false;
+    };
+    const lookPatch = (patch: TakeLook, unit: LookUnit, coalesce: boolean): void => {
+      if (!lookReady()) return;
+      edits.patchTakeLook(lookRanges, patch, coalesce ? lookCoalesceKey(lookRanges, unit) : undefined);
+    };
+    const lookClear = (fields: (keyof TakeLook)[]): void => {
+      if (!lookReady()) return;
+      edits.clearTakeLookFields(lookRanges, fields);
+    };
+    /** `video` writes, either mode. `legacyKey` is the id-keyed coalesce key
+     * the control always used; a look write coalesces exactly when it does,
+     * under the unit's key (R7-3). */
+    const writeVideo = (
+      patch: { scale?: number; dx?: number; dy?: number; autoZoom?: boolean; volume?: number },
+      unit: LookUnit,
+      legacyKey?: string,
+    ): void => {
+      if (lookPiece) lookPatch({ video: patch }, unit, legacyKey !== undefined);
+      else edits.patchVideo(selection.sceneId, patch, legacyKey);
+    };
+    const writePip = (
+      patch: { cornerRadius?: number; x?: number; y?: number },
+      unit: LookUnit,
+      legacyKey: string,
+    ): void => {
+      if (lookPiece) lookPatch({ pip: patch }, unit, true);
+      else edits.patchPip(selection.sceneId, patch, legacyKey);
+    };
+    // The zoom scrub's preview names its piece by extent in look mode
+    // (R4-S1): an id would preview the scrub on the lead and the tail both.
+    const pieceExtent = lookPiece ? pieceAnchor(cue, cueClock) : null;
+    const previewVideo = (patch: { scale?: number; dx?: number; dy?: number }): void =>
+      onVideoPreview({
+        sceneId: selection.sceneId,
+        patch,
+        ...(pieceExtent !== null ? { pieceExtent } : {}),
+      });
     const swapOptions = !isPlain && cue.component ? componentSwapOptions(cue.component) : null;
     // Deleted scenes whose window this cue covers (field report 2026-08-31,
     // second round): a hidden scene is not selectable anywhere any more —
@@ -1686,7 +1758,9 @@ export const Inspector: React.FC<InspectorProps> = ({
                   data-testid="layout-select"
                   value={cue.layout}
                   onChange={(e) =>
-                    edits.patchLayout(selection.sceneId, e.target.value as SceneCue["layout"], cue.layout)
+                    lookPiece
+                      ? lookPatch({ layout: e.target.value as SceneCue["layout"] }, "layout", false)
+                      : edits.patchLayout(selection.sceneId, e.target.value as SceneCue["layout"], cue.layout)
                   }
                 >
                   {backdrops ? (
@@ -1744,15 +1818,10 @@ export const Inspector: React.FC<InspectorProps> = ({
               value={cue.video?.scale ?? 1}
               // Scrub = live preview only; the REAL patch lands once, on
               // release, so one slider gesture is one undo step.
-              onChange={(e) =>
-                onVideoPreview({
-                  sceneId: selection.sceneId,
-                  patch: { scale: Number(e.target.value) },
-                })
-              }
+              onChange={(e) => previewVideo({ scale: Number(e.target.value) })}
               onPointerUp={(e) => {
                 const v = Number((e.target as HTMLInputElement).value);
-                edits.patchVideo(selection.sceneId, { scale: v }, `video:${selection.sceneId}:scale`);
+                writeVideo({ scale: v }, "framing", `video:${selection.sceneId}:scale`);
                 onVideoPreview(null);
               }}
               onKeyUp={(e) => {
@@ -1765,7 +1834,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                 ];
                 if (!moves.includes(e.key)) return;
                 const v = Number((e.target as HTMLInputElement).value);
-                edits.patchVideo(selection.sceneId, { scale: v }, `video:${selection.sceneId}:scale`);
+                writeVideo({ scale: v }, "framing", `video:${selection.sceneId}:scale`);
                 onVideoPreview(null);
               }}
             />
@@ -1777,7 +1846,7 @@ export const Inspector: React.FC<InspectorProps> = ({
               type="checkbox"
               data-testid="auto-zoom"
               checked={cue.video?.autoZoom !== false}
-              onChange={(e) => edits.patchVideo(selection.sceneId, { autoZoom: e.target.checked })}
+              onChange={(e) => writeVideo({ autoZoom: e.target.checked }, "autoZoom")}
             />
             auto zoom (the slow push composes on top of your zoom)
           </label>
@@ -1796,26 +1865,20 @@ export const Inspector: React.FC<InspectorProps> = ({
             min={0.05}
             max={4}
             dragStep={0.01}
-            onCommit={(v) =>
-              edits.patchVideo(selection.sceneId, { scale: v }, `video:${selection.sceneId}:scale`)
-            }
+            onCommit={(v) => writeVideo({ scale: v }, "framing", `video:${selection.sceneId}:scale`)}
           />
           <div style={pairGrid}>
             <NumberField
               id="dx"
               value={cue.video?.dx ?? 0}
               dragStep={1}
-              onCommit={(v) =>
-                edits.patchVideo(selection.sceneId, { dx: v }, `video:${selection.sceneId}:dx`)
-              }
+              onCommit={(v) => writeVideo({ dx: v }, "framing", `video:${selection.sceneId}:dx`)}
             />
             <NumberField
               id="dy"
               value={cue.video?.dy ?? 0}
               dragStep={1}
-              onCommit={(v) =>
-                edits.patchVideo(selection.sceneId, { dy: v }, `video:${selection.sceneId}:dy`)
-              }
+              onCommit={(v) => writeVideo({ dy: v }, "framing", `video:${selection.sceneId}:dy`)}
             />
           </div>
           {cue.video ? (
@@ -1823,7 +1886,8 @@ export const Inspector: React.FC<InspectorProps> = ({
               style={button}
               onClick={() => {
                 blurActive();
-                edits.clearVideo(selection.sceneId);
+                if (lookPiece) lookClear(["video"]);
+                else edits.clearVideo(selection.sceneId);
               }}
             >
               Reset framing
@@ -1852,11 +1916,7 @@ export const Inspector: React.FC<InspectorProps> = ({
             // is one undo step. No scrub-preview channel like zoom's: gain is
             // heard, not seen, and the player is paused mid-drag anyway.
             onChange={(e) =>
-              edits.patchVideo(
-                selection.sceneId,
-                { volume: Number(e.target.value) },
-                `video:${selection.sceneId}:volume`,
-              )
+              writeVideo({ volume: Number(e.target.value) }, "volume", `video:${selection.sceneId}:volume`)
             }
           />
           <div style={{ fontSize: 12, color: "#9A9AA3" }}>
@@ -1893,9 +1953,9 @@ export const Inspector: React.FC<InspectorProps> = ({
                       step={0.01}
                       value={roundness}
                       onChange={(e) =>
-                        edits.patchPip(
-                          selection.sceneId,
+                        writePip(
                           { cornerRadius: Number(e.target.value) },
+                          "cornerRadius",
                           `pip:${selection.sceneId}:cornerRadius`,
                         )
                       }
@@ -1908,9 +1968,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                       min={0}
                       max={1 - slot.rect.w}
                       dragStep={0.002}
-                      onCommit={(v) =>
-                        edits.patchPip(selection.sceneId, { x: v }, `pip:${selection.sceneId}:x`)
-                      }
+                      onCommit={(v) => writePip({ x: v }, "pipPos", `pip:${selection.sceneId}:x`)}
                     />
                     <NumberField
                       id="pip-y"
@@ -1918,9 +1976,7 @@ export const Inspector: React.FC<InspectorProps> = ({
                       min={0}
                       max={1 - slot.rect.h}
                       dragStep={0.002}
-                      onCommit={(v) =>
-                        edits.patchPip(selection.sceneId, { y: v }, `pip:${selection.sceneId}:y`)
-                      }
+                      onCommit={(v) => writePip({ y: v }, "pipPos", `pip:${selection.sceneId}:y`)}
                     />
                   </div>
                   {cue.pip ? (
@@ -1929,7 +1985,8 @@ export const Inspector: React.FC<InspectorProps> = ({
                       style={button}
                       onClick={() => {
                         blurActive();
-                        edits.clearPip(selection.sceneId);
+                        if (lookPiece) lookClear(["pip"]);
+                        else edits.clearPip(selection.sceneId);
                       }}
                     >
                       Reset bubble
@@ -2039,7 +2096,12 @@ export const Inspector: React.FC<InspectorProps> = ({
           const autoAnchor = layoutSlots(cue.layout, undefined, [], frame).captionAnchor;
           const effY = cue.captionY ?? autoAnchor;
           const effScale = cue.captionScale ?? 1;
-          const sceneDoc = edits.doc.scenes[selection.sceneId];
+          // What is STORED for this piece decides whether Reset shows (S4):
+          // in look mode that is its footage's look, never the take key,
+          // which a migrated doc no longer reads.
+          const sceneDoc: TakeLook | undefined = lookPiece
+            ? lookAt(edits.doc.takeLooks ?? [], lookRanges)
+            : edits.doc.scenes[selection.sceneId];
           return (
             <div style={section}>
               <span style={label}>Captions</span>
@@ -2070,11 +2132,13 @@ export const Inspector: React.FC<InspectorProps> = ({
                   step={0.01}
                   value={effY}
                   onChange={(e) =>
-                    edits.patchCaptionY(
-                      selection.sceneId,
-                      Number(e.target.value),
-                      `captionY:${selection.sceneId}`,
-                    )
+                    lookPiece
+                      ? lookPatch({ captionY: Number(e.target.value) }, "captionY", true)
+                      : edits.patchCaptionY(
+                          selection.sceneId,
+                          Number(e.target.value),
+                          `captionY:${selection.sceneId}`,
+                        )
                   }
                 />
               </div>
@@ -2093,11 +2157,13 @@ export const Inspector: React.FC<InspectorProps> = ({
                   step={0.01}
                   value={effScale}
                   onChange={(e) =>
-                    edits.patchCaptionScale(
-                      selection.sceneId,
-                      Number(e.target.value),
-                      `captionScale:${selection.sceneId}`,
-                    )
+                    lookPiece
+                      ? lookPatch({ captionScale: Number(e.target.value) }, "captionScale", true)
+                      : edits.patchCaptionScale(
+                          selection.sceneId,
+                          Number(e.target.value),
+                          `captionScale:${selection.sceneId}`,
+                        )
                   }
                 />
               </div>
@@ -2108,7 +2174,9 @@ export const Inspector: React.FC<InspectorProps> = ({
                 max={3}
                 dragStep={0.01}
                 onCommit={(v) =>
-                  edits.patchCaptionScale(selection.sceneId, v, `captionScale:${selection.sceneId}`)
+                  lookPiece
+                    ? lookPatch({ captionScale: v }, "captionScale", true)
+                    : edits.patchCaptionScale(selection.sceneId, v, `captionScale:${selection.sceneId}`)
                 }
               />
               <button
@@ -2117,7 +2185,17 @@ export const Inspector: React.FC<InspectorProps> = ({
                 title="Write this scene's caption position and scale to every scene — one undo step"
                 onClick={() => {
                   blurActive();
-                  edits.patchCaptionStyleAll(allSceneIds, { y: effY, scale: effScale });
+                  if (edits.doc.takeLooks === undefined) {
+                    edits.patchCaptionStyleAll(allSceneIds, { y: effY, scale: effScale });
+                    return;
+                  }
+                  // Look mode, whatever is selected (R4-S5, R6-6): graphics
+                  // by id, every take by its footage. With no clock only the
+                  // graphic part can land, and the takes' refusal is said.
+                  const plainIds = new Set(sceneCues.filter((c) => c.kind === "plain").map((c) => c.id));
+                  const graphicIds = allSceneIds.filter((id) => !plainIds.has(id));
+                  edits.patchCaptionStyleAll(graphicIds, { y: effY, scale: effScale }, allTakeRanges);
+                  if (cueClock === null && plainIds.size > 0) onClockRefused(LOOK_NEEDS_CLOCK);
                 }}
               >
                 Apply to all scenes
@@ -2128,7 +2206,8 @@ export const Inspector: React.FC<InspectorProps> = ({
                   style={button}
                   onClick={() => {
                     blurActive();
-                    edits.clearCaptionStyle(selection.sceneId);
+                    if (lookPiece) lookClear(["captionY", "captionScale"]);
+                    else edits.clearCaptionStyle(selection.sceneId);
                   }}
                 >
                   Reset captions

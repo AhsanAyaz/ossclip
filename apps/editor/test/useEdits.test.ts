@@ -13,7 +13,14 @@ import {
   splitCues,
   type SceneCue,
 } from "@ossclip/core/browser";
-import { COALESCE_MS, editReducer, initialEditState, mintAddedSceneId, useEdits } from "../src/useEdits";
+import {
+  COALESCE_MS,
+  editReducer,
+  initialEditState,
+  mintAddedSceneId,
+  unseenRefusal,
+  useEdits,
+} from "../src/useEdits";
 
 describe("edit state", () => {
   it("starts clean", () => {
@@ -782,6 +789,148 @@ describe("a ⌘B on a take copies the piece's framing (take-framing-identity P1)
     // the piece was showing, field for field.
     expect(half.pip).toBeUndefined();
     expect(half.captionY).toBe(0.3);
+  });
+});
+
+describe("look mode: take looks are written to source ranges (take-looks-by-source L4)", () => {
+  // A migrated doc — `takeLooks` present is the marker (L3). The tail of
+  // take-1 plays source 12..20 and already has a framing.
+  const TAIL = [{ srcIn: 12, srcOut: 20 }];
+  const migrated = (extra: Record<string, unknown> = {}) =>
+    editReducer(initialEditState(), {
+      type: "load",
+      doc: OverrideDocSchema.parse({
+        takeLooks: [{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 } } }],
+        ...extra,
+      }),
+    });
+
+  it("patchTakeLook writes onto the piece's footage, and clearTakeLookFields is a real reset", () => {
+    const s0 = migrated();
+    const s1 = editReducer(s0, { type: "patchTakeLook", ranges: TAIL, patch: { captionY: 0.3 } });
+    expect(s1.doc.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 }, captionY: 0.3 } }]);
+    expect(s1.doc.scenes).toEqual({});
+    expect(s1.past).toHaveLength(1);
+    const s2 = editReducer(s1, { type: "clearTakeLookFields", ranges: TAIL, fields: ["video"] });
+    expect(s2.doc.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { captionY: 0.3 } }]);
+    const s3 = editReducer(s2, { type: "clearTakeLookFields", ranges: TAIL, fields: ["captionY"] });
+    // Nothing left to say: the entry goes, the marker stays (L3).
+    expect(s3.doc.takeLooks).toEqual([]);
+    expect(editReducer(s3, { type: "undo" }).doc).toEqual(s2.doc);
+  });
+
+  it("the framing unit is expanded from the part's own values: a dx patch keeps the stored scale (R6-2, R7-3)", () => {
+    const s = editReducer(migrated(), { type: "patchTakeLook", ranges: TAIL, patch: { video: { dx: -4 } } });
+    expect(s.doc.takeLooks![0]!.look.video).toEqual({ scale: 2, dx: -4 });
+    // A member absent from the look and from the patch stays absent — never
+    // written as a default.
+    expect("dy" in s.doc.takeLooks![0]!.look.video!).toBe(false);
+  });
+
+  it("a coalesced drag is ONE undo step", () => {
+    const key = "look:12:framing";
+    let s = migrated();
+    for (const dx of [1, 2, 3]) s = editReducer(s, { type: "patchTakeLook", ranges: TAIL, patch: { video: { dx } }, coalesce: key });
+    expect(s.past).toHaveLength(1);
+    expect(s.doc.takeLooks![0]!.look.video).toEqual({ scale: 2, dx: 3 });
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(migrated().doc);
+  });
+
+  it("a write that changes nothing makes no commit — the same state back (S1)", () => {
+    const s = migrated();
+    expect(editReducer(s, { type: "patchTakeLook", ranges: TAIL, patch: { video: { scale: 2 } } })).toBe(s);
+    expect(editReducer(s, { type: "clearTakeLookFields", ranges: TAIL, fields: ["pip", "captionY"] })).toBe(s);
+    expect(editReducer(s, { type: "patchTakeLook", ranges: [], patch: { captionY: 0.4 } })).toBe(s);
+  });
+
+  it("patchCaptionStyleAll writes graphics by id and takes by range, in ONE commit, dropping take ids (N6, R6-6)", () => {
+    const s = editReducer(migrated(), {
+      type: "patchCaptionStyleAll",
+      sceneIds: ["scene-0", "take-1", "take-kept-5000", "added-1"],
+      takeRanges: [[{ srcIn: 0, srcOut: 10 }], TAIL],
+      y: 0.8,
+      scale: 1.2,
+    });
+    expect(Object.keys(s.doc.scenes).sort()).toEqual(["added-1", "scene-0"]);
+    expect(s.doc.scenes["scene-0"]).toMatchObject({ captionY: 0.8, captionScale: 1.2 });
+    expect(s.doc.takeLooks).toEqual([
+      { srcIn: 0, srcOut: 10, look: { captionY: 0.8, captionScale: 1.2 } },
+      { srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 }, captionY: 0.8, captionScale: 1.2 } },
+    ]);
+    expect(s.past).toHaveLength(1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(migrated().doc);
+  });
+
+  it("clearCaptionStyle on a take is refused: the look lives on source time, the reset is clearTakeLookFields", () => {
+    const s0 = editReducer(migrated(), { type: "patchTakeLook", ranges: TAIL, patch: { captionY: 0.3, captionScale: 1.5 } });
+    const refused = editReducer(s0, { type: "clearCaptionStyle", sceneId: "take-1" });
+    expect(refused.doc).toBe(s0.doc);
+    expect(refused.lastRefusal?.seq).toBe(1);
+    const reset = editReducer(s0, { type: "clearTakeLookFields", ranges: TAIL, fields: ["captionY", "captionScale"] });
+    expect(reset.doc.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 } } }]);
+  });
+
+  it("every id-keyed look action on a look-piece id is refused with lastRefusal; graphics still write (R4-S4, R6-5)", () => {
+    const s0 = migrated();
+    const actions = [
+      { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } },
+      { type: "clearVideo", sceneId: "take-1@14000" },
+      { type: "patchPip", sceneId: "take-kept-5000", patch: { x: 0.1 } },
+      { type: "clearPip", sceneId: "take-2" },
+      { type: "patchLayout", sceneId: "take-2-1", layout: "pip-bubble", from: "full-bleed" },
+      { type: "patchCaptionY", sceneId: "take-1", y: 0.2 },
+      { type: "patchCaptionScale", sceneId: "take-1", scale: 2 },
+      { type: "clearCaptionStyle", sceneId: "take-kept-5000@s1" },
+    ] as const;
+    let s = s0;
+    actions.forEach((action, i) => {
+      const next = editReducer(s, action);
+      expect(next.doc, action.type).toBe(s0.doc);
+      expect(next.past, action.type).toBe(s0.past);
+      expect(next.dirty, action.type).toBe(false);
+      expect(next.lastRefusal, action.type).toEqual({ message: expect.any(String), seq: i + 1 });
+      s = next;
+    });
+    // A graphic's look is still id-keyed in look mode.
+    const g = editReducer(s0, { type: "patchVideo", sceneId: "scene-3", patch: { scale: 3 } });
+    expect(g.doc.scenes["scene-3"]!.video).toEqual({ scale: 3 });
+    expect(g.lastRefusal).toBeNull();
+    // A legacy doc is untouched by the refusal: the same action writes.
+    const legacy = editReducer(initialEditState(), { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } });
+    expect(legacy.doc.scenes["take-1"]!.video).toEqual({ scale: 3 });
+  });
+
+  it("a look action on a legacy doc is refused, never invented", () => {
+    const s0 = initialEditState();
+    const s = editReducer(s0, { type: "patchTakeLook", ranges: TAIL, patch: { captionY: 0.3 } });
+    expect(s.doc).toBe(s0.doc);
+    expect(s.doc.takeLooks).toBeUndefined();
+    expect(s.lastRefusal?.seq).toBe(1);
+  });
+
+  it("⌘B on a take adds ONLY the split: no copy, no ownFraming flag (L4)", () => {
+    const s0 = migrated({ scenes: { "take-1": { hidden: true } } });
+    const s = editReducer(s0, { type: "addSplit", at: 14, src: 14, targetId: "take-1" });
+    expect(s.doc.splits).toEqual([{ at: 14, src: 14, id: s.doc.splits[0]!.id }]);
+    expect(s.doc.scenes).toEqual(s0.doc.scenes);
+    expect(s.doc.takeLooks).toEqual(s0.doc.takeLooks);
+  });
+
+  it("App shows each refusal once per seq, the same words included (R6-5)", () => {
+    expect(unseenRefusal(null, 0)).toBeNull();
+    expect(unseenRefusal({ message: "no", seq: 1 }, 0)).toBe("no");
+    expect(unseenRefusal({ message: "no", seq: 1 }, 1)).toBeNull();
+    expect(unseenRefusal({ message: "no", seq: 2 }, 1)).toBe("no");
+  });
+
+  it("load bumps loadCount and keeps the refusal seq growing", () => {
+    let s = migrated();
+    expect(s.loadCount).toBe(1);
+    s = editReducer(s, { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } });
+    s = editReducer(s, { type: "load", doc: s.doc });
+    expect(s.loadCount).toBe(2);
+    s = editReducer(s, { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } });
+    expect(s.lastRefusal?.seq).toBe(2);
   });
 });
 

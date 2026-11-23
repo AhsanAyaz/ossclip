@@ -17,7 +17,9 @@ describe("App.tsx take-look wiring (source-text guard)", () => {
   it("runs the look pass in the old-clock path: after the hidden drop, before the stage previews", () => {
     const dropAt = src.indexOf("dropHiddenCues(mergedCues, edits.doc)");
     const lookAt = src.indexOf("applyTakeLooks(", dropAt);
-    const stageAt = src.indexOf("withStagePreviews(cues)");
+    // Each pass previews on its own clock (take-looks-by-source R7-1): a
+    // look-mode preview names its piece by source extent.
+    const stageAt = src.indexOf("withStagePreviews(cues, oldClockMap)");
     expect(dropAt).toBeGreaterThan(-1);
     expect(lookAt).toBeGreaterThan(dropAt);
     expect(stageAt).toBeGreaterThan(lookAt);
@@ -29,7 +31,7 @@ describe("App.tsx take-look wiring (source-text guard)", () => {
     const applyAt = src.indexOf("applyOverrides(splitted2, pinned.doc)");
     const lookAt = src.indexOf("applyTakeLooks(", applyAt);
     const itemsAt = src.indexOf("previewItemTimings({ sceneCues: merged }");
-    const stageAt = src.indexOf("withStagePreviews(items.props.sceneCues)");
+    const stageAt = src.indexOf("withStagePreviews(items.props.sceneCues, clockMap)");
     expect(applyAt).toBeGreaterThan(-1);
     expect(lookAt).toBeGreaterThan(applyAt);
     expect(itemsAt).toBeGreaterThan(lookAt);

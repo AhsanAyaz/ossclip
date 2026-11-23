@@ -22,6 +22,7 @@ import { Inspector, componentSwapOptions, propControlHint } from "../src/Inspect
 import { previewBaseCues } from "../src/addedGraphics";
 import { ghostCues } from "../src/ghosts";
 import { useEdits } from "../src/useEdits";
+import { LOOK_NEEDS_CLOCK, withVideoPreview } from "../src/takeLookTarget";
 
 // Same one-time act() opt-in as project-picker.test.ts — this is the
 // second file in the repo to mount a component (rather than render static
@@ -2157,5 +2158,219 @@ describe("Inspector — Edit text & timing… judges the ROOT (graphic-editor-mo
     expect(asked).toContain("scene-0@s1");
     await act(async () => root.render(React.createElement(Host, { editable: true })));
     expect(container.querySelector('[data-testid="edit-graphic"]')).not.toBeNull();
+  });
+});
+
+/**
+ * Look mode (take-looks-by-source L4, S10, R6-7; Review Focus 3): on a
+ * migrated doc every look control on a take dispatches only the source-range
+ * actions, over the SELECTED piece's footage — the tail's, when the tail of a
+ * carved take is selected, though it shares the lead's id. A legacy doc
+ * keeps the id-keyed actions exactly as before. `edits` is a recording stub,
+ * so the assertion is the dispatch itself, not a reducer outcome.
+ */
+describe("Inspector — look mode dispatches only look actions (take-looks-by-source L4)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  const LOOK_ACTIONS = new Set(["patchTakeLook", "clearTakeLookFields", "patchCaptionStyleAll"]);
+  const ID_KEYED = new Set([
+    "patchVideo",
+    "clearVideo",
+    "patchPip",
+    "clearPip",
+    "patchLayout",
+    "patchCaptionY",
+    "patchCaptionScale",
+    "clearCaptionStyle",
+  ]);
+  const CLOCK = mapFromKeptSpans([{ srcIn: 0, srcOut: 30, outIn: 0, outOut: 30 }]);
+  const TAIL_RANGES = [{ srcIn: 12, srcOut: 20 }];
+  // The carved take: lead and tail share `take-1`. Both carry a look, so
+  // every Reset button renders and every control is reachable.
+  const lead: SceneCue = { id: "take-1", kind: "plain", layout: "pip-bubble", startSec: 0, endSec: 10 };
+  const tail: SceneCue = {
+    id: "take-1",
+    kind: "plain",
+    layout: "pip-bubble",
+    startSec: 12,
+    endSec: 20,
+    video: { scale: 2, dx: 10 },
+    pip: { cornerRadius: 0.5 },
+    captionY: 0.4,
+  };
+  const graphic: SceneCue = { ...graphicCue, id: "scene-2", startSec: 20, endSec: 25 };
+  const lookDoc = (): OverrideDoc =>
+    OverrideDocSchema.parse({
+      takeLooks: [
+        { srcIn: 0, srcOut: 10, look: { captionY: 0.3 } },
+        { srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 }, pip: { cornerRadius: 0.5 }, captionY: 0.4 } },
+      ],
+    });
+  const legacyDoc = (): OverrideDoc =>
+    OverrideDocSchema.parse({
+      scenes: { "take-1": { video: { scale: 2, dx: 10 }, pip: { cornerRadius: 0.5 }, captionY: 0.4 } },
+    });
+
+  /** A recording `edits`: `doc` is real, every method records its call. */
+  const recorder = (doc: OverrideDoc) => {
+    const calls: Array<[string, unknown[]]> = [];
+    const fixed: Record<string | symbol, unknown> = { doc, dirty: false, canUndo: false, canRedo: false, lastRefusal: null, loadCount: 0 };
+    const edits = new Proxy(fixed, {
+      get: (t, k) =>
+        k in t ? t[k] : typeof k === "symbol" ? undefined : (...args: unknown[]) => void calls.push([k, args]),
+    }) as unknown as ReturnType<typeof useEdits>;
+    return { calls, edits };
+  };
+
+  const mount = async (opts: {
+    doc: OverrideDoc;
+    cue: SceneCue;
+    cueClock?: typeof CLOCK | null;
+    onVideoPreview?: (p: unknown) => void;
+    onClockRefused?: (m: string) => void;
+  }) => {
+    const rec = recorder(opts.doc);
+    await act(async () => {
+      root.render(
+        React.createElement(Inspector, {
+          selection: { sceneId: opts.cue.id, elementId: null },
+          cue: opts.cue,
+          frame: { width: 1080, height: 1920 },
+          allSceneIds: ["take-1", "take-kept-10000", "take-1", "scene-2"],
+          allTakeRanges: [[{ srcIn: 0, srcOut: 10 }], [{ srcIn: 10, srcOut: 12 }], TAIL_RANGES],
+          sceneCues: [lead, { ...lead, id: "take-kept-10000", startSec: 10, endSec: 12 }, tail, graphic],
+          cueClock: opts.cueClock === undefined ? CLOCK : opts.cueClock,
+          edits: rec.edits,
+          onSelect: () => {},
+          resolvedTheme: defaultTheme,
+          onVideoPreview: opts.onVideoPreview ?? vi.fn(),
+          onClockRefused: opts.onClockRefused,
+        }),
+      );
+    });
+    return rec;
+  };
+
+  const q = <T extends Element>(id: string) => container.querySelector<T>(`[data-testid="${id}"]`)!;
+  const byText = (text: string) =>
+    [...container.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === text)!;
+  /** Drive every look control once. */
+  const driveAll = async () => {
+    await act(async () => setControl(q<HTMLInputElement>("zoom-slider"), "1.5"));
+    // The slider is controlled and this stub never re-renders the preview
+    // back into `cue`, so the release value is set again before the release.
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(q("zoom-slider"), "1.5");
+      q("zoom-slider").dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    });
+    await act(async () => q<HTMLInputElement>("auto-zoom").click());
+    for (const [id, v] of [["field-scale", "1.7"], ["field-dx", "-3"], ["field-dy", "4"], ["field-pip-x", "0.2"], ["field-pip-y", "0.3"], ["field-caption-scale", "1.1"]]) {
+      await act(async () => setControl(q<HTMLInputElement>(id!), v!));
+    }
+    await act(async () => setControl(q<HTMLInputElement>("volume-slider"), "0.5"));
+    await act(async () => setControl(q<HTMLInputElement>("pip-roundness"), "0.2"));
+    await act(async () => setControl(q<HTMLSelectElement>("layout-select"), "video-top"));
+    await act(async () => setControl(q<HTMLInputElement>("caption-y-slider"), "0.6"));
+    await act(async () => setControl(q<HTMLInputElement>("caption-scale-slider"), "1.3"));
+    await act(async () => q<HTMLButtonElement>("caption-y-all").click());
+    await act(async () => byText("Reset framing").click());
+    await act(async () => q<HTMLButtonElement>("reset-pip").click());
+    await act(async () => q<HTMLButtonElement>("reset-caption-y").click());
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("every look control on a take writes the TAIL's footage through look actions only", async () => {
+    const rec = await mount({ doc: lookDoc(), cue: tail });
+    await driveAll();
+    const names = rec.calls.map(([n]) => n);
+    expect(names.filter((n) => !LOOK_ACTIONS.has(n)), "no id-keyed look write").toEqual([]);
+    // One dispatch per control (the scrub previews, it does not write).
+    expect(names).toHaveLength(17);
+    for (const [name, args] of rec.calls) {
+      if (name === "patchCaptionStyleAll") continue;
+      expect(args[0], name).toEqual(TAIL_RANGES);
+    }
+    const look = (i: number) => rec.calls[i]![1];
+    // The zoom commit, the framing unit's coalesce key (R7-3); autoZoom is a
+    // click, uncoalesced, like the id-keyed control it replaces.
+    expect(look(0)).toEqual([TAIL_RANGES, { video: { scale: 1.5 } }, "look:12:framing"]);
+    expect(look(1)).toEqual([TAIL_RANGES, { video: { autoZoom: false } }, undefined]);
+    expect(look(3)).toEqual([TAIL_RANGES, { video: { dx: -3 } }, "look:12:framing"]);
+    expect(look(5)).toEqual([TAIL_RANGES, { pip: { x: 0.2 } }, "look:12:pipPos"]);
+    expect(look(8)).toEqual([TAIL_RANGES, { video: { volume: 0.5 } }, "look:12:volume"]);
+    expect(look(10)).toEqual([TAIL_RANGES, { layout: "video-top" }, undefined]);
+    // Apply to all: the graphic by id, every take by its footage (R6-6).
+    const all = rec.calls.find(([n]) => n === "patchCaptionStyleAll")![1];
+    expect(all).toEqual([["scene-2"], { y: 0.4, scale: 1 }, [[{ srcIn: 0, srcOut: 10 }], [{ srcIn: 10, srcOut: 12 }], TAIL_RANGES]]);
+    expect(rec.calls.slice(-3).map(([n, a]) => [n, a[1]])).toEqual([
+      ["clearTakeLookFields", ["video"]],
+      ["clearTakeLookFields", ["pip"]],
+      ["clearTakeLookFields", ["captionY", "captionScale"]],
+    ]);
+  });
+
+  it("legacy mode is unchanged: the same controls dispatch the id-keyed actions", async () => {
+    const rec = await mount({ doc: legacyDoc(), cue: tail });
+    await driveAll();
+    const names = rec.calls.map(([n]) => n);
+    expect(names.filter((n) => !ID_KEYED.has(n) && n !== "patchCaptionStyleAll")).toEqual([]);
+    expect(names.filter((n) => n === "patchTakeLook" || n === "clearTakeLookFields")).toEqual([]);
+    expect(rec.calls[0]).toEqual(["patchVideo", ["take-1", { scale: 1.5 }, "video:take-1:scale"]]);
+    expect(rec.calls.find(([n]) => n === "patchCaptionStyleAll")![1]).toEqual([
+      ["take-1", "take-kept-10000", "take-1", "scene-2"],
+      { y: 0.4, scale: 1 },
+    ]);
+  });
+
+  it("shows the TAIL's stored values when the tail is selected, not the lead's (Review Focus 3)", async () => {
+    // The lead's footage has a caption position, the tail's none: Reset
+    // captions follows the selected piece's own look (S4).
+    const doc = OverrideDocSchema.parse({ takeLooks: [{ srcIn: 0, srcOut: 10, look: { captionY: 0.3 } }] });
+    const bareTail: SceneCue = { ...tail, video: undefined, pip: undefined, captionY: undefined };
+    await mount({ doc, cue: bareTail });
+    expect(container.querySelector('[data-testid="reset-caption-y"]')).toBeNull();
+    expect(q<HTMLInputElement>("caption-y-slider").value).not.toBe("0.3");
+    await mount({ doc, cue: { ...lead, captionY: 0.3 } });
+    expect(container.querySelector('[data-testid="reset-caption-y"]')).not.toBeNull();
+    await mount({ doc: lookDoc(), cue: tail });
+    expect(q<HTMLInputElement>("field-dx").value).toBe("10");
+  });
+
+  it("a zoom scrub previews ONLY the tail: the preview carries the tail's extent", async () => {
+    const onVideoPreview = vi.fn();
+    await mount({ doc: lookDoc(), cue: tail, onVideoPreview });
+    await act(async () => setControl(q<HTMLInputElement>("zoom-slider"), "2.5"));
+    const preview = onVideoPreview.mock.calls[0]![0];
+    expect(preview).toEqual({ sceneId: "take-1", patch: { scale: 2.5 }, pieceExtent: { srcIn: 12, srcOut: 20 } });
+    // App lays it over the live cues with the same resolver (withVideoPreview).
+    const shown = withVideoPreview([lead, { ...tail, video: undefined }], preview, CLOCK);
+    expect(shown[0]!.video).toBeUndefined();
+    expect(shown[1]!.video).toEqual({ scale: 2.5 });
+    // A legacy preview carries no extent and matches by id, as before.
+    const legacy = await mount({ doc: legacyDoc(), cue: tail, onVideoPreview: (onVideoPreview.mockClear(), onVideoPreview) });
+    void legacy;
+    await act(async () => setControl(q<HTMLInputElement>("zoom-slider"), "2.5"));
+    expect(onVideoPreview.mock.calls[0]![0]).toEqual({ sceneId: "take-1", patch: { scale: 2.5 } });
+  });
+
+  it("with no clock a look edit is refused out loud and nothing is written", async () => {
+    const onClockRefused = vi.fn();
+    const rec = await mount({ doc: lookDoc(), cue: tail, cueClock: null, onClockRefused });
+    await act(async () => setControl(q<HTMLInputElement>("caption-y-slider"), "0.6"));
+    await act(async () => byText("Reset framing").click());
+    expect(rec.calls).toEqual([]);
+    expect(onClockRefused).toHaveBeenCalledWith(LOOK_NEEDS_CLOCK);
   });
 });

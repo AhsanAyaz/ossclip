@@ -4,7 +4,9 @@ import { createRoot } from "react-dom/client";
 import type { PlayerRef } from "@remotion/player";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  OverrideDocSchema,
   livePreviewMap,
+  mapFromKeptSpans,
   previewClockMappers,
   type KeptSpan,
   type OverrideDoc,
@@ -18,6 +20,8 @@ import {
   buildArrayPatch,
   elementTextOf,
   videoPressGesture,
+  type Selection,
+  type VideoPreview,
 } from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
 import { onSaveEffect } from "../src/save";
@@ -1061,5 +1065,171 @@ describe("dragging a graphic box (§163): a full-frame component is kept inside 
   it("the same drag on a TitleCard stops at the caption-safe area (5% from the right in 16:9)", async () => {
     const rect = await dragBy(cueOf("TitleCard"), 288);
     expect(rect).toEqual({ x: 0.55, y: 0.5, w: 0.4, h: 0.3 });
+  });
+});
+
+/**
+ * Look mode on the stage (take-looks-by-source L4, R4-S2, R4-S3, R6-4,
+ * R6-7): a press on the picture picks the take under the PLAYHEAD — the
+ * tail, when a carved take's tail is playing, though the DOM names only the
+ * id it shares with the lead — and the drag writes that piece's footage
+ * through `patchTakeLook`, previewing on that piece alone. A legacy doc keeps
+ * the id-keyed write. Mounted for real: the piece is resolved at mousedown and
+ * committed at mouseup, two listeners apart.
+ */
+describe("stage drags in look mode write the piece under the playhead (take-looks-by-source L4)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let doc: OverrideDoc | null = null;
+  const FPS = 30;
+  const CLOCK = mapFromKeptSpans([{ srcIn: 0, srcOut: 30, outIn: 0, outOut: 30 }]);
+  const cuesOf = (layout: SceneCue["layout"]): SceneCue[] => [
+    { id: "take-1", kind: "plain", layout, startSec: 0, endSec: 10 },
+    { id: "take-kept-10000", kind: "plain", layout, startSec: 10, endSec: 12 },
+    { id: "take-1", kind: "plain", layout, startSec: 12, endSec: 20, video: { scale: 2, dx: 10 } },
+    { id: "scene-2", layout: "video-top", component: "StatCard", props: { label: "X", value: "1" }, startSec: 20, endSec: 25 },
+  ];
+  const lookDoc = () =>
+    OverrideDocSchema.parse({ takeLooks: [{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 } } }] });
+
+  function Harness(props: {
+    initial: OverrideDoc;
+    cues: SceneCue[];
+    playheadSec: number;
+    selection?: Selection | null;
+    onVideoPreview?: (p: VideoPreview | null) => void;
+    onSelect?: (s: Selection | null) => void;
+  }) {
+    const edits = useEdits();
+    doc = edits.doc;
+    React.useEffect(() => {
+      edits.load(props.initial);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    const stageRef = useRef<HTMLDivElement>(null);
+    const playerRef = useRef({
+      getScale: () => 0.5,
+      getCurrentFrame: () => Math.round(props.playheadSec * FPS),
+    } as unknown as PlayerRef);
+    return React.createElement(
+      "div",
+      { ref: stageRef, "data-testid": "stage" },
+      React.createElement("div", { "data-edit-video": "take-1", "data-testid": "picture" }),
+      React.createElement(Overlay, {
+        stageRef,
+        selection: props.selection ?? null,
+        onSelect: props.onSelect ?? vi.fn(),
+        edits,
+        onSave: vi.fn(),
+        settings: { width: 1080, height: 1920, fps: FPS },
+        cues: props.cues,
+        onToggleHelp: vi.fn(),
+        onRequestDelete: vi.fn(),
+        playerRef,
+        onTransport: vi.fn(),
+        onVideoPreview: props.onVideoPreview ?? vi.fn(),
+        onGraphicPreview: vi.fn(),
+        cue: null,
+        cueClock: CLOCK,
+      }),
+    );
+  }
+
+  const rectAt = (left: number, top: number, width: number, height: number) =>
+    ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) }) as DOMRect;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    doc = null;
+    document.elementFromPoint = () => container.querySelector('[data-testid="picture"]');
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === "stage" ? rectAt(0, 0, 540, 960) : rectAt(0, 0, 0, 0);
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  /** Press the picture, move by `dx` page px, release; rAF gets a tick. */
+  async function drag(props: Parameters<typeof Harness>[0], dx: number) {
+    await act(async () => {
+      root.render(React.createElement(Harness, props));
+    });
+    const picture = container.querySelector<HTMLElement>('[data-testid="picture"]')!;
+    act(() => {
+      picture.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 100, clientY: 100 }));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 100 + dx, clientY: 100 }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 100 + dx, clientY: 100 }));
+    });
+  }
+
+  it("a pan with the tail playing writes the tail's footage, keeps its scale, and previews the tail only", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const onSelect = vi.fn();
+    await drag({ initial: lookDoc(), cues: cuesOf("full-bleed"), playheadSec: 15, onVideoPreview: (p) => previews.push(p), onSelect }, 20);
+    // 20 page px at a Player scale of 0.5 is 40 composition px.
+    expect(doc!.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 50, dy: 0 } } }]);
+    expect(doc!.scenes).toEqual({});
+    expect(previews[0]).toEqual({ sceneId: "take-1", patch: { dx: 50, dy: 0 }, pieceExtent: { srcIn: 12, srcOut: 20 } });
+    expect(previews.at(-1)).toBeNull();
+    expect(onSelect).toHaveBeenCalledWith({ sceneId: "take-1", elementId: null, pieceExtent: { srcIn: 12, srcOut: 20 } });
+  });
+
+  it("the same press with the LEAD playing writes the lead's footage, from the lead's own (empty) base", async () => {
+    await drag({ initial: lookDoc(), cues: cuesOf("full-bleed"), playheadSec: 5 }, 20);
+    expect(doc!.takeLooks).toEqual([
+      { srcIn: 0, srcOut: 10, look: { video: { dx: 40, dy: 0 } } },
+      { srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 } } },
+    ]);
+  });
+
+  it("a pip-bubble drag moves the tail's bubble through patchTakeLook", async () => {
+    await drag({ initial: lookDoc(), cues: cuesOf("pip-bubble"), playheadSec: 15 }, 54);
+    const tailLook = doc!.takeLooks!.find((e) => e.srcIn === 12)!.look;
+    expect(tailLook.pip?.x).toBeGreaterThan(0);
+    expect(tailLook.video).toEqual({ scale: 2, dx: 10 });
+    expect(doc!.scenes).toEqual({});
+  });
+
+  it("legacy mode is unchanged: the pan writes the id-keyed framing", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const legacy = OverrideDocSchema.parse({ scenes: { "take-1": { video: { scale: 2, dx: 10 } } } });
+    await drag({ initial: legacy, cues: cuesOf("full-bleed"), playheadSec: 15, onVideoPreview: (p) => previews.push(p) }, 20);
+    expect(doc!.scenes["take-1"]!.video).toEqual({ scale: 2, dx: 50, dy: 0 });
+    expect(doc!.takeLooks).toBeUndefined();
+    expect(previews[0]).toEqual({ sceneId: "take-1", patch: { dx: 50, dy: 0 } });
+  });
+
+  it("⌥→ from the tail walks to the graphic, not back into the kept block", async () => {
+    const onSelect = vi.fn();
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          initial: lookDoc(),
+          cues: cuesOf("full-bleed"),
+          playheadSec: 15,
+          selection: { sceneId: "take-1", elementId: null, pieceExtent: { srcIn: 12, srcOut: 20 } },
+          onSelect,
+        }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(onSelect).toHaveBeenLastCalledWith({ sceneId: "scene-2", elementId: null });
   });
 });

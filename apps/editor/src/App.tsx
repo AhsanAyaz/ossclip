@@ -43,7 +43,8 @@ import {
   type Segment,
   type Theme,
 } from "@ossclip/core/browser";
-import { useEdits } from "./useEdits";
+import { unseenRefusal, useEdits } from "./useEdits";
+import { pieceRanges, pieceSelection, revalidateSelection, selectedPiece, withVideoPreview } from "./takeLookTarget";
 import {
   applyWindowsOnLastRenderClock,
   rebuildCaptionTrack,
@@ -1542,14 +1543,12 @@ export const App: React.FC = () => {
     // is broken on a kept take" rather than "the slider is dead".) Idempotent
     // by construction — same id, same patch — so the second pass costs the
     // ordinary path nothing.
-    const withStagePreviews = (list: readonly SceneCue[]): SceneCue[] => {
-      let out = videoPreview
-        ? list.map((c) =>
-            c.id === videoPreview.sceneId
-              ? { ...c, video: { ...c.video, ...videoPreview.patch } }
-              : c,
-          )
-        : [...list];
+    //
+    // `map` is the clock `list` is on: a look-mode preview names its piece
+    // by source extent (take-looks-by-source R4-S1, R7-1), resolved here on
+    // each pass's own clock — `withVideoPreview` owns the rule.
+    const withStagePreviews = (list: readonly SceneCue[], map: TimeMap | null): SceneCue[] => {
+      let out = withVideoPreview(list, videoPreview, map);
       if (graphicPreview) {
         out = out.map((c) =>
           c.id === graphicPreview.sceneId ? { ...c, graphicRect: graphicPreview.rect } : c,
@@ -1557,7 +1556,7 @@ export const App: React.FC = () => {
       }
       return out;
     };
-    const previewed = withStagePreviews(cues);
+    const previewed = withStagePreviews(cues, oldClockMap);
     const effectiveCaptionTheme =
       edits.doc.captionTheme ?? renderProps.baseCaptionTheme ?? renderProps.captionTheme;
     const base: PlayerProductionProps = {
@@ -1718,7 +1717,7 @@ export const App: React.FC = () => {
       const items = previewItemTimings({ sceneCues: merged }, edits.doc, itemRoots, sfxPlan.words, clockMap);
       // The stage preview, re-applied on the cues the Inspector actually
       // reads — see `withStagePreviews` for the slider that died without it.
-      const finalCues = withStagePreviews(items.props.sceneCues);
+      const finalCues = withStagePreviews(items.props.sceneCues, clockMap);
       // Captions over the REVIVED material (field report 2026-08-26): the
       // retimed captionLines only cover words the LAST RENDER kept — the
       // revived stretch's words exist nowhere in render-props. Rebuild the
@@ -2368,15 +2367,43 @@ export const App: React.FC = () => {
     return computeGhostCues(baseCues, edits.doc, clock.toLive);
   }, [renderProps, liveRetimed, edits.doc, clock]);
 
+  // Look mode (take-looks-by-source L3 marker): a migrated doc. Every
+  // extent behaviour below is gated on it (R6-4); a legacy doc keeps id
+  // matching everywhere (R4-S11).
+  const lookMode = edits.doc.takeLooks !== undefined;
+  // The clock the live cues are on — the one a piece's source ranges are
+  // read on, for selection, writes and previews alike (L4 "Clock", S5).
+  const cueClock = liveRetimed?.cueClock ?? null;
+
   const selectedCue = useMemo(
     () =>
       selection
-        ? live?.sceneCues.find((c) => c.id === selection.sceneId) ??
-          ghostCues.find((c) => c.id === selection.sceneId) ??
-          null
+        ? // A look-mode take selection names its piece by source extent:
+          // carved lead and tail share an id, so an id match would hand the
+          // Inspector the lead's values while the tail is selected (R4-B1).
+          // Null when nothing plays that footage — never the lead silently.
+          lookMode && selection.pieceExtent !== undefined
+          ? selectedPiece(live?.sceneCues ?? [], selection, cueClock)
+          : live?.sceneCues.find((c) => c.id === selection.sceneId) ??
+            ghostCues.find((c) => c.id === selection.sceneId) ??
+            null
         : null,
-    [live, selection, ghostCues],
+    [live, selection, ghostCues, lookMode, cueClock],
   );
+
+  // Revalidation (take-looks-by-source R6-1, R7-1): whenever the live cues
+  // or their clock move — a reload, a render, a live cut, keep, undo, ⌘B —
+  // re-point a look-mode selection at the piece playing its footage (id and
+  // hull, so the header, the writes and the previews follow it), or clear
+  // it when no piece does. Functional, so it never reads a stale selection;
+  // `revalidateSelection` hands the same object back when nothing moved.
+  // Skipped while there are no live cues (a project loading): clearing then
+  // would drop a selection the next memo could resolve. `liveCues` is the
+  // save-stamp effect's own handle on the same list.
+  useEffect(() => {
+    if (!lookMode || liveCues === undefined) return;
+    setSelection((prev) => (prev === null ? prev : revalidateSelection(prev, liveCues, cueClock)));
+  }, [liveCues, cueClock, lookMode]);
 
   // A deleted scene is no longer selectable (field report 2026-08-31): its
   // window belongs to the take `fillPlainCues` minted, and edits keyed to
@@ -2395,8 +2422,46 @@ export const App: React.FC = () => {
       mid !== null
         ? live.sceneCues.find((c) => c.startSec <= mid && mid < c.endSec)
         : undefined;
-    setSelection(covering ? { sceneId: covering.id, elementId: null } : null);
-  }, [selection, live, edits.doc.scenes, ghostCues]);
+    // In look mode the covering take is selected by its footage (R4-S2), so
+    // a tail covering the deleted scene is not resolved back to its lead.
+    setSelection(
+      covering
+        ? lookMode
+          ? pieceSelection(covering, cueClock)
+          : { sceneId: covering.id, elementId: null }
+        : null,
+    );
+  }, [selection, live, edits.doc.scenes, ghostCues, lookMode, cueClock]);
+
+  // A refused write (take-looks-by-source R4-S4, R6-5) shows in the
+  // clock-refused notice, once per refusal: `seq` tells a new refusal from
+  // a re-render of the old one, even when the message repeats.
+  const shownRefusalSeq = useRef(0);
+  useEffect(() => {
+    const message = unseenRefusal(edits.lastRefusal, shownRefusalSeq.current);
+    if (message === null) return;
+    shownRefusalSeq.current = edits.lastRefusal!.seq;
+    setClockRefusedNotice(message);
+  }, [edits.lastRefusal]);
+
+  // Every `load` drops the stage previews (take-looks-by-source R4-S3): a
+  // preview names a piece of the doc it was made on, and a scrub left
+  // showing over a reloaded doc would preview a look nothing will commit.
+  useEffect(() => {
+    setVideoPreview(null);
+    setGraphicPreview(null);
+  }, [edits.loadCount]);
+
+  // "Apply to all" in look mode (R4-S5, R6-6): one source-range list per
+  // plain cue on screen, on the clock those cues are on. None without a
+  // clock — the Inspector then applies the graphic part only and says so.
+  const allTakeRanges = useMemo(
+    () =>
+      lookMode && live && cueClock !== null
+        ? live.sceneCues.filter((c) => c.kind === "plain").map((c) => pieceRanges(c, cueClock))
+        : [],
+    [lookMode, live, cueClock],
+  );
 
   // The words the selected cue is on screen FOR — "tracking transcript" as a
   // checkable fact rather than a claim (PLAN Task 6). Captions are the words
@@ -3413,6 +3478,9 @@ export const App: React.FC = () => {
               toSourceSec={clock.toSourceSec}
               onClockRefused={setClockRefusedNotice}
               onOverlayPress={onOverlayPress}
+              // The live cues' clock — a take piece's footage is read on it
+              // (take-looks-by-source L4 "Clock").
+              cueClock={cueClock}
             />
             <OverlayImageBox
               ref={overlayImageBoxRef}
@@ -3526,6 +3594,8 @@ export const App: React.FC = () => {
             cue={selectedCue}
             frame={{ width: live.settings.width, height: live.settings.height }}
             allSceneIds={live.sceneCues.map((c) => c.id)}
+            allTakeRanges={allTakeRanges}
+            cueClock={cueClock}
             edits={edits}
             onSelect={selectScene}
             resolvedTheme={live.theme}
@@ -3610,6 +3680,8 @@ export const App: React.FC = () => {
         selection={selection}
         onSelect={selectScene}
         edits={edits}
+        // Look-mode selection resolves pieces on this clock (R6-4).
+        cueClock={cueClock}
         // The revived-range hook (Phase A): Timeline calls this AFTER the
         // keep/dismiss dispatch, and only when material came BACK — see
         // `onRevived`'s docstring for why a re-remove must not fire it.

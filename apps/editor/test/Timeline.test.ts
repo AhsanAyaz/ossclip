@@ -14,6 +14,7 @@ import {
   type Segment,
 } from "@ossclip/core/browser";
 import { Timeline } from "../src/Timeline";
+import type { Selection } from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -1119,5 +1120,81 @@ describe("Timeline — an edge drag on a block at the cut's start keeps its pin"
     expect(moved.pinned).toBe(true);
     expect(moved.startSec).toBeLessThan(0.001);
     expect(Math.abs(moved.endSec - 5)).toBeLessThan(0.001);
+  });
+});
+
+/**
+ * Look mode on the strip (take-looks-by-source R6-4, R7-4): carved lead and
+ * tail share an id, so a click names the take by its footage, only the
+ * resolved piece's block lights, the testid stays the id and
+ * `data-piece-start` tells the two apart. A legacy doc keeps the id match.
+ */
+describe("Timeline — look-mode take selection (take-looks-by-source R6-4)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  const CLOCK = mapFromKeptSpans([{ srcIn: 0, srcOut: 20, outIn: 0, outOut: 20 }]);
+  const cues: SceneCue[] = [
+    { id: "take-1", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 8 },
+    { id: "take-kept-8000", kind: "plain", layout: "full-bleed", startSec: 8, endSec: 10 },
+    { id: "take-1", kind: "plain", layout: "full-bleed", startSec: 10, endSec: 20 },
+  ];
+
+  function LookHarness(props: { takeLooks?: boolean; selection: Selection | null; onSelect: (s: Selection | null) => void }) {
+    const edits = useEdits();
+    React.useEffect(() => {
+      edits.load({ theme: {}, scenes: {}, captions: {}, splits: [], cuts: [], ...(props.takeLooks ? { takeLooks: [] } : {}) });
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    return React.createElement(Timeline, {
+      cues,
+      durationSec: 20,
+      fps: 30,
+      playerRef: { current: null } as never,
+      selection: props.selection,
+      onSelect: props.onSelect,
+      edits,
+      cueClock: CLOCK,
+    });
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const blocks = () => [...container.querySelectorAll<HTMLElement>('[data-testid="timeline-block-take-1"]')];
+  // The selected block's 2px border (jsdom normalizes the colour).
+  const lit = (el: HTMLElement) => el.style.border.startsWith("2px solid");
+
+  it("a click on the tail selects its footage; only the tail lights", async () => {
+    const onSelect = vi.fn();
+    const tailSel: Selection = { sceneId: "take-1", elementId: null, pieceExtent: { srcIn: 10, srcOut: 20 } };
+    await act(async () => root.render(React.createElement(LookHarness, { takeLooks: true, selection: tailSel, onSelect })));
+    expect(blocks().map((b) => b.dataset.pieceStart)).toEqual(["0.000", "10.000"]);
+    expect(blocks().map(lit)).toEqual([false, true]);
+    act(() => {
+      blocks()[1]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 5 }));
+    });
+    expect(onSelect).toHaveBeenCalledWith(tailSel);
+  });
+
+  it("legacy mode is unchanged: an id selection lights every block of that id, and a click selects the id", async () => {
+    const onSelect = vi.fn();
+    await act(async () =>
+      root.render(React.createElement(LookHarness, { selection: { sceneId: "take-1", elementId: null }, onSelect })),
+    );
+    expect(blocks().map(lit)).toEqual([true, true]);
+    act(() => {
+      blocks()[1]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 5 }));
+    });
+    expect(onSelect).toHaveBeenCalledWith({ sceneId: "take-1", elementId: null });
   });
 });
