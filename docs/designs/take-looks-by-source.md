@@ -1,6 +1,6 @@
 # Take looks attached to source time
 
-Status: draft 6. It revises draft 5 after review round 5 (`~/ossclip-work/egm-short/take-looks-review-r5.md`, 0 blocking). **The "Draft 6 rulings" section at the end overrides earlier text wherever the two differ.** This design replaces `take-framing-phase-2.md` (paused) and supersedes parts of phase 1 (`take-framing-identity.md`). The author approved the direction on 2026-11-23: "things are attached to chunks, and chunks attached at the TS on the timeline", modelled on how other editors work.
+Status: draft 7, ready to plan (review round 6: 0 blocking, `~/ossclip-work/egm-short/take-looks-review-r6.md`). **The rulings sections at the end override earlier text; later rulings override earlier ones.** This design replaces `take-framing-phase-2.md` (paused) and supersedes parts of phase 1 (`take-framing-identity.md`). The author approved the direction on 2026-11-23: "things are attached to chunks, and chunks attached at the TS on the timeline", modelled on how other editors work.
 
 ## Why
 
@@ -408,3 +408,35 @@ These override the sections above where they differ.
   - the note `split 66055 moved to 56.467s on this cut`;
   - `at: 56.467`;
   - `takeLooks` byte-equal to run 1.
+
+## Draft 7 rulings (round 6)
+
+**R7-1. Revalidation also updates the id (SF-1).** `revalidateSelection` returns `{ sceneId, pieceExtent }` taken from the resolved cue, and App applies it with a functional `setSelection`. So the Inspector header, writes and previews follow the piece after a renumber or ⌘B. `VideoPreview` carries `pieceExtent`, not `pieceSrc`, and `withStagePreviews` matches a plain cue by the same largest-overlap rule in each pass.
+
+**R7-2. The restore wording is qualified (SF-2).** Writing over the hull means material restored from INSIDE a piece takes that piece's look. Material restored at a piece's EDGE (outside its hull at the time of the write) shows whatever look it had before it was cut. That can be an older look, and it is added to Risks and limits. Two pipeline tests cover the inside case and the edge case.
+
+**R7-3. The framing unit in detail (SF-3).**
+- `setTakeLook` expands a patch that touches any of `scale`, `dx` or `dy` (and likewise `pip` `x` or `y`) using each part's own current value from `lookAt` over that part.
+- A unit member absent in the current look and absent in the patch is deleted, not written as a default.
+- Coalesce keys are per unit: `look:${srcIn}:framing`, `look:${srcIn}:pipPos`, and so on for the other fields.
+
+**R7-4. Timeline test ids (SF-4).** Only the React `key` becomes `${cue.id}:${cue.startSec.toFixed(3)}`. The `data-testid` stays `timeline-block-${id}`, and a new `data-piece-start` attribute holds `startSec.toFixed(3)`.
+
+**R7-5. `isLookPieceKey` (SF-5)** is defined as `!isParkedOverrideKey(id) && (plainTakeOrdinal(id) !== null || /^take-kept-\d+$/.test(splitRootId(id)))`.
+
+**R7-6. Source guards split by task (SF-6).** Task 1's guard asserts only the gated `applyTakeLooks(` placement. Task 2 adds the `migrateTakeLooks(` and `takeLooksMigrated` guards.
+
+**R7-7. `isEmptyEntry` (SF-7)** moves in Task 2. Task 2's Modify list adds `packages/core/src/take-looks.ts`, `apps/editor/src/Inspector.tsx`, `Overlay.tsx` and `Timeline.tsx`, and their tests.
+
+**R7-8. Helper signatures and test expectations (SF-8).**
+- `pieceAnchor(cue, clock): { srcIn, srcOut } | null` returns null with no clock.
+- `walkPiece(cues, sel, dir, clock): Selection | null`. From the lead, +1 gives the tail, then the next plain or graphic cue. Either end returns null.
+- Undo test: after a keep in front of the piece is undone, the same extent still resolves the tail.
+- After a ⌘B redo, the selection follows the larger half.
+- Resolver tie: if two cues overlap the extent equally, the earlier `startSec` wins.
+
+**R7-9. The field-check script (SF-9).** One script, `looks-field-check.sh`, does setup, run 1, the cut edit and run 2. A python checker asserts every expected line and value (the probes come from `sceneCues` × `spans`) and exits 1 on any failure.
+
+**R7-10. Fixture clip starts (SF-10).** Use produce's real list: the span `outIn`s plus the kept edges, including 161.29118, as written in `work-framing-test/FE Loop-116d3cbc/render-props.json` `takeClipStarts`. R6-9's "equals spans" reason is withdrawn.
+
+**R7-11. The test that contradicted field-scoped writes.** The earlier tests list says "`setTakeLook`: a piece spanning two looks becomes uniform". That is replaced: "sets the patched unit across the hull, and each part keeps its other fields".
