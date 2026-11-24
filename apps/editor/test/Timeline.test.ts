@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyOverrides,
+  LayoutSchema,
   livePreviewMap,
   mapFromKeptSpans,
   previewClockMappers,
@@ -13,7 +14,8 @@ import {
   type SceneCue,
   type Segment,
 } from "@ossclip/core/browser";
-import { Timeline } from "../src/Timeline";
+import { layoutSlots } from "@ossclip/scenes/geometry";
+import { pictureHidden, Timeline } from "../src/Timeline";
 import type { Selection } from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
 
@@ -1196,5 +1198,195 @@ describe("Timeline — look-mode take selection (take-looks-by-source R6-4)", ()
       blocks()[1]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 5 }));
     });
     expect(onSelect).toHaveBeenCalledWith({ sceneId: "take-1", elementId: null });
+  });
+});
+
+describe("Timeline — lanes (timeline-lanes §1-§7)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  // The spec's fixture (timeline-lanes, Test plan): two picture-hidden
+  // graphics, one muted and one not, a graphic whose picture plays, and a
+  // take set to graphic-only (which gets NO hatch — Non-goals).
+  const lanesCues: SceneCue[] = [
+    { id: "take-0", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 2, video: { volume: 0.5 } },
+    { id: "scene-a", kind: "graphic", layout: "pip-bubble", component: "BulletList", pinned: true, props: {}, startSec: 2, endSec: 6 },
+    { id: "scene-b", kind: "graphic", layout: "graphic-only", component: "TitleCard", video: { volume: 0 }, props: {}, startSec: 6.05, endSec: 10 },
+    { id: "scene-c", kind: "graphic", layout: "graphic-only", component: "ClipScene", props: {}, startSec: 10, endSec: 13 },
+    { id: "take-1", kind: "plain", layout: "graphic-only", startSec: 13, endSec: 20 },
+  ];
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const byId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
+  const trackEl = () => byId("ruler").nextElementSibling as HTMLElement;
+  const render = async (props: Parameters<typeof Harness>[0] = {}) => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { cues: lanesCues, durationSec: 20, ...props }));
+    });
+  };
+
+  it("graphic blocks sit in the V2 box", async () => {
+    await render();
+    for (const id of ["scene-a", "scene-b", "scene-c"]) {
+      const b = byId(`timeline-block-${id}`);
+      expect(b.dataset.lane).toBe("graphics");
+      expect(b.style.top).toBe("3px");
+      expect(b.style.height).toBe("28px");
+    }
+  });
+
+  it("take blocks sit in the V1 box", async () => {
+    await render();
+    for (const id of ["take-0", "take-1"]) {
+      const b = byId(`timeline-block-${id}`);
+      expect(b.dataset.lane).toBe("footage");
+      expect(b.style.top).toBe("38px");
+      expect(b.style.height).toBe("36px");
+    }
+  });
+
+  it("the track is 77px tall", async () => {
+    await render();
+    expect(trackEl().style.height).toBe("77px");
+  });
+
+  it("draws an inert divider and a border-box footage strip that cannot overflow", async () => {
+    await render();
+    const divider = byId("timeline-lane-divider");
+    const strip = byId("timeline-footage");
+    expect(divider).not.toBeNull();
+    expect(strip).not.toBeNull();
+    expect(divider.style.pointerEvents).toBe("none");
+    expect(strip.style.pointerEvents).toBe("none");
+    expect(strip.style.boxSizing).toBe("border-box");
+    expect(strip.style.top).toBe("38px");
+    // jsdom reads React's numeric 0 back as "0" (project-picker.test.ts:87).
+    expect(["0", "0px"]).toContain(strip.style.left);
+    expect(["0", "0px"]).toContain(strip.style.right);
+    expect(strip.style.border).toMatch(/1px solid/);
+  });
+
+  it("hatches V1 under exactly the picture-hidden graphics", async () => {
+    await render();
+    const hatches = [...container.querySelectorAll<HTMLElement>('[data-testid^="timeline-hatch-"]')];
+    expect(hatches.map((h) => h.dataset.testid)).toEqual(["timeline-hatch-scene-b", "timeline-hatch-scene-c"]);
+    const expected = [
+      { id: "scene-b", text: "no picture · muted", start: "6.050" },
+      { id: "scene-c", text: "audio only", start: "10.000" },
+    ];
+    for (const { id, text, start } of expected) {
+      const h = byId(`timeline-hatch-${id}`);
+      const b = byId(`timeline-block-${id}`);
+      expect(h.textContent).toBe(text);
+      expect(h.dataset.pieceStart).toBe(start);
+      expect(h.style.pointerEvents).toBe("none");
+      expect(h.style.zIndex).toBe("2");
+      expect(h.style.top).toBe("38px");
+      expect(h.style.height).toBe("36px");
+      expect(h.style.overflow).toBe("hidden");
+      expect(h.style.containerType).toBe("inline-size");
+      expect(h.style.backgroundImage).toContain("45deg");
+      const label = h.querySelector("span")!;
+      expect(label.classList.contains("ossclip-lane-label")).toBe(true);
+      expect(label.classList.contains("ossclip-hatch-label")).toBe(true);
+      expect(h.style.left).toBe(b.style.left);
+      expect(h.style.width).toBe(b.style.width);
+    }
+  });
+
+  it("no hatch for a graphic whose picture plays, nor for a graphic-only take", async () => {
+    await render();
+    expect(container.querySelector('[data-testid="timeline-hatch-scene-a"]')).toBeNull();
+    expect(container.querySelector('[data-testid="timeline-hatch-take-1"]')).toBeNull();
+    expect(byId("timeline-block-take-1").textContent).toContain("take-1");
+  });
+
+  it("with no graphics, the divider and the footage strip still render", async () => {
+    await render({ cues: [lanesCues[0]!] });
+    expect(container.querySelector('[data-testid="timeline-lane-divider"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="timeline-footage"]')).not.toBeNull();
+  });
+
+  it("keeps the DOM-shape invariants: the playhead's parent is the track, the ruler's next sibling (§2)", async () => {
+    await render();
+    expect(byId("playhead").parentElement).toBe(trackEl());
+  });
+
+  it("pictureHidden agrees with the renderer's own slot table for every layout", () => {
+    for (const l of LayoutSchema.options) {
+      expect(pictureHidden(l)).toBe(layoutSlots(l).video.opacity === 0);
+    }
+    expect(pictureHidden(undefined)).toBe(false);
+  });
+
+  it("two carved pieces sharing an id both render (the Fragment key carries the start)", async () => {
+    await render({
+      cues: [
+        { id: "take-1", kind: "plain", layout: "full-bleed", startSec: 13, endSec: 16 },
+        { id: "take-1", kind: "plain", layout: "full-bleed", startSec: 16, endSec: 20 },
+      ],
+    });
+    const pieces = [...container.querySelectorAll<HTMLElement>('[data-testid="timeline-block-take-1"]')];
+    expect(pieces.map((p) => p.dataset.pieceStart)).toEqual(["13.000", "16.000"]);
+  });
+
+  it("an unapplied cut band strikes through both lanes (§6a)", async () => {
+    await render({ cuts: [{ startSec: 7, endSec: 8 }] });
+    const band = byId("timeline-cut-7-8");
+    const strikes = [...band.children] as HTMLElement[];
+    expect(strikes).toHaveLength(2);
+    expect(strikes.map((s) => s.style.top)).toEqual(["12px", "51px"]);
+  });
+
+  describe("a dragged hatch", () => {
+    const PX_PER_SEC = 100;
+    let realRect: typeof Element.prototype.getBoundingClientRect;
+
+    beforeEach(() => {
+      // jsdom lays nothing out; 100px per second across the 20 s ruler.
+      realRect = Element.prototype.getBoundingClientRect;
+      Element.prototype.getBoundingClientRect = function (): DOMRect {
+        return {
+          left: 0, top: 0, right: 20 * PX_PER_SEC, bottom: 77,
+          width: 20 * PX_PER_SEC, height: 77, x: 0, y: 0,
+          toJSON: () => ({}),
+        } as DOMRect;
+      };
+    });
+
+    afterEach(() => {
+      Element.prototype.getBoundingClientRect = realRect;
+    });
+
+    it("follows its block mid-drag and keeps its identity (spec assertion 18)", async () => {
+      await render();
+      const before = byId("timeline-hatch-scene-c").style.left;
+      const block = byId("timeline-block-scene-c");
+      await act(async () => {
+        block.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: 1150 }));
+      });
+      await act(async () => {
+        window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 1190 }));
+      });
+      const hatch = byId("timeline-hatch-scene-c");
+      expect(hatch.style.left).toBe(byId("timeline-block-scene-c").style.left);
+      expect(hatch.style.left).not.toBe(before);
+      expect(hatch.dataset.pieceStart).toBe("10.000");
+      expect(hatch.style.zIndex).toBe("2");
+      await act(async () => {
+        window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 1190 }));
+      });
+    });
   });
 });

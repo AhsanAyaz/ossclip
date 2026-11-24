@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
-import type { KeptSpan, SceneCue, Segment, TimeMap } from "@ossclip/core/browser";
+import type { KeptSpan, Layout, SceneCue, Segment, TimeMap } from "@ossclip/core/browser";
 import { chipMenuLabels, removalSeams, type RemovalSeam } from "./cleanup";
 import { ContextMenu } from "./ContextMenu";
 import {
@@ -264,6 +264,25 @@ const PAGE_EDGE_PX = 8;
 const PAGE_COOLDOWN_MS = 300;
 
 /** Tick labels drop the decimal — a ruler mark is a landmark, not a readout. */
+/** Lane geometry (timeline-lanes §1). One track container, lanes as vertical
+ * offsets (approach B1): every seek and drag divides by the track's WIDTH and
+ * nothing hit-tests vertically, so moving a block into its lane is all a
+ * `top`/`height` pair has to do. V2 holds graphics; V1 holds takes over the
+ * footage strip and the picture-hidden hatches. */
+const V2_BOX = { top: 3, height: 28 } as const satisfies { top: number; height: number };
+const V1_BOX = { top: 38, height: 36 } as const satisfies { top: number; height: number };
+const LANE_DIVIDER_TOP = 34;
+const TRACK_HEIGHT = 77;
+
+/** The one layout whose video slot has `opacity: 0` (`layoutSlots` in
+ * packages/scenes/src/stage.ts) — the recording's picture is hidden under
+ * the graphic, so V1 hatches that window (timeline-lanes §4). A test walks
+ * every layout against the renderer's own slot table, so a new hiding
+ * layout fails it rather than silently drawing plain footage. */
+export function pictureHidden(layout: Layout | undefined): boolean {
+  return layout === "graphic-only";
+}
+
 const tickFmt = (sec: number): string => {
   const s = Math.max(0, Math.round(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -565,7 +584,9 @@ export const Timeline: React.FC<TimelineProps> = ({
   // One filmstrip frame per plain take (R20 §97), at the take's midpoint in
   // SOURCE time — graphic scenes keep their flat card look on purpose: the
   // block for a card is not footage, and painting footage under it would say
-  // otherwise. Keyed per cue id at render below.
+  // otherwise. Keyed per cue id at render below. Under lanes the footage
+  // under a graphic is the flat V1 strip, and the strip and hatches request
+  // no frames of their own (timeline-lanes §4).
   const takeThumbTimes = React.useMemo(
     () =>
       toSourceSec
@@ -1580,6 +1601,12 @@ export const Timeline: React.FC<TimelineProps> = ({
               scrubbingRef.current = true;
             }}
           >
+            {/* Lane chrome comes first so it paints under everything at z 0
+                (timeline-lanes §4, §7). Both ignore the pointer: a press on
+                V1 under a graphic falls through to the bare-track seek
+                above, the declared exception in timeline-lanes §5. */}
+            <div data-testid="timeline-lane-divider" style={laneDivider} />
+            <div data-testid="timeline-footage" style={footageStrip} />
             {cues.map((cue) => {
               const isPlain = cue.kind === "plain";
               const isDragging = dragPreview?.sceneId === cue.id;
@@ -1595,116 +1622,146 @@ export const Timeline: React.FC<TimelineProps> = ({
                   ? takeThumbs[toSourceSec((cue.startSec + cue.endSec) / 2).toFixed(1)]
                   : undefined;
               return (
-                <div
-                  // Carved pieces share an id, so the React key adds the start
-                  // (R6-4, R7-4); the testid stays the id, and
-                  // `data-piece-start` tells the pieces apart for tests and
-                  // the scroll follow. Not gated on look mode: a duplicate
-                  // `take-1` key is already wrong on a legacy doc, and when a
-                  // reload flips the doc into look mode mid-session, keys that
-                  // changed scheme under duplicates left a stale block behind
-                  // (measured in Timeline.test.ts's look-mode suite).
-                  key={`${cue.id}:${cue.startSec.toFixed(3)}`}
-                  data-testid={`timeline-block-${cue.id}`}
-                  data-piece-start={cue.startSec.toFixed(3)}
-                  onMouseDown={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    // Select right away for feedback. The press then waits on
-                    // travel (MOVE_THRESHOLD_PX) to decide what it is: a GRAPHIC
-                    // block's drag moves the block, a PLAIN take's drag scrubs
-                    // (its window is derived, not stored — it can't move, and
-                    // the takes cover most of the track, so losing press-and-
-                    // drag seeking over them would regress the very gesture the
-                    // track was given). Below the threshold BOTH stay a bare
-                    // select — no seek: clicking a scene to edit it kept
-                    // yanking the playhead away (field report 2026-08-07).
-                    // Look mode names a take by its footage (R4-S2).
-                    onSelect(lookMode && isPlain ? pieceSelection(cue, cueClock) : { sceneId: cue.id, elementId: null });
-                    blockPressRef.current = {
-                      sceneId: cue.id,
-                      startX: e.clientX,
-                      startContentX:
-                        e.clientX - (trackRef.current?.getBoundingClientRect().left ?? 0),
-                      moved: false,
-                      scrub: isPlain,
-                    };
-                  }}
-                  style={{
-                    ...block,
-                    left: `${left}%`,
-                    width: `${width}%`,
-                    // Explicit stacking (PLAN R11 Task 1) — paint order used to
-                    // be DOM order, which is time order, so a later take always
-                    // clipped the selected block's border and an end-edge drag
-                    // grew UNDERNEATH its neighbour. Levels: block 1, ghost 2,
-                    // selected 3, dragging 4, playhead 5.
-                    zIndex: isDragging ? 4 : isSelected ? 3 : 1,
-                    // A revived block (`cue.kept` — a vetoed removal carved
-                    // into its own take by carveKeptTakes) reads as its own
-                    // state at a glance: dashed violet over a faint tint,
-                    // the kept-band family. Selection still wins the border.
-                    border: isSelected
-                      ? "2px solid #5b8cff"
-                      : cue.kept !== undefined
-                        ? "1px dashed #B78CFF"
-                        : isPlain
-                          ? "1px solid #22222a"
-                          : "1px solid #2A2A33",
-                    backgroundColor: isSelected
-                      ? "#1c2333"
-                      : cue.kept !== undefined
-                        ? "#1a1524"
-                        : isPlain
-                          ? "#131318"
-                          : "#1A1A21",
-                    // The filmstrip (R20 §97): the take's own frame repeated
-                    // across the block, dimmed under a gradient so the label
-                    // stays readable. Missing thumb → the flat panel above.
-                    ...(thumb
-                      ? {
-                          backgroundImage:
-                            "linear-gradient(rgba(10,10,14,0.35), rgba(10,10,14,0.6)), " +
-                            `url(${thumb})`,
-                          backgroundSize: "auto 100%, auto 100%",
-                          backgroundRepeat: "repeat-x",
-                        }
-                      : {}),
-                  }}
-                >
-                  <span
-                    style={
-                      isPlain
-                        ? thumb
-                          ? { ...blockLabel, color: "#D8D8DE", textShadow: "0 1px 2px rgba(0,0,0,0.9)" }
-                          : { ...blockLabel, color: "#55555f" }
-                        : blockLabel
-                    }
+                // Carved pieces share an id, so the React key adds the start
+                // (R6-4, R7-4); the testid stays the id, and
+                // `data-piece-start` tells the pieces apart for tests and
+                // the scroll follow. Not gated on look mode: a duplicate
+                // `take-1` key is already wrong on a legacy doc, and when a
+                // reload flips the doc into look mode mid-session, keys that
+                // changed scheme under duplicates left a stale block behind
+                // (measured in Timeline.test.ts's look-mode suite). The key
+                // sits on the Fragment because an iteration may also emit a
+                // hatch (timeline-lanes §2).
+                <React.Fragment key={`${cue.id}:${cue.startSec.toFixed(3)}`}>
+                  <div
+                    data-testid={`timeline-block-${cue.id}`}
+                    data-piece-start={cue.startSec.toFixed(3)}
+                    data-lane={isPlain ? "footage" : "graphics"}
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      // Select right away for feedback. The press then waits on
+                      // travel (MOVE_THRESHOLD_PX) to decide what it is: a GRAPHIC
+                      // block's drag moves the block, a PLAIN take's drag scrubs
+                      // (its window is derived, not stored — it can't move, and
+                      // the takes cover most of the track, so losing press-and-
+                      // drag seeking over them would regress the very gesture the
+                      // track was given). Below the threshold BOTH stay a bare
+                      // select — no seek: clicking a scene to edit it kept
+                      // yanking the playhead away (field report 2026-08-07).
+                      // Look mode names a take by its footage (R4-S2).
+                      onSelect(lookMode && isPlain ? pieceSelection(cue, cueClock) : { sceneId: cue.id, elementId: null });
+                      blockPressRef.current = {
+                        sceneId: cue.id,
+                        startX: e.clientX,
+                        startContentX:
+                          e.clientX - (trackRef.current?.getBoundingClientRect().left ?? 0),
+                        moved: false,
+                        scrub: isPlain,
+                      };
+                    }}
+                    style={{
+                      ...block,
+                      ...(isPlain ? V1_BOX : V2_BOX),
+                      // Graphic blocks only: a block under 40 px hides its label
+                      // via the `.ossclip-lane-label` container query in
+                      // index.css. Take labels ellipsise as today, so takes get
+                      // no container (timeline-lanes §3, §4).
+                      ...(isPlain ? {} : { containerType: "inline-size" as const }),
+                      left: `${left}%`,
+                      width: `${width}%`,
+                      // Explicit stacking (PLAN R11 Task 1) — paint order used to
+                      // be DOM order, which is time order, so a later take always
+                      // clipped the selected block's border and an end-edge drag
+                      // grew UNDERNEATH its neighbour. Levels (timeline-lanes §7):
+                      // lane divider and footage strip 0, block 1, hatch 2, cut
+                      // band and selected 3, dragging and seam 4, playhead 5,
+                      // snap tick and readout 6.
+                      zIndex: isDragging ? 4 : isSelected ? 3 : 1,
+                      // A revived block (`cue.kept` — a vetoed removal carved
+                      // into its own take by carveKeptTakes) reads as its own
+                      // state at a glance: dashed violet over a faint tint,
+                      // the kept-band family. Selection still wins the border.
+                      border: isSelected
+                        ? "2px solid #5b8cff"
+                        : cue.kept !== undefined
+                          ? "1px dashed #B78CFF"
+                          : isPlain
+                            ? "1px solid #22222a"
+                            : "1px solid #2A2A33",
+                      backgroundColor: isSelected
+                        ? "#1c2333"
+                        : cue.kept !== undefined
+                          ? "#1a1524"
+                          : isPlain
+                            ? "#131318"
+                            : "#1A1A21",
+                      // The filmstrip (R20 §97): the take's own frame repeated
+                      // across the block, dimmed under a gradient so the label
+                      // stays readable. Missing thumb → the flat panel above.
+                      ...(thumb
+                        ? {
+                            backgroundImage:
+                              "linear-gradient(rgba(10,10,14,0.35), rgba(10,10,14,0.6)), " +
+                              `url(${thumb})`,
+                            backgroundSize: "auto 100%, auto 100%",
+                            backgroundRepeat: "repeat-x",
+                          }
+                        : {}),
+                    }}
                   >
-                    {cue.kept !== undefined ? "KEPT" : cue.id}
-                  </span>
-                  {/* Non-default gain reads at a glance where time lives
-                      (field report 2026-08-31); the control itself is the
-                      Inspector's Audio slider. */}
-                  {cue.video?.volume !== undefined && cue.video.volume !== 1 ? (
-                    <span data-testid={`volume-badge-${cue.id}`} style={pinBadge}>
-                      {cue.video.volume === 0 ? "MUTE" : `${Math.round(cue.video.volume * 100)}%`}
+                    <span
+                      style={
+                        isPlain
+                          ? thumb
+                            ? { ...blockLabel, color: "#D8D8DE", textShadow: "0 1px 2px rgba(0,0,0,0.9)" }
+                            : { ...blockLabel, color: "#55555f" }
+                          : blockLabel
+                      }
+                    >
+                      {cue.kept !== undefined ? "KEPT" : cue.id}
                     </span>
+                    {/* Non-default gain reads at a glance where time lives
+                        (field report 2026-08-31); the control itself is the
+                        Inspector's Audio slider. */}
+                    {cue.video?.volume !== undefined && cue.video.volume !== 1 ? (
+                      <span data-testid={`volume-badge-${cue.id}`} style={pinBadge}>
+                        {cue.video.volume === 0 ? "MUTE" : `${Math.round(cue.video.volume * 100)}%`}
+                      </span>
+                    ) : null}
+                    {!isPlain && cue.pinned ? <span style={pinBadge}>PIN</span> : null}
+                    {!isPlain ? (
+                      <>
+                        <div
+                          onMouseDown={beginEdgeDrag(cue, "start")}
+                          style={{ ...edgeHandle, left: 0, cursor: "ew-resize" }}
+                        />
+                        <div
+                          onMouseDown={beginEdgeDrag(cue, "end")}
+                          style={{ ...edgeHandle, right: 0, cursor: "ew-resize" }}
+                        />
+                      </>
+                    ) : null}
+                  </div>
+                  {!isPlain && pictureHidden(cue.layout) ? (
+                    <div
+                      // Identity from the CUE, never the drag preview, so the
+                      // hatch keeps its element through a drag instead of
+                      // remounting per mousemove; its position uses the same
+                      // preview-aware `left`/`width` as the block, so it slides
+                      // with a dragged card (timeline-lanes §4, round 2 S3).
+                      data-testid={`timeline-hatch-${cue.id}`}
+                      data-piece-start={cue.startSec.toFixed(3)}
+                      style={{ ...hatch, ...V1_BOX, left: `${left}%`, width: `${width}%` }}
+                    >
+                      <span className="ossclip-lane-label ossclip-hatch-label" style={hatchLabel}>
+                        {/* What the viewer gets from the recording here: its
+                            audio, or nothing at volume 0 (UI review r2, S5). */}
+                        {cue.video?.volume === 0 ? "no picture · muted" : "audio only"}
+                      </span>
+                    </div>
                   ) : null}
-                  {!isPlain && cue.pinned ? <span style={pinBadge}>PIN</span> : null}
-                  {!isPlain ? (
-                    <>
-                      <div
-                        onMouseDown={beginEdgeDrag(cue, "start")}
-                        style={{ ...edgeHandle, left: 0, cursor: "ew-resize" }}
-                      />
-                      <div
-                        onMouseDown={beginEdgeDrag(cue, "end")}
-                        style={{ ...edgeHandle, right: 0, cursor: "ew-resize" }}
-                      />
-                    </>
-                  ) : null}
-                </div>
+                </React.Fragment>
               );
             })}
             {cuts.map((cut, i) => {
@@ -1755,7 +1812,11 @@ export const Timeline: React.FC<TimelineProps> = ({
                     data-testid={`timeline-cut-${cut.startSec}-${cut.endSec}`}
                     style={{ ...cutOverlay, left: `${left}%`, width: `${width}%` }}
                   >
-                    <div style={cutStrike} />
+                    {/* One strike per lane: a single 50% line on the 77 px
+                        track lands on V1's top edge, through neither lane
+                        (timeline-lanes §6a, UI review r1 B1). */}
+                    <div style={cutStrikeV2} />
+                    <div style={cutStrikeV1} />
                   </div>
                 );
               }
@@ -1971,7 +2032,7 @@ const rulerLabel: React.CSSProperties = {
 
 const track: React.CSSProperties = {
   position: "relative",
-  height: 44,
+  height: TRACK_HEIGHT,
   background: "#0F0F14",
   border: "1px solid #2A2A33",
   borderRadius: 6,
@@ -1979,10 +2040,10 @@ const track: React.CSSProperties = {
   userSelect: "none",
 };
 
+/** `top`/`height` come from the lane box (`V2_BOX`/`V1_BOX`) at the call
+ * site, not here (timeline-lanes §1). */
 const block: React.CSSProperties = {
   position: "absolute",
-  top: 3,
-  bottom: 3,
   borderRadius: 4,
   boxSizing: "border-box",
   cursor: "pointer",
@@ -2002,6 +2063,71 @@ const blockLabel: React.CSSProperties = {
   overflow: "hidden",
   textOverflow: "ellipsis",
   pointerEvents: "none",
+};
+
+/** The rule between V2 and V1 (timeline-lanes §4). */
+const laneDivider: React.CSSProperties = {
+  position: "absolute",
+  left: 0,
+  right: 0,
+  top: LANE_DIVIDER_TOP,
+  height: 1,
+  background: "#22222a",
+  zIndex: 0,
+  pointerEvents: "none",
+};
+
+/** V1's passive footage background: shows wherever no take block sits —
+ * under graphics, slivers, hidden split halves, veto holes — with nothing
+ * computed to place it. `left/right: 0` with `border-box` keeps it inside the
+ * track: a 2 px overflow turns on scrolling at zoom 1 (round 2, S9). The
+ * border is solid because dashed means KEPT on this timeline; the fill sits
+ * one step above the track so V1 under a graphic reads as footage present,
+ * not an empty slot (timeline-lanes §4, UI review r1). */
+const footageStrip: React.CSSProperties = {
+  position: "absolute",
+  left: 0,
+  right: 0,
+  ...V1_BOX,
+  boxSizing: "border-box",
+  background: "#1a1a21",
+  border: "1px solid #2e2e38",
+  borderRadius: 4,
+  zIndex: 0,
+  pointerEvents: "none",
+};
+
+/** V1 under a picture-hidden graphic (timeline-lanes §4). 45°/10 px stripes,
+ * not the cut band's 135°/12 px, which already mean "removed". z 2 puts it
+ * above unselected takes (1), so a dragged hatch paints over the neighbouring
+ * take instead of sliding under it (the R11 Task 1 bug), and below cut bands
+ * and the selected block (3). The container lets index.css hide the label
+ * under 56 px rather than spill a clipped glyph. */
+const hatch: React.CSSProperties = {
+  position: "absolute",
+  display: "flex",
+  alignItems: "center",
+  overflow: "hidden",
+  boxSizing: "border-box",
+  borderRadius: 4,
+  border: "1px solid #26262e",
+  backgroundImage: "repeating-linear-gradient(45deg, #15151b 0 5px, #2a2a33 5px 10px)",
+  containerType: "inline-size",
+  zIndex: 2,
+  pointerEvents: "none",
+};
+
+/** `#9A9AA3` on a translucent pill measures 5.1:1 on the light stripe; the
+ * old `#5f5f6a` measured 2.7:1 (timeline-lanes §4). */
+const hatchLabel: React.CSSProperties = {
+  ...blockLabel,
+  color: "#9A9AA3",
+  fontWeight: 400,
+  textTransform: "none",
+  background: "#15151bcc",
+  borderRadius: 2,
+  marginLeft: 4,
+  padding: "0 4px",
 };
 
 /** Same badge shape as the Overlay's elementId tag — a pinned scene should
@@ -2041,14 +2167,24 @@ const cutOverlay: React.CSSProperties = {
 
 /** The literal "struck through" line — a hatch alone reads as "selected" or
  * "dragging" at a glance; a horizontal line through the middle is the same
- * mark the ghost ROW already uses on its own label text. */
-const cutStrike: React.CSSProperties = {
+ * mark the ghost ROW already uses on its own label text. One per lane, each
+ * through its lane's centre: lane centre, minus the band's `top: 3` inset,
+ * minus its 1 px border, minus half the 2 px line — computed from the lane
+ * constants so a geometry change cannot strand them (timeline-lanes §6a). */
+const cutStrikeBase: React.CSSProperties = {
   position: "absolute",
   left: 0,
   right: 0,
-  top: "50%",
   height: 2,
   background: "rgba(255,92,92,0.8)",
+};
+const cutStrikeV2: React.CSSProperties = {
+  ...cutStrikeBase,
+  top: V2_BOX.top + V2_BOX.height / 2 - 3 - 1 - 1,
+};
+const cutStrikeV1: React.CSSProperties = {
+  ...cutStrikeBase,
+  top: V1_BOX.top + V1_BOX.height / 2 - 3 - 1 - 1,
 };
 
 /** Seam marker's clickable hit zone — ALREADY-APPLIED mode only. Wider than
