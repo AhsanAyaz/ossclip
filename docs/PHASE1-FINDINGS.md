@@ -2206,3 +2206,35 @@ Older ossclip versions cannot read migrated projects (`takeLooks`, split anchors
 *   `reclampPinnedTiming` is produce-only, as before.
 *   A user cut made live but not yet rendered previews on the old clock.
 *   Ghosts of hidden take halves still use `at`, so they can sit at a slightly wrong window before the first upgraded render.
+
+## 175. Timeline lanes (2026-11-24)
+
+**Why.** Footage and graphics looked alike in one row: graphic blocks were `#1A1A21` and take blocks without a thumbnail were `#131318`, so it was unclear what could be dragged. A graphic block also read as replacing the footage, but the recording keeps playing underneath it. Design: `docs/designs/timeline-lanes.md` (draft 7); plan: `docs/superpowers/plans/2026-11-24-timeline-lanes.md`.
+
+**What.** One track container, with the lanes as vertical offsets: V2 holds graphic blocks, and V1 holds take blocks over a passive footage strip. The track is 77 px tall. Every gesture's maths reads only the track width, so gestures are unchanged. B2, separate lane containers, was rejected because six e2e sites find the track as the playhead's parent.
+
+*   Design review round 1 dropped a computed underlay (`underlaySpans`) for one passive strip: a run of back-to-back graphics has no take under it, because the assembler's 0.05 s gaps fall under `MIN_PLAIN_SEC`.
+*   Declared press-rule change: empty lane space now seeks, and graphics are selectable only on V2, where the hit height went from 38 to 28 px. The author confirmed this on 2026-11-24.
+
+**UI design loop.** Two rounds, each with two Impeccable assessments and an EGM panel, on mockups built from real EGM-short cues. Changes:
+
+*   the hatch uses 45° stripes, so it no longer copies the cut band's 135° pattern;
+*   the hatch label went from 2.7:1 to 5.1:1 contrast (`#9A9AA3`);
+*   the footage strip has a solid border, so dashed means only KEPT;
+*   labels show the id first, and leave the component name out for `ClipScene` (the author picked option A);
+*   the cut band draws one strike line per lane;
+*   grips turn `#dbe4ff` when the block is selected;
+*   container queries hide labels under 40 px, and hatch labels under 56 px;
+*   when badges show, `paddingRight` (44 or 76 px) reserves room for them.
+
+**Bug caught in the Task 2 review.** Toggling a `paddingRight` longhand over the `padding` shorthand dropped the 8 px padding when a badge was removed from a mounted block: React clears the longhand and does not re-apply the shorthand. The fix (5c42e31) always sets the longhand.
+
+**Limits.**
+
+*   Takes set to `graphic-only` keep their filmstrip and get no hatch.
+*   A sub-second graphic shows only grips and is hard to body-drag at zoom 1.
+*   A cut inside a `graphic-only` window can draw over the hatch label.
+
+**Verification.** 6735 vitest tests and 112 editor e2e tests pass; typecheck and build are clean. The author checked it by eye on FE Loop on 2026-11-24 and reported "All good".
+
+**Release.** Editor-only. No version bump of its own; it ships with the next release.

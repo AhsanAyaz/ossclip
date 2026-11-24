@@ -1406,8 +1406,8 @@ describe("Timeline — lanes (timeline-lanes §1-§7)", () => {
     expect(pin.style.right).toBe("8px");
     expect(labelOf("scene-a").style.paddingRight).toBe("44px");
     expect(labelOf("scene-b").style.paddingRight).toBe("44px");
-    // No badge, no override: the label keeps `blockLabel`'s own
-    // `padding: "0 8px"`, which jsdom expands into `paddingRight`.
+    // No badge: the label always sets the `paddingRight` longhand,
+    // here to 8, rather than leaning on `blockLabel`'s `padding` shorthand.
     expect(labelOf("scene-c").style.paddingRight).toBe("8px");
     const mute = byId("volume-badge-scene-b");
     expect(mute.textContent).toBe("MUTE");
