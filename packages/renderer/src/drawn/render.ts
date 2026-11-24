@@ -219,9 +219,11 @@ async function pagesClosed(browser: Awaited<ReturnType<typeof openBrowser>>): Pr
  * down what `run` is waiting on (the caller still awaits the teardown before
  * it returns). Once the limit has passed, the limit IS the error: `run` then
  * rejects too, with the closed browser's "Target closed", and that message
- * would hide why the browser was closed.
+ * would hide why the browser was closed. Exported so its timing can be
+ * tested with fake timers, without a browser (drawn-time-limit.test.ts):
+ * the drawn-render test's wall clock also counts browser start and teardown.
  */
-async function withinTimeLimit<T>(run: Promise<T>, ms: number, what: string, expire: () => Promise<void>): Promise<T> {
+export async function withinTimeLimit<T>(run: Promise<T>, ms: number, what: string, expire: () => Promise<void>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut: Error | null = null;
   const expired = new Promise<never>((_, reject) => {
