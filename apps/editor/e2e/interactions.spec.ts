@@ -212,7 +212,11 @@ test("the timeline scrubs on press-and-drag; a click inside a block selects WITH
   // (field report 2026-08-07): the seek starts once the press TRAVELS past
   // the click threshold — a bare press-and-release is a selection, so the
   // playhead must not jump until the pointer actually moves.
-  const y = track.y + track.height / 2;
+  // The y is the take block's own centre, not the track's mid-y: under lanes
+  // the track is 77px and its mid-y (38.5) is V1's top edge, so a fixed
+  // track-relative y no longer names a row (timeline-lanes Risks).
+  const take = (await page.getByTestId("timeline-block-take-0").boundingBox())!;
+  const y = take.y + take.height / 2;
   await page.mouse.move(track.x + track.width * 0.25, y);
   await page.mouse.down();
   await page.mouse.move(track.x + track.width * 0.33, y, { steps: 4 });
@@ -483,18 +487,27 @@ test("the selected block paints above its take neighbours, including mid-resize 
   // grows invisibly underneath its neighbour.
   const box = (await scene.boundingBox())!;
   const y = box.y + box.height / 2;
+  const takeBox = (await page.getByTestId("timeline-block-take-0").boundingBox())!;
+  const takeY = takeBox.y + takeBox.height / 2;
   await page.mouse.move(box.x + 2, y);
   await page.mouse.down();
   await page.mouse.move(box.x - 60, y, { steps: 4 });
-  const topId = await page.evaluate(
-    ([x, py]) =>
-      document
-        .elementFromPoint(x!, py!)
-        ?.closest('[data-testid^="timeline-block-"]')
-        ?.getAttribute("data-testid") ?? null,
-    [box.x - 30, y],
-  );
-  expect(topId).toBe("timeline-block-scene-2");
+  const topAt = (px: number, py: number) =>
+    page.evaluate(
+      ([x, yy]) =>
+        document
+          .elementFromPoint(x!, yy!)
+          ?.closest('[data-testid^="timeline-block-"]')
+          ?.getAttribute("data-testid") ?? null,
+      [px, py],
+    );
+  // Two probes, one per lane: graphics and takes no longer share a row
+  // (timeline-lanes Risks). On V2 the grown preview is what's there; on V1
+  // take-0 must still be the hit — nothing under the graphic steals the
+  // take. The cross-lane paint order (hatch over takes) is the jsdom
+  // component test's job, since elementFromPoint skips pointer-inert hatches.
+  expect(await topAt(box.x - 30, y)).toBe("timeline-block-scene-2");
+  expect(await topAt(box.x - 30, takeY)).toBe("timeline-block-take-0");
   await page.mouse.up();
   // The edge drag pinned scene-2 — undo so this test leaves no residue.
   await page.keyboard.press("Meta+z");
@@ -1729,4 +1742,67 @@ test("per-take volume: the Audio slider writes video.volume and badges the block
   await expect(page.getByTestId(`volume-badge-${takeId}`)).toHaveCount(0);
   await page.keyboard.press("Meta+s");
   await expect(page.getByTestId("dirty")).toHaveCount(0);
+});
+
+// Two lanes on one track (timeline-lanes design, Test plan "E2E"): graphics
+// on V2, takes + the footage strip on V1. Empty lane space is the bare-track
+// seek surface, so a press that misses a block — on V1 beneath a graphic, or
+// on V2 above a take — must seek and never select. Each test is on a fresh
+// page so neither inherits the other's playhead.
+test.describe("timeline lanes", () => {
+  /**
+   * Park the playhead on the ruler and wait for it to LAND before anyone
+   * reads a baseline: the playhead moves only on the player's frameupdate,
+   * so the park arrives late — read early, the late park alone moves the
+   * playhead ~0.04 and a press that does nothing would pass as "seeked"
+   * (timeline-lanes Test plan, round 4 S1).
+   */
+  const parkAt = async (page: Page, x: number) => {
+    const ruler = (await page.getByTestId("ruler").boundingBox())!;
+    const track = (await page.getByTestId("playhead").locator("..").boundingBox())!;
+    await page.mouse.click(x, ruler.y + ruler.height / 2);
+    const parkFrac = (x - track.x) / track.width;
+    await expect.poll(() => playheadFrac(page)).toBeCloseTo(parkFrac, 1);
+    return playheadFrac(page);
+  };
+
+  test("press on V1 under a graphic seeks and does not select", async ({ page }) => {
+    await page.goto("/");
+    await settle(page);
+    const scene = (await page.getByTestId("timeline-block-scene-3").boundingBox())!;
+    const footage = (await page.getByTestId("timeline-footage").boundingBox())!;
+    const before = await parkAt(page, scene.x + scene.width * 0.2);
+
+    // The footage strip is pointer-inert, so this press lands on the bare
+    // track — V1 under a graphic is footage, not a second handle on the
+    // graphic above it.
+    await page.mouse.click(scene.x + scene.width * 0.7, footage.y + footage.height / 2);
+    await expect
+      .poll(async () => Math.abs((await playheadFrac(page)) - before))
+      .toBeGreaterThanOrEqual(0.02);
+    await expect(page.getByTestId("timing-range")).not.toBeVisible();
+  });
+
+  test("press on bare V2 seeks", async ({ page }) => {
+    await page.goto("/");
+    await settle(page);
+    const take = (await page.getByTestId("timeline-block-take-0").boundingBox())!;
+    const track = (await page.getByTestId("playhead").locator("..").boundingBox())!;
+    const before = await parkAt(page, take.x + take.width * 0.2);
+
+    // y = track top + 1 (border) + 3 (V2 top) + 14 (half V2's 28px): the V2
+    // centre above a take, where no graphic sits.
+    await page.mouse.click(take.x + take.width * 0.7, track.y + 1 + 3 + 14);
+    await expect
+      .poll(async () => Math.abs((await playheadFrac(page)) - before))
+      .toBeGreaterThanOrEqual(0.02);
+
+    // At zoom 1 the taller track must not have grown a horizontal scroll
+    // (timeline-lanes Review Focus 3).
+    await expect(page.getByTestId("zoom-level")).toHaveText("1×");
+    const { scrollWidth, clientWidth } = await page
+      .getByTestId("timeline-scroller")
+      .evaluate((el) => ({ scrollWidth: el.scrollWidth, clientWidth: el.clientWidth }));
+    expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+  });
 });

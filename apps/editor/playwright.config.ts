@@ -150,11 +150,13 @@ export default defineConfig({
   ],
   use: {
     baseURL: `http://127.0.0.1:${VITE_PORT}`,
-    // Tall enough that the stage (≈676px) AND the timeline below it are both
-    // inside the viewport: several specs drive raw `page.mouse` events at
-    // measured coordinates, and raw mouse — unlike locator.click() — never
-    // auto-scrolls its target into view. At the default 720p the timeline
-    // sits below the fold and every aimed click lands on <html>.
+    // Tall enough that the stage (≈643px: 676 minus the two-lane track's
+    // extra 33, timeline-lanes Risks) AND the timeline below it both get
+    // their real size: several specs drive raw `page.mouse` events at
+    // measured coordinates, and raw mouse — unlike locator.click() — aims at
+    // exactly what was measured. The shell is 100vh with overflow: hidden, so
+    // a smaller viewport never pushes the timeline off screen; it shrinks the
+    // stage instead, and the stage-aimed gestures lose the room they need.
     viewport: { width: 1280, height: 1000 },
     // Containers/CI images often pre-install one Chromium rather than the
     // exact revision this @playwright/test version pins — point at it instead

@@ -15,6 +15,7 @@ import {
   SAFE_AREA,
   SAFE_RECT,
   avoidSlicingText,
+  backdropColorAt,
   backdropOpacityAt,
   captionAnchorAt,
   captionFontSizeFor,
@@ -645,6 +646,91 @@ describe("caption + backdrop timelines", () => {
     expect(entering).toBeGreaterThan(0.2);
     expect(entering).toBeLessThan(0.8);
     expect(backdropOpacityAt(cues, 6.5)).toBe(0);
+  });
+});
+
+describe("backdropColorAt (backdrop-color §3)", () => {
+  const themeBg = "#000000";
+  const at = (
+    id: string,
+    kind: "plain" | "graphic",
+    layout: SceneCue["layout"],
+    startSec: number,
+    endSec: number,
+    backdropColor?: string,
+  ): SceneCue => ({
+    ...cue(layout, startSec, endSec),
+    id,
+    kind,
+    ...(backdropColor ? { backdropColor } : {}),
+  });
+  // The spec's fixture: the plain take is filtered by morphCues, C draws no
+  // backdrop yet stores a colour that must be ignored (round 2, SF2).
+  const cues = [
+    at("take", "plain", "full-bleed", 0, 4),
+    at("A", "graphic", "graphic-only", 4, 8, "#ff0000"),
+    at("B", "graphic", "graphic-only", 8, 12, "#00ff00"),
+    at("C", "graphic", "full-bleed", 12, 16, "#123456"),
+    at("D", "graphic", "graphic-only", 16, 20, "#0000ff"),
+  ];
+  const expected: [number, string][] = [
+    [6, "#ff0000"], // rule 1: A draws the backdrop
+    [4.1, "#ff0000"], // rule 1, inside A's fade-in from nothing
+    [7.99, "#ff0000"], // the A/B snap (call 2) …
+    [8.01, "#00ff00"], // … with no cross-fade
+    [12.1, "#00ff00"], // rule 2: C fades in from B, which draws it (call 3)
+    [11.8, "#00ff00"], // rule 1 holds inside B's own fade-out
+    [15.9, "#0000ff"], // rule 2 with next: C fades out into D (SF1)
+    [2, "#000000"], // rule 3: no active morph cue
+    [3.9, "#000000"], // would be A's colour without the morphCues filter (SF1)
+    [14, "#000000"], // C outside its fades; its #123456 is ignored
+  ];
+
+  it("follows the graphic that draws the backdrop, through its fades", () => {
+    for (const [t, colour] of expected) expect(backdropColorAt(cues, t, themeBg), `t=${t}`).toBe(colour);
+  });
+
+  it("rule 2 borrows only from a neighbour that draws the backdrop", () => {
+    // prev stores a colour but is full-bleed, so it paints nothing; without
+    // the drawsSolidBackdrop(prev) gate the fade-in would read its #ff0000.
+    const pair = [
+      at("P", "graphic", "full-bleed", 0, 4, "#ff0000"),
+      at("Q", "graphic", "full-bleed", 4, 8),
+    ];
+    expect(backdropColorAt(pair, 4.1, themeBg)).toBe("#000000");
+  });
+
+  it("rule 2 borrows only from a next neighbour that draws the backdrop", () => {
+    // The mirror of the prev case: P fades out into Q, which stores a colour
+    // but is full-bleed; without the drawsSolidBackdrop(next) gate the
+    // fade-out would read Q's #ff0000.
+    const pair = [
+      at("P", "graphic", "full-bleed", 0, 4),
+      at("Q", "graphic", "full-bleed", 4, 8, "#ff0000"),
+    ];
+    expect(backdropColorAt(pair, 3.9, themeBg)).toBe("#000000");
+  });
+
+  it("is themeBg at every sample when no cue carries a colour", () => {
+    const plain = cues.map(({ backdropColor: _drop, ...rest }) => rest);
+    for (const [t] of expected) expect(backdropColorAt(plain, t, themeBg), `t=${t}`).toBe(themeBg);
+  });
+
+  it("leaves backdropOpacityAt's values untouched by the shared resolver", () => {
+    // Recorded from backdropOpacityAt BEFORE the resolver was extracted.
+    const before: [number, number][] = [
+      [6, 1],
+      [4.1, 0.19825072886297254],
+      [7.99, 1],
+      [8.01, 1],
+      [12.1, 0.8017492711370274],
+      [11.8, 0.6064139941690933],
+      [15.9, 0.8017492711370275],
+      [2, 0],
+      [3.9, 0],
+      [14, 0],
+    ];
+    for (const [t, opacity] of before) expect(backdropOpacityAt(cues, t), `t=${t}`).toBe(opacity);
   });
 });
 

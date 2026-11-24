@@ -255,6 +255,15 @@ describe("kitClipPlans", () => {
       expect(go).not.toBe(fb);
     });
 
+    // Pins existing behaviour spec §3 relies on: the key hashes the whole cue.
+    it("changes when only backdropColor changes on a graphic-only cue (backdrop-color §3)", () => {
+      const [plain] = keys([cardRow("a", 1, 4, { layout: "graphic-only" })]);
+      const [red] = keys([cardRow("a", 1, 4, { layout: "graphic-only", backdropColor: "#ff0000" })]);
+      const [green] = keys([cardRow("a", 1, 4, { layout: "graphic-only", backdropColor: "#00ff00" })]);
+      expect(red).not.toBe(green);
+      expect(red).not.toBe(plain);
+    });
+
     // Literal keys computed by the kit BEFORE clips carried the background
     // (§163; commit 76dd5c7). KIT_VERSION was not bumped, so a cue whose clip
     // did not change must keep its key exactly (it is reused, not rendered

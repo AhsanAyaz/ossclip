@@ -12,6 +12,7 @@ import { zoomScaleAt } from "@ossclip/core/browser";
 import {
   CONTENT_TRANSFORM_ORIGIN,
   activeCueAt,
+  backdropColorAt,
   backdropOpacityAt,
   contentTransformFor,
   pictureZoomAt,
@@ -110,6 +111,9 @@ export const VideoStage: React.FC<{
   const outFrame = { width, height };
   const slot = videoSlotAt(cues, t, face ?? undefined, sourceTextRegions ?? [], outFrame);
   const backdrop = backdropOpacityAt(cues, t);
+  // Once per frame, for both fills that must agree: the stage backdrop and
+  // the contain-fit slot behind the picture (backdrop-color §3).
+  const backdropColor = backdropColorAt(cues, t, theme.bg);
 
   const wPx = slot.rect.w * width;
   const hPx = slot.rect.h * height;
@@ -203,7 +207,7 @@ export const VideoStage: React.FC<{
           </filter>
         </svg>
       ) : null}
-      <AbsoluteFill style={{ background: theme.bg, opacity: backdrop }} />
+      <AbsoluteFill style={{ background: backdropColor, opacity: backdrop }} />
       <div
         // Which scene's framing a grab on the picture edits (PLAN 2026-07-30
         // Task B). ATTRIBUTE ONLY — no cursor, no pointerEvents here: editor
@@ -220,11 +224,17 @@ export const VideoStage: React.FC<{
           overflow: "hidden",
           opacity: slot.opacity,
           // Under `contain` the picture no longer reaches the slot's edges.
-          // Paint the theme's own backdrop behind it so the inset reads as a
+          // Paint the backdrop's colour behind it so the inset reads as a
           // deliberate frame rather than as black bars: the root fill is
           // black, and every layout except pip/graphic-only leaves the stage
           // backdrop at opacity 0, so without this the gap would be black.
-          backgroundColor: fitContain ? theme.bg : undefined,
+          // The SAME colour as the stage backdrop, so a contain-fit bubble on
+          // a coloured graphic is not theme.bg inside and the graphic's colour
+          // around it (round 1, S6). Off a backdrop layout and outside a fade
+          // that is theme.bg, as before; inside a fade next to a coloured
+          // graphic it takes that colour for the 0.35 s, which is accepted
+          // over gating this fill separately (backdrop-color §3, round 2 SF5).
+          backgroundColor: fitContain ? backdropColor : undefined,
           // Slightly lift the bubble off the backdrop like the reference.
           boxShadow: slot.cornerRadius > 0.5 ? "0 18px 60px rgba(0,0,0,0.55)" : undefined,
         }}

@@ -161,14 +161,19 @@ describe.skipIf(!hasBrowser || !hasFfmpeg)("drawn scenes in the browser (§167)"
     const t0 = performance.now();
     await expect(
       renderDrawnStills({ serveUrl, props, outDir: join(work, "stills-c"), timeoutMs: 15_000 }),
-    ).rejects.toThrow(/did not finish within 15000 ms/);
+    ).rejects.toThrow(/the still at frame \d+ did not finish within 15000 ms/);
     const elapsed = performance.now() - t0;
-    // The limit is per browser step, so the browser's start and the
-    // composition's selection come before the stuck still's clock starts
-    // (0.4 s measured). Without this function's own timer, Remotion's alone
-    // rejected at 27.7 s.
+    // The matcher names the still, so it was the stuck still's step that
+    // timed out, not selecting the composition. `elapsed` also counts the
+    // browser's start, the composition's selection and the teardown (up to
+    // 3 s of page-close grace), and those grow under full-suite load: 6-9 s
+    // was seen on a 7 GB machine, which broke a 15 s + 5 s bound. The bug
+    // guarded here is Remotion's own timeout winning, measured at 27.7 s
+    // after the step starts (see renderDrawnStills's doc), so 27 s still
+    // tells the two apart for any overhead below 12 s. The exact timing is
+    // pinned without a browser in drawn-time-limit.test.ts.
     expect(elapsed).toBeGreaterThanOrEqual(15_000);
-    expect(elapsed).toBeLessThan(15_000 + 5_000);
+    expect(elapsed).toBeLessThan(27_000);
   }, 120_000);
 
   describe("(d) the policy keeps the page off the network", () => {

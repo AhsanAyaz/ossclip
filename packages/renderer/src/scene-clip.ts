@@ -6,7 +6,7 @@
  * index.ts) are the I/O around it, the scene-still.ts split.
  */
 import type { SceneCue, Theme } from "@ossclip/core/browser";
-import { backdropOpacityAt, drawsSolidBackdrop } from "@ossclip/scenes/geometry";
+import { backdropColorAt, backdropOpacityAt, drawsSolidBackdrop } from "@ossclip/scenes/geometry";
 
 /**
  * The composition's input props: one scene, alone on a transparent frame.
@@ -52,8 +52,9 @@ export function sceneClipMetadata(p: SceneClipProps): {
  * draws nothing behind the scene and so stays byte-identical to the kit's
  * clips before it.
  *
- * In the full render these two layouts stand the graphic on the stage's
- * `theme.bg`, which VideoStage fades in over the 0.35 s ease as the footage
+ * In the full render these two layouts stand the graphic on the stage's solid
+ * backdrop, the graphic's `backdropColor` or `theme.bg` (backdrop-color §3),
+ * which VideoStage fades in over the 0.35 s ease as the footage
  * shrinks away; without it a clip would be the graphic alone, and a card row
  * on transparent pixels over the speaker is not the scene the author chose.
  * The same `backdropOpacityAt` on the one rebased cue (it starts at 0), at
@@ -61,14 +62,17 @@ export function sceneClipMetadata(p: SceneClipProps): {
  * and its end fades out, exactly as the full render does into and out of the
  * neighbouring speaker footage. The footage itself is never drawn: a kit clip
  * holds no footage (NG5), so `pip-bubble` gets no picture, and the report
- * says where it goes.
+ * says where it goes. The colour is the cue's own `backdropColor` when set,
+ * through the same `backdropColorAt` the stage uses (backdrop-color §3), so
+ * the clip and the full render cannot paint the graphic different colours.
  */
 export function sceneClipBackground(
   p: SceneClipProps,
   frame: number,
 ): { color: string; opacity: number } | null {
   if (!drawsSolidBackdrop(p.cue.layout)) return null;
-  return { color: p.theme.bg, opacity: backdropOpacityAt([p.cue], frame / p.settings.fps) };
+  const t = frame / p.settings.fps;
+  return { color: backdropColorAt([p.cue], t, p.theme.bg), opacity: backdropOpacityAt([p.cue], t) };
 }
 
 /**

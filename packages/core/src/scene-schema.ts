@@ -140,6 +140,15 @@ export const SceneSchema = z.object({
 });
 export type Scene = z.infer<typeof SceneSchema>;
 
+/**
+ * A 6-digit `#rrggbb` colour — exactly what `<input type="color">` writes
+ * (backdrop-color §1). One schema shared by the override doc, the cue and the
+ * editor's parse boundary, so `#fff`, `red` or `rgb(...)` are rejected rather
+ * than coerced (CLAUDE.md). Lives here because this module is on the browser
+ * surface (`browser.ts`), which the editor imports it from.
+ */
+export const HexColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+
 /** A resolved, output-timed scene — what the composition actually renders. */
 export const SceneCueSchema = z
   .object({
@@ -257,6 +266,13 @@ export const SceneCueSchema = z
   /** Caption size multiplier for this scene (R16 §64) — scales the track's
    * base font size, same convention as every other scale control. */
   captionScale: z.number().min(0.2).max(3).optional(),
+  /**
+   * The solid backdrop's colour for this scene (backdrop-color §1), in place
+   * of `theme.bg`. Only read where the layout draws the backdrop
+   * (`drawsSolidBackdrop`: graphic-only, pip-bubble); under any other layout
+   * it rides along unused, so switching back restores it (call 4).
+   */
+  backdropColor: HexColorSchema.optional(),
   /** True when the user set an absolute time, detaching this cue from its words. */
   pinned: z.boolean().optional(),
   /**

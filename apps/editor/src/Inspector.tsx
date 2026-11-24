@@ -4,6 +4,7 @@ import {
   BACKDROP_LAYOUTS,
   CAPTION_THEME_IDS,
   cutRangeToOldClock,
+  HexColorSchema,
   isBackdropLayout,
   LayoutSchema,
   lookAt,
@@ -28,6 +29,7 @@ import {
   layoutSlots,
   storedGraphicBox,
 } from "@ossclip/renderer/composition";
+import { drawsSolidBackdrop } from "@ossclip/scenes/geometry";
 import type { useEdits } from "./useEdits";
 import { clipSpeedTiming, pinTiming } from "./timing";
 import {
@@ -1793,6 +1795,53 @@ export const Inspector: React.FC<InspectorProps> = ({
               </div>
             );
           })()}
+          {/* The Background row (backdrop-color §2, §4): only for a graphic
+              whose layout paints the solid backdrop — the renderer's own
+              `drawsSolidBackdrop`, not core's `isBackdropLayout`, which
+              includes full-bleed and means something else. The kind gate
+              matters too: a take set to graphic-only paints the backdrop
+              as well, but offering the row only on graphics is what keeps
+              these id-keyed actions off take pieces, so they need no
+              look-mode route. */}
+          {cue.kind !== "plain" && drawsSolidBackdrop(cue.layout) ? (
+            <div style={row}>
+              <span style={label}>Background</span>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                {/* `cue` is resolved, so a split half shows the colour it
+                    inherits from its root. No fallback code: a colour input
+                    lowercases its value and sanitises a non-hex one to
+                    #000000 itself (backdrop-color §4). */}
+                <input
+                  type="color"
+                  data-testid="backdrop-color"
+                  value={cue.backdropColor ?? resolvedTheme.bg}
+                  onChange={(e) => {
+                    // The parse boundary (backdrop-color §4): only a 6-digit
+                    // hex reaches the doc, which the schema would reject.
+                    const parsed = HexColorSchema.safeParse(e.target.value);
+                    if (parsed.success) {
+                      edits.patchBackdropColor(selection.sceneId, parsed.data, `backdropColor:${selection.sceneId}`);
+                    }
+                  }}
+                  style={{ width: 28, height: 28, border: "1px solid #2A2A33", borderRadius: 6, padding: 0, background: "none" }}
+                />
+                {/* Keyed on the scene's OWN entry, not the cue: an inherited
+                    colour on a split half has nothing here to clear. */}
+                {edits.doc.scenes[selection.sceneId]?.backdropColor !== undefined ? (
+                  <button
+                    data-testid="backdrop-color-reset"
+                    style={button}
+                    onClick={() => {
+                      blurActive();
+                      edits.clearBackdropColor(selection.sceneId);
+                    }}
+                  >
+                    Reset
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
         <div style={section}>
           {/* Direct manipulation first (PLAN Task B4): a zoom slider with a

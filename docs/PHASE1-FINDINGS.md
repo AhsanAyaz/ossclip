@@ -2206,3 +2206,74 @@ Older ossclip versions cannot read migrated projects (`takeLooks`, split anchors
 *   `reclampPinnedTiming` is produce-only, as before.
 *   A user cut made live but not yet rendered previews on the old clock.
 *   Ghosts of hidden take halves still use `at`, so they can sit at a slightly wrong window before the first upgraded render.
+
+## 175. Timeline lanes (2026-11-24)
+
+**Why.** Footage and graphics looked alike in one row: graphic blocks were `#1A1A21` and take blocks without a thumbnail were `#131318`, so it was unclear what could be dragged. A graphic block also read as replacing the footage, but the recording keeps playing underneath it. Design: `docs/designs/timeline-lanes.md` (draft 7); plan: `docs/superpowers/plans/2026-11-24-timeline-lanes.md`.
+
+**What.** One track container, with the lanes as vertical offsets: V2 holds graphic blocks, and V1 holds take blocks over a passive footage strip. The track is 77 px tall. Every gesture's maths reads only the track width, so gestures are unchanged. B2, separate lane containers, was rejected because six e2e sites find the track as the playhead's parent.
+
+*   Design review round 1 dropped a computed underlay (`underlaySpans`) for one passive strip: a run of back-to-back graphics has no take under it, because the assembler's 0.05 s gaps fall under `MIN_PLAIN_SEC`.
+*   Declared press-rule change: empty lane space now seeks, and graphics are selectable only on V2, where the hit height went from 38 to 28 px. The author confirmed this on 2026-11-24.
+
+**UI design loop.** Two rounds, each with two Impeccable assessments and an EGM panel, on mockups built from real EGM-short cues. Changes:
+
+*   the hatch uses 45° stripes, so it no longer copies the cut band's 135° pattern;
+*   the hatch label went from 2.7:1 to 5.1:1 contrast (`#9A9AA3`);
+*   the footage strip has a solid border, so dashed means only KEPT;
+*   labels show the id first, and leave the component name out for `ClipScene` (the author picked option A);
+*   the cut band draws one strike line per lane;
+*   grips turn `#dbe4ff` when the block is selected;
+*   container queries hide labels under 40 px, and hatch labels under 56 px;
+*   when badges show, `paddingRight` (44 or 76 px) reserves room for them.
+
+**Bug caught in the Task 2 review.** Toggling a `paddingRight` longhand over the `padding` shorthand dropped the 8 px padding when a badge was removed from a mounted block: React clears the longhand and does not re-apply the shorthand. The fix (5c42e31) always sets the longhand.
+
+**Limits.**
+
+*   Takes set to `graphic-only` keep their filmstrip and get no hatch.
+*   A sub-second graphic shows only grips and is hard to body-drag at zoom 1.
+*   A cut inside a `graphic-only` window can draw over the hatch label.
+
+**Verification.** 6735 vitest tests and 112 editor e2e tests pass; typecheck and build are clean. The author checked it by eye on FE Loop on 2026-11-24 and reported "All good".
+
+**Release.** Editor-only. No version bump of its own; it ships with the next release.
+
+## 176. Per-graphic backdrop colour (2026-11-24)
+
+**Why.** The author wanted to pick the colour behind a `graphic-only` graphic. Until now the only colour there was `theme.bg`: one value for the whole project, reachable in the Inspector only with nothing selected. Design: `docs/designs/graphic-backdrop-color.md` (draft 3, two review rounds); the author chose a per-graphic override (option A) over surfacing the project `bg` (option B).
+
+**What.**
+
+*   `backdropColor` is an optional scene override, parsed by one `HexColorSchema` (`/^#[0-9a-fA-F]{6}$/`) that the override schema, the cue schema and the Inspector all share. `#fff`, `red` and `rgb(...)` are rejected, never coerced.
+*   `backdropColorAt` resolves the colour by three rules: the active cue's own colour when it draws the backdrop (rule 1); otherwise, inside a fade window, the colour of `prev` or `next`, but only if that neighbour draws the backdrop (rule 2); otherwise `themeBg` (rule 3). It shares one private resolver with `backdropOpacityAt`, whose values were recorded before the extraction and pinned by a test.
+*   VideoStage uses it in two places: the stage backdrop and the contain-fit slot fill, so a `pip-bubble` with `sourceFit: "contain"` does not show `theme.bg` inside its bubble.
+*   The kit clip's background uses it too. Its reuse key already hashes the whole cue, so a changed colour re-renders the clip and a cue without the field keeps its key.
+*   The Inspector shows a Background swatch, with a Reset button, for `graphic-only` and `pip-bubble` graphics. It is gated by `drawsSolidBackdrop`, not core's `isBackdropLayout`, which includes `full-bleed` and means something else.
+*   Reducer: `patchBackdropColor` coalesces on `backdropColor:<sceneId>`, so one drag of the colour wheel is one undo step; `clearBackdropColor` on a scene with no colour returns the same state, with no undo step.
+
+**The author's calls (confirmed 2026-11-24).**
+
+1.  `pip-bubble` is included: it paints the same backdrop.
+2.  Adjacent backdrop graphics with different colours snap at their boundary; there is no cross-fade.
+3.  A fading backdrop keeps the colour of the graphic it belongs to.
+4.  The colour stays stored when the layout changes to one without a backdrop, and does nothing there.
+
+**Accepted limits.**
+
+*   Under call 4, a colour stored on a `full-bleed` graphic changes the kit reuse key, so it costs one kit re-render with identical pixels.
+*   The contain-fit fill takes a neighbouring backdrop graphic's colour during the 0.35 s fade.
+*   A split half with its own colour snaps mid-graphic.
+*   Downgrade, then save: an older editor's zod strips the key, and the colour is lost.
+*   Contrast is the author's call; there is no check.
+
+**Found in review.**
+
+*   A core test for the absent key pinned only an empty doc, so it never reached the merge spread; 47be576 fixed it.
+*   Rule 2's neighbour gates are now tested on both sides: `prev` at 4.1 s and `next` at 3.9 s, each against a full-bleed neighbour that stores a colour. Both tests fail with their gate removed.
+
+**Verification.** 6760 vitest tests in 326 files pass under `--maxWorkers=2` (drawn-render "(c)" included, this run); typecheck and build are clean. The author checked it by eye on FE Loop on 2026-11-24 and reported "all good".
+
+**Separate follow-up.** `packages/renderer/test/drawn-render.test.ts` "(c)" is load-sensitive: its 5 s margin includes browser start-up, so it can fail under full-suite load on the 7 GB machine. It passes alone. Not fixed here.
+
+**Release.** Ships in the next release (0.2.0) with timeline lanes; no version bump of its own.

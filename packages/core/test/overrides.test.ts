@@ -29,6 +29,7 @@ import {
   restoreElement,
   setElementTransform,
   SplitSchema,
+  SceneOverrideSchema,
   effectiveOverride,
   isPlainTakeKey,
   plainTakeOrdinal,
@@ -41,7 +42,7 @@ import { fillPlainCues } from "../src/fill";
 import { dropOverlappingAdded } from "../src/added-scenes";
 import { TimeMap } from "../src/timemap";
 import { FE_GRAPHICS, SPANS, TAKE_CLIP_STARTS, feMap } from "./take-looks.fixtures";
-import { defaultTheme, type SceneCue } from "../src/scene-schema";
+import { HexColorSchema, defaultTheme, type SceneCue } from "../src/scene-schema";
 
 const cue = (id: string): SceneCue => ({
   id,
@@ -1193,6 +1194,47 @@ describe("caption scale override (R16 §64)", () => {
     expect(OverrideDocSchema.safeParse({ scenes: { s: { captionScale: 0.05 } } }).success).toBe(
       false,
     );
+  });
+});
+
+describe("per-graphic backdrop colour (backdrop-color §1)", () => {
+  it("HexColorSchema accepts the 6-digit hex a colour input produces", () => {
+    expect(HexColorSchema.safeParse("#1a2b3c").success).toBe(true);
+  });
+
+  it("rejects anything else rather than coercing it (CLAUDE.md: parsed, never coerced)", () => {
+    for (const v of ["#fff", "red", "rgb(1,2,3)", ""]) {
+      expect(SceneOverrideSchema.safeParse({ backdropColor: v }).success, v).toBe(false);
+    }
+  });
+
+  it("lands on the cue, in the same place and form as captionScale", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { backdropColor: "#ff0000" } } });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect(cues[0]!.backdropColor).toBe("#ff0000");
+  });
+
+  it("is absent without an override, so a legacy doc renders byte for byte as before", () => {
+    const { cues } = applyOverrides([cue("scene-0")], OverrideDocSchema.parse({}));
+    expect("backdropColor" in cues[0]!).toBe(false);
+  });
+
+  it("is absent when the scene has an unrelated override, so the spread is conditional", () => {
+    // An empty doc returns the cue before `merged` is built; an entry forces
+    // the merge, where an unconditional spread would add an undefined key.
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { captionScale: 1.5 } } });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect("backdropColor" in cues[0]!).toBe(false);
+  });
+
+  it("a split half inherits the root's colour through effectiveOverride", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { backdropColor: "#ff0000" } } });
+    const halves = splitCues([cue("scene-0")], [{ at: 2, id: "2000" }]);
+    const { cues } = applyOverrides(halves, doc);
+    expect(cues.map((c) => c.id)).toEqual(["scene-0", "scene-0@2000"]);
+    for (const half of cues) {
+      expect(half.backdropColor, half.id).toBe("#ff0000");
+    }
   });
 });
 

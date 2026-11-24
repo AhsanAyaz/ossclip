@@ -1,6 +1,7 @@
 import { z } from "zod/v4";
 import { ColorGradeSchema } from "./color-grade";
 import {
+  HexColorSchema,
   LayoutSchema,
   SceneAnchorSchema,
   SceneComponentIdSchema,
@@ -211,6 +212,14 @@ export const SceneOverrideSchema = z.object({
   /** Caption size multiplier (R16 §64) — same per-scene, fan-out-able shape
    * as `captionY`, and the same reasoning for living on the scene. */
   captionScale: z.number().min(0.2).max(3).optional(),
+  /**
+   * Background colour behind this graphic when its layout paints the solid
+   * backdrop (backdrop-color §1). Hex only, parsed not coerced: the swatch
+   * writes `#rrggbb`, and a hand-edited `red` must fail loudly rather than
+   * render some other colour. Stored whatever the layout (call 4); split
+   * halves inherit it through `effectiveOverride` like `captionScale`.
+   */
+  backdropColor: HexColorSchema.optional(),
   /**
    * The graphic slot, reshaped by hand (PLAN 2026-07-31 Task 2) — frame
    * fractions like every other rect. Validated HERE even though
@@ -1466,6 +1475,9 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       ...(o.pip ? { pip: o.pip } : {}),
       ...(o.captionY !== undefined ? { captionY: o.captionY } : {}),
       ...(o.captionScale !== undefined ? { captionScale: o.captionScale } : {}),
+      // Same form as captionScale, so an untouched scene carries no key and
+      // a legacy doc renders byte for byte (backdrop-color §1).
+      ...(o.backdropColor !== undefined ? { backdropColor: o.backdropColor } : {}),
       // After ...cue, so a hand-set rect WINS over one routeAroundSourceText
       // baked into the base cues.
       ...(o.graphicRect ? { graphicRect: o.graphicRect } : {}),

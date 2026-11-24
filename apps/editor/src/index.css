@@ -77,3 +77,40 @@
 .ossclip-picker-row:active:not(:disabled) {
   background: #2a2a36;
 }
+
+/* Timeline graphic-block grips (timeline-lanes §3). Colour and opacity live
+ * here, never inline, so hover and selection can restyle them — an inline
+ * value would beat these rules. `is-selected` sits on both edge handles of a
+ * selected block so no pink shows inside the blue selection. */
+.ossclip-grip {
+  background: #F472B6;
+  opacity: .8;
+}
+
+.ossclip-edge:hover > .ossclip-grip {
+  opacity: 1;
+}
+
+.ossclip-edge.is-selected > .ossclip-grip {
+  background: #dbe4ff;
+}
+
+/* Timeline lane labels (timeline-lanes §3, §4). The graphic block and the
+ * picture-hidden hatch are inline-size containers, so a box too narrow to
+ * show a readable label shows none rather than a stray clipped glyph — and a
+ * short hatch's label cannot spill onto the next take. A container query
+ * because the thresholds are the BOX's width, which tracks zoom, not the
+ * viewport's. A hidden graphic label is still named by the block's `title`;
+ * a hidden hatch label has no title (the hatch ignores the pointer) and leaves
+ * the id to the graphic block above it. */
+@container (max-width: 40px) {
+  .ossclip-lane-label {
+    display: none;
+  }
+}
+
+@container (max-width: 56px) {
+  .ossclip-hatch-label {
+    display: none;
+  }
+}
