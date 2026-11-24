@@ -17,6 +17,7 @@ import {
   type OverrideDoc,
   type SceneCue,
   type Segment,
+  type Theme,
 } from "@ossclip/core/browser";
 import { Inspector, componentSwapOptions, propControlHint } from "../src/Inspector";
 import { previewBaseCues } from "../src/addedGraphics";
@@ -69,6 +70,8 @@ function Harness({
   toSourceSec,
   onClockRefused,
   deletedScenes,
+  resolvedTheme = defaultTheme,
+  onBackdropCall,
 }: {
   selection: { sceneId: string; elementId: string | null };
   cue?: SceneCue;
@@ -94,7 +97,12 @@ function Harness({
    */
   initialScenes?: Record<
     string,
-    { elements: Record<string, { dx?: number; dy?: number; scale?: number; hidden?: boolean }> }
+    {
+      elements?: Record<string, { dx?: number; dy?: number; scale?: number; hidden?: boolean }>;
+      /** A scene's OWN backdrop colour (backdrop-color §4) — what the
+       * Background row's Reset keys on. */
+      backdropColor?: string;
+    }
   >;
   onSelect?: (s: { sceneId: string; elementId: string | null } | null) => void;
   /** Fires on every render with the CURRENT `edits.doc` — the only way this
@@ -111,15 +119,38 @@ function Harness({
   onClockRefused?: (message: string) => void;
   /** App's ghost list, passed through — the take's Restore chips read it. */
   deletedScenes?: readonly SceneCue[];
+  /** The theme the Background swatch falls back to (backdrop-color §4). */
+  resolvedTheme?: Theme;
+  /** Records the Background row's calls (name + args) before forwarding
+   * them to the real reducer — the coalesce key is an argument, not
+   * something `edits.doc` can show. */
+  onBackdropCall?: (name: string, args: unknown[]) => void;
 }) {
-  const edits = useEdits();
+  const real = useEdits();
+  const edits = React.useMemo(
+    () =>
+      onBackdropCall
+        ? {
+            ...real,
+            patchBackdropColor: (...args: Parameters<typeof real.patchBackdropColor>) => {
+              onBackdropCall("patchBackdropColor", args);
+              real.patchBackdropColor(...args);
+            },
+            clearBackdropColor: (...args: Parameters<typeof real.clearBackdropColor>) => {
+              onBackdropCall("clearBackdropColor", args);
+              real.clearBackdropColor(...args);
+            },
+          }
+        : real,
+    [real, onBackdropCall],
+  );
   React.useEffect(() => {
     if (initialCuts || initialScenes) {
       edits.load({
         theme: {},
         scenes: initialScenes
           ? Object.fromEntries(
-              Object.entries(initialScenes).map(([id, s]) => [id, { props: {}, ...s }]),
+              Object.entries(initialScenes).map(([id, s]) => [id, { props: {}, elements: {}, ...s }]),
             )
           : {},
         captions: {},
@@ -143,7 +174,7 @@ function Harness({
     allSceneIds: ["scene-0"],
     edits,
     onSelect,
-    resolvedTheme: defaultTheme,
+    resolvedTheme,
     onVideoPreview: vi.fn(),
     fromLive,
     hasOldClockPreimage,
@@ -2372,5 +2403,121 @@ describe("Inspector — look mode dispatches only look actions (take-looks-by-so
     await act(async () => byText("Reset framing").click());
     expect(rec.calls).toEqual([]);
     expect(onClockRefused).toHaveBeenCalledWith(LOOK_NEEDS_CLOCK);
+  });
+});
+
+describe("Inspector — the Background colour of a graphic that paints the backdrop (backdrop-color §2, §4)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  // Upper-case on purpose: the colour input lowercases what it shows, so the
+  // fallback assertion has to compare lowercase (backdrop-color Test plan).
+  const theme: Theme = { ...defaultTheme, bg: "#0A1B2C" };
+  const solid: SceneCue = { ...graphicCue, layout: "graphic-only" };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  const q = <T extends Element>(id: string) => container.querySelector<T>(`[data-testid="${id}"]`);
+  const mount = async (props: Parameters<typeof Harness>[0]) => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { resolvedTheme: theme, ...props }));
+    });
+  };
+
+  it("shows for a graphic-only graphic and a pip-bubble graphic", async () => {
+    await mount({ selection: { sceneId: "scene-0", elementId: null }, cue: solid });
+    expect(q("backdrop-color")).not.toBeNull();
+    await mount({
+      selection: { sceneId: "scene-0", elementId: null },
+      cue: { ...graphicCue, layout: "pip-bubble" },
+    });
+    expect(q("backdrop-color")).not.toBeNull();
+  });
+
+  it("does not show for a full-bleed graphic — it paints no backdrop", async () => {
+    await mount({
+      selection: { sceneId: "scene-0", elementId: null },
+      cue: { ...graphicCue, layout: "full-bleed" },
+    });
+    expect(q("backdrop-color")).toBeNull();
+  });
+
+  it("does not show for a take, even one set to graphic-only — the kind gate, not just the layout", async () => {
+    await mount({
+      selection: { sceneId: "take-0", elementId: null },
+      cue: { ...takeCue, layout: "graphic-only" },
+    });
+    expect(q("backdrop-color")).toBeNull();
+  });
+
+  it("falls back to the theme's bg when no colour is set, and offers no Reset", async () => {
+    await mount({ selection: { sceneId: "scene-0", elementId: null }, cue: solid });
+    expect(q<HTMLInputElement>("backdrop-color")!.value).toBe(theme.bg.toLowerCase());
+    expect(q("backdrop-color-reset")).toBeNull();
+  });
+
+  it("a change dispatches patchBackdropColor under the scene's coalesce key", async () => {
+    const calls: Array<[string, unknown[]]> = [];
+    let doc: OverrideDoc | undefined;
+    await mount({
+      selection: { sceneId: "scene-0", elementId: null },
+      cue: solid,
+      onBackdropCall: (name, args) => void calls.push([name, args]),
+      onDocChange: (d) => {
+        doc = d;
+      },
+    });
+    const input = q<HTMLInputElement>("backdrop-color")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "#123456");
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(calls).toEqual([["patchBackdropColor", ["scene-0", "#123456", "backdropColor:scene-0"]]]);
+    expect(doc?.scenes["scene-0"]?.backdropColor).toBe("#123456");
+  });
+
+  it("Reset shows when the scene's OWN entry has a colour, and clears it", async () => {
+    const calls: Array<[string, unknown[]]> = [];
+    let doc: OverrideDoc | undefined;
+    await mount({
+      selection: { sceneId: "scene-0", elementId: null },
+      cue: { ...solid, backdropColor: "#abcdef" },
+      initialScenes: { "scene-0": { backdropColor: "#abcdef" } },
+      onBackdropCall: (name, args) => void calls.push([name, args]),
+      onDocChange: (d) => {
+        doc = d;
+      },
+    });
+    expect(q<HTMLInputElement>("backdrop-color")!.value).toBe("#abcdef");
+    const reset = q<HTMLButtonElement>("backdrop-color-reset")!;
+    expect(reset).not.toBeNull();
+    await act(async () => {
+      reset.click();
+    });
+    expect(calls).toEqual([["clearBackdropColor", ["scene-0"]]]);
+    expect("backdropColor" in (doc?.scenes["scene-0"] ?? {})).toBe(false);
+    expect(q("backdrop-color-reset")).toBeNull();
+  });
+
+  it("a split half shows the colour it inherits from its root, with no Reset", async () => {
+    // The resolved half cue as `applyOverrides` gives it: the root's colour
+    // is copied onto the cue, but the half's own doc entry has none.
+    await mount({
+      selection: { sceneId: "scene-0@4000", elementId: null },
+      cue: { ...solid, id: "scene-0@4000", backdropColor: "#abcdef" },
+      initialScenes: { "scene-0": { backdropColor: "#abcdef" } },
+    });
+    expect(q<HTMLInputElement>("backdrop-color")!.value).toBe("#abcdef");
+    expect(q("backdrop-color-reset")).toBeNull();
   });
 });

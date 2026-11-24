@@ -161,6 +161,10 @@ export type EditAction =
   | { type: "patchCaptionScale"; sceneId: string; scale: number; coalesce?: string }
   /** Clears BOTH caption style keys (position and scale) — one Reset. */
   | { type: "clearCaptionStyle"; sceneId: string }
+  /** A graphic's own backdrop colour (backdrop-color §4). `color` is already
+   * `HexColorSchema`-parsed — the Inspector is the parse boundary. */
+  | { type: "patchBackdropColor"; sceneId: string; color: string; coalesce?: string }
+  | { type: "clearBackdropColor"; sceneId: string }
   /** §56b's cheap bulk: ONE commit (one undo step) writing the same caption
    * style to every listed scene — "the captions are too low for this whole
    * video". R16 §64 rides along: scale fans out with position. */
@@ -957,6 +961,36 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       const scene = state.doc.scenes[action.sceneId];
       if (scene?.captionY === undefined && scene?.captionScale === undefined) return state;
       const { captionY: _y, captionScale: _s, ...rest } = scene;
+      return commit({
+        ...state.doc,
+        scenes: { ...state.doc.scenes, [action.sceneId]: rest },
+      });
+    }
+    // Deliberately NOT in `idKeyedLookTarget`: the Background row is offered
+    // only for graphic cues, and a graphic is never in look mode, so neither
+    // action reaches a take piece through the UI (backdrop-color §4).
+    case "patchBackdropColor": {
+      const scene = withScene(state.doc, action.sceneId);
+      // `coalesce` because dragging the colour wheel fires an onChange per
+      // tick — one drag is one undo step (backdrop-color §4).
+      return commit(
+        {
+          ...state.doc,
+          scenes: {
+            ...state.doc.scenes,
+            [action.sceneId]: { ...scene, backdropColor: action.color },
+          },
+        },
+        action.coalesce,
+      );
+    }
+    case "clearBackdropColor": {
+      const scene = state.doc.scenes[action.sceneId];
+      if (scene?.backdropColor === undefined) return state;
+      // DELETE, the clearPip rule: a colour equal to the theme's bg is still
+      // an override, and would stop following a later theme change. An entry
+      // the delete leaves empty is kept, as clearPip keeps it.
+      const { backdropColor: _dropped, ...rest } = scene;
       return commit({
         ...state.doc,
         scenes: { ...state.doc.scenes, [action.sceneId]: rest },
@@ -2141,6 +2175,9 @@ export function useEdits() {
     patchCaptionScale: (sceneId: string, scale: number, coalesce?: string) =>
       dispatch({ type: "patchCaptionScale", sceneId, scale, coalesce }),
     clearCaptionStyle: (sceneId: string) => dispatch({ type: "clearCaptionStyle", sceneId }),
+    patchBackdropColor: (sceneId: string, color: string, coalesce?: string) =>
+      dispatch({ type: "patchBackdropColor", sceneId, color, coalesce }),
+    clearBackdropColor: (sceneId: string) => dispatch({ type: "clearBackdropColor", sceneId }),
     /** `takeRanges` is look mode's half (R6-6): one range list per plain
      * cue. A legacy call site has none. */
     patchCaptionStyleAll: (

@@ -1894,6 +1894,45 @@ describe("pip bubble editing (R14 §52)", () => {
   });
 });
 
+describe("graphic backdrop colour (backdrop-color §4)", () => {
+  it("patchBackdropColor sets the scene's backdropColor", () => {
+    const s = editReducer(initialEditState(), {
+      type: "patchBackdropColor", sceneId: "scene-0", color: "#123456",
+    });
+    expect(s.doc.scenes["scene-0"]!.backdropColor).toBe("#123456");
+    expect(OverrideDocSchema.safeParse(s.doc).success).toBe(true);
+  });
+
+  it("one colour-wheel drag (one coalesce key) is ONE undo step", () => {
+    const key = "backdropColor:scene-0";
+    let s = editReducer(initialEditState(), {
+      type: "patchBackdropColor", sceneId: "scene-0", color: "#111111", coalesce: key,
+    });
+    s = editReducer(s, {
+      type: "patchBackdropColor", sceneId: "scene-0", color: "#222222", coalesce: key,
+    });
+    expect(s.doc.scenes["scene-0"]!.backdropColor).toBe("#222222");
+    expect(s.past).toHaveLength(1);
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.scenes["scene-0"]?.backdropColor).toBeUndefined();
+  });
+
+  it("clearBackdropColor DELETES the key", () => {
+    let s = editReducer(initialEditState(), {
+      type: "patchBackdropColor", sceneId: "scene-0", color: "#123456",
+    });
+    s = editReducer(s, { type: "clearBackdropColor", sceneId: "scene-0" });
+    expect("backdropColor" in s.doc.scenes["scene-0"]!).toBe(false);
+  });
+
+  it("clearBackdropColor on a scene without one is a no-op — same state, no undo step", () => {
+    const s = initialEditState();
+    const after = editReducer(s, { type: "clearBackdropColor", sceneId: "scene-0" });
+    expect(after).toBe(s);
+    expect(after.past).toHaveLength(0);
+  });
+});
+
 describe("setCaptionsHidden (the global Captions toggle)", () => {
   it("hide writes captionsHidden: true as one undo-able commit", () => {
     const s = editReducer(initialEditState(), { type: "setCaptionsHidden", hidden: true });
