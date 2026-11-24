@@ -1219,6 +1219,14 @@ describe("per-graphic backdrop colour (backdrop-color §1)", () => {
     expect("backdropColor" in cues[0]!).toBe(false);
   });
 
+  it("is absent when the scene has an unrelated override, so the spread is conditional", () => {
+    // An empty doc returns the cue before `merged` is built; an entry forces
+    // the merge, where an unconditional spread would add an undefined key.
+    const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { captionScale: 1.5 } } });
+    const { cues } = applyOverrides([cue("scene-0")], doc);
+    expect("backdropColor" in cues[0]!).toBe(false);
+  });
+
   it("a split half inherits the root's colour through effectiveOverride", () => {
     const doc = OverrideDocSchema.parse({ scenes: { "scene-0": { backdropColor: "#ff0000" } } });
     const halves = splitCues([cue("scene-0")], [{ at: 2, id: "2000" }]);

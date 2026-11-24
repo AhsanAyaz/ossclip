@@ -255,6 +255,7 @@ describe("kitClipPlans", () => {
       expect(go).not.toBe(fb);
     });
 
+    // Pins existing behaviour spec §3 relies on: the key hashes the whole cue.
     it("changes when only backdropColor changes on a graphic-only cue (backdrop-color §3)", () => {
       const [plain] = keys([cardRow("a", 1, 4, { layout: "graphic-only" })]);
       const [red] = keys([cardRow("a", 1, 4, { layout: "graphic-only", backdropColor: "#ff0000" })]);
