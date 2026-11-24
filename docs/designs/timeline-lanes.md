@@ -1,7 +1,7 @@
 # Timeline lanes: footage on V1, graphics on V2
 
 *   **Author:** Muhammad Ahsan Ayaz (drafted with Claude)
-*   **Status:** Draft 5 (2026-11-24), revised after review rounds 1 (design, code accuracy, build readiness, scope), 2 (design, code accuracy, build readiness), 3 (code accuracy, build readiness) and 4 (build readiness). The reports are `~/ossclip-work/egm-short/timeline-lanes-review-r{1,2,3,4}.md`. Approach B chosen by the author. Changes are listed at the end.
+*   **Status:** Approved by the author (2026-11-24), with all six calls confirmed. Draft 5, revised after review rounds 1 (design, code accuracy, build readiness, scope), 2 (design, code accuracy, build readiness), 3 (code accuracy, build readiness) and 4 (build readiness). The reports are `~/ossclip-work/egm-short/timeline-lanes-review-r{1,2,3,4}.md`. Approach B chosen by the author. Changes are listed at the end.
 *   **Builds on:** FINDINGS §97 (take filmstrips), the precision-editing design (drag readout, snapping), take-looks-by-source R6-4 (look-mode piece selection), `docs/designs/editor-added-graphics.md`.
 *   **Mockup:** `~/ossclip-work/mockups/timeline-lanes/index.html` (v2) and `v2.png`. Local only. Every value the build needs is copied into this doc. If the doc and the mockup disagree, the doc wins.
 
