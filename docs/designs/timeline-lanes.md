@@ -1,7 +1,7 @@
 # Timeline lanes: footage on V1, graphics on V2
 
 *   **Author:** Muhammad Ahsan Ayaz (drafted with Claude)
-*   **Status:** Draft 4 (2026-11-24), revised after review rounds 1 (design, code accuracy, build readiness, scope), 2 (design, code accuracy, build readiness) and 3 (code accuracy, build readiness). The reports are `~/ossclip-work/egm-short/timeline-lanes-review-r{1,2,3}.md`. Approach B chosen by the author. Changes are listed at the end.
+*   **Status:** Draft 5 (2026-11-24), revised after review rounds 1 (design, code accuracy, build readiness, scope), 2 (design, code accuracy, build readiness), 3 (code accuracy, build readiness) and 4 (build readiness). The reports are `~/ossclip-work/egm-short/timeline-lanes-review-r{1,2,3,4}.md`. Approach B chosen by the author. Changes are listed at the end.
 *   **Builds on:** FINDINGS §97 (take filmstrips), the precision-editing design (drag readout, snapping), take-looks-by-source R6-4 (look-mode piece selection), `docs/designs/editor-added-graphics.md`.
 *   **Mockup:** `~/ossclip-work/mockups/timeline-lanes/index.html` (v2) and `v2.png`. Local only. Every value the build needs is copied into this doc. If the doc and the mockup disagree, the doc wins.
 
@@ -196,10 +196,10 @@ The drag readout floats above the track (`dragReadout`) and is not affected.
     *   **Checked, ruler-relative and safe:** `interactions.spec.ts:52, 139, 819, 1178`; `added-graphics.spec.ts:74`; `overlays.spec.ts:162, 170`; `sfx-preview.spec.ts:33`; `sliver-cut.spec.ts:81`.
     *   Unit tests mock x only.
 *   **Vertical space.**
-    *   The editor shell is `100vh` with `overflow: hidden`, the main row has `minHeight: 0`, and the stage area is `inset: 0; overflow: auto` (`App.tsx:3888-3901`).
+    *   The editor shell is `100vh` with `overflow: hidden`, the main row has `minHeight: 0`, and the stage area is `inset: 0; overflow: auto` (`shell` at `App.tsx:3888-3901`, `mainRow` at `:3995-3999`, `stageArea` at `:4031-4036`).
     *   So a taller timeline shrinks the stage area. It never pushes the timeline below the fold.
-    *   The stage is height-bound on portrait projects (`App.tsx:2582-2585`), so it loses exactly the track's 33 px. On landscape it loses nothing. That is the intended cost, and no test can fail on it, so there is no viewport step (round 3, S1).
-    *   The comment at `playwright.config.ts:153` ("stage ≈676px") becomes "stage ≈643px", that is 676 minus 33.
+    *   The stage is height-bound on portrait projects (`App.tsx:2582-2585`), so it loses exactly the track's 33 px. A landscape stage loses at most 33 px, and nothing when it is width-bound. That is the intended cost, and no test can fail on it, so there is no viewport step (round 3, S1).
+    *   The comment at `playwright.config.ts:153-157` is rewritten. The stage becomes ≈643px (676 minus 33). The sentence "the timeline sits below the fold" at 720p is wrong under this layout: there the stage shrinks, and the timeline stays in view. What stays true is that raw `page.mouse` events need room for both the stage and the timeline.
 
 ## Files
 
@@ -239,7 +239,7 @@ Assertions:
 6.  No grip has an inline `opacity`.
 7.  Cursors: `grab` on graphics and `default` on takes.
 8.  Badges:
-    *   `scene-a`'s PIN badge has `style.right === "8px"`.
+    *   `scene-a`'s PIN badge, found as the span with text `PIN` inside `timeline-block-scene-a`, has `style.right === "8px"`.
     *   `volume-badge-scene-b` (text `MUTE`) has `style.right === "8px"`.
     *   `volume-badge-take-0` (text `50%`) has `style.right === "3px"`.
 9.  `timeline-lane-divider` and `timeline-footage` exist, with `pointerEvents === "none"`. The footage strip has `boxSizing === "border-box"` and `style.top === "38px"`. Its `left` and `right` are set: jsdom reads React's numeric `0` back as `"0"` (`project-picker.test.ts:87`), so assert `"0"` or `"0px"`.
@@ -253,7 +253,7 @@ Assertions:
 13. The playhead's parent is the track, and the track is the ruler's next element sibling.
 14. `pictureHidden` returns true only for `graphic-only`. The test walks `LayoutSchema.options` and checks each against `layoutSlots(l).video.opacity === 0` from `@ossclip/scenes/geometry` (the import `overlayBox.ts:2` already uses). So the predicate is tested against the renderer's own table.
 15. The existing suites pass unchanged.
-16. With `selection` set to `scene-a`, its block has an empty `backgroundImage` and a `2px solid` border. Unselected, its border is `1px solid` with the pink colour, which jsdom reports as `rgb(244, 114, 182)`.
+16. With `selection` set to `scene-a`, its block has an empty `backgroundImage` and a `2px solid` border. Unselected, its border is `1px solid` with the pink colour, matched by `/#f472b6|rgb\(244, 114, 182\)/i`, the hex-or-rgb pattern at `TranscriptPanel.test.ts:2305`.
 
 ### E2E (`interactions.spec.ts`, new `describe("timeline lanes")`)
 
@@ -265,7 +265,7 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
 *   "Did not seek": `playheadFrac` changed by less than 0.02.
 *   "Seeked": `playheadFrac` changed by 0.02 or more.
 
-**Timing and isolation.** Steps 1, 2 and 4 are separate `test()`s, each on a fresh `page.goto("/")` and `settle(page)`. "Before" is read after the ruler park. "Seeked" is checked with `expect.poll`, because the seek lands asynchronously.
+**Timing and isolation.** Steps 1, 2 and 4 are separate `test()`s, each on a fresh `page.goto("/")` and `settle(page)`. The playhead moves only on the player's `frameupdate` (`Timeline.tsx:654-664`), so the ruler park lands late. "Before" is read only after `expect.poll(playheadFrac)` is within 0.02 of the park point. Without that wait, the late park alone moves the playhead about 0.04, and step 2 would pass with a press that does nothing (round 4, S1). "Seeked" is checked with `expect.poll`, because the seek lands asynchronously.
 
 **Steps:**
 
@@ -288,6 +288,7 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
     7.  With the mouse still down, check paint order with computed z, the pattern at `interactions.spec.ts:474-478`. `elementFromPoint` cannot work here, because it never returns a `pointer-events: none` element (round 3, B1).
         *   The hatch's box now overlaps the next take block's box (`timeline-block-take-0`, the take between scene-0 and scene-2 at 5.09-12.1 s; the sliver before scene-0 is under `MIN_PLAIN_SEC` and gets no take, so the first take piece keeps the bare name, `fill.ts:93-99`).
         *   The hatch's computed `zIndex` (2) is greater than that take's (1).
+        *   The hatch's `parentElement` is the same element as take-0's, so both z values are in one stacking context.
     8.  Release. Press `Meta+z` twice, to undo the move and the layout change. Assert scene-0 has no hatch.
 
 ### By eye (the author, FE Loop project)
@@ -307,6 +308,18 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
 4.  Presses on empty lane space seek (§5). Graphics are selected on V2 only. **Confirmed by the author, 2026-11-24.**
 5.  The SFX, overlay and marker rows stay above the ruler.
 6.  Graphic blocks are labelled by component name, with the id dimmed after it.
+
+## Changes from draft 4
+
+*   **Round 4, S1.** The e2e baseline is read only after the ruler park lands.
+*   **Minor.**
+    *   M1: the citations for `mainRow` and `stageArea`.
+    *   M2: the landscape wording.
+    *   M3: the config comment's "below the fold" sentence.
+    *   M4: the colour regex.
+    *   M5: the shared-parent check in step 4.7.
+    *   M6: how to find the PIN badge.
+    *   M7: the draft-2 changelog entry marked as superseded.
 
 ## Changes from draft 3
 
@@ -334,7 +347,7 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
 ## Changes from draft 2
 
 *   **Round 2, S1.** Take blocks get no hatch (Non-goals). That removes the take-label, badge and selection conflicts.
-*   **S2.** The hatch is at z 2, and e2e step 4 checks paint order with `elementFromPoint`.
+*   **S2.** The hatch is at z 2, and e2e step 4 checks paint order with `elementFromPoint`. *(Superseded in draft 4: `elementFromPoint` skips pointer-inert elements, so step 4.7 uses computed z.)*
 *   **S3.** The hatch id and key come from `cue.startSec`, inside a keyed Fragment (§2).
 *   **S4.** The 478-497 check is re-aimed per lane.
 *   **S5.** The grip hover rule moves to `.ossclip-edge:hover`, with opacity in CSS only.
