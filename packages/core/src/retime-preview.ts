@@ -22,11 +22,10 @@
  * bundle, and every function here is testable without a TTY or a filesystem.
  */
 
-import { ENTRY_LEAD_SEC, ITEM_LEAD_SEC, MAX_SCENE_SEC, minSceneSec } from "./assemble";
+import { ENTRY_LEAD_SEC, ITEM_LEAD_SEC, maxCueSec, minSceneSec } from "./assemble";
 import type { CaptionLine } from "./captions";
 import { applyCleanupChoices, type CleanupChoices } from "./cutlist";
 import { remapPoint, subtractRangesFromCutlist, type UserCut } from "./recut";
-import { SCENE_REGISTRY } from "./scene-registry";
 import type { SceneCue } from "./scene-schema";
 import type { Segment } from "./schema";
 import { mapFromKeptSpans, mapsClose, TimeMap, type KeptSpan } from "./timemap";
@@ -430,15 +429,21 @@ export function retimeForPreview(
       // (explainer plan Task 5), re-applied on the new clock. Remapping its
       // end instead stretched a 4.6s clip across a revived pause to 6.6s of
       // frames the file does not have. Held to the same 15s ceiling and
-      // output end the assembler clamps to.
-      const fixed =
-        c.component !== undefined && c.props !== undefined
-          ? SCENE_REGISTRY[c.component].fixedDurationSec?.(c.props)
-          : undefined;
+      // output end the assembler clamps to (`maxCueSec` carries the ceiling).
+      // A PINNED clip keeps its pin's own remapped end, under the same
+      // limit: re-deriving it from the clip's length ignored the pin, so a
+      // trimmed block grew back on every render of the preview and a drag
+      // past the clip snapped back on release while the stored pin stayed
+      // long — and the plain take after it, filled against that pin, moved.
+      const max = maxCueSec(c);
       const endSec =
-        fixed === undefined
+        max === undefined
           ? wordEndSec
-          : Math.min(legacyStart + fixed, legacyStart + MAX_SCENE_SEC, newMap.outputDuration);
+          : Math.min(
+              c.pinned ? wordEndSec : Number.POSITIVE_INFINITY,
+              legacyStart + max,
+              newMap.outputDuration,
+            );
       const entryAtSec =
         fromWord && c.entryAtSec !== undefined
           ? at(`scene "${c.id}" entry word`, c.entryAtSec)

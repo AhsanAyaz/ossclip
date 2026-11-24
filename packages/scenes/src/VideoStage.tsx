@@ -16,6 +16,7 @@ import {
   contentTransformFor,
   pictureZoomAt,
   pictureZoomStateFor,
+  pipPanFor,
   videoSlotAt,
 } from "./stage";
 import {
@@ -153,10 +154,27 @@ export const VideoStage: React.FC<{
   // the zoom still holds the picture covered, it may just centre less well.
   const pictureZoom = fitContain || !face ? 1 : pictureZoomAt(cues, t, face, outFrame);
   const picture = face ? pictureZoomStateFor(slot, face, pictureZoom, outFrame) : null;
+  // In the speaker bubble the pan moves WHAT THE BUBBLE SHOWS (2026-11-20,
+  // correcting §107): a translate of a content box that is the mask itself
+  // only uncovered the backdrop. `pipPanFor` spends it on the crop window
+  // first and holds what is left so the footage covers the bubble; it is the
+  // identity at dx = dy = 0, so an unpanned bubble writes today's strings.
+  // Keyed on the ACTIVE cue, like the correction itself (not lerped into a
+  // neighbour). `picture` is the head zoom solved for the unpanned slot on
+  // purpose: re-solving it for the panned window would re-centre the face
+  // and undo the pan. Under `contain` there is no cover to hold (FitBox
+  // shows the whole frame and ignores object-position), so the pan stays
+  // today's translate. Not modelled: an active framing crop box
+  // (ContentCrop below) spends object-position on its own box, so there the
+  // window moves by that box's rule, not the cover excess assumed here.
+  const pan =
+    activeCue?.layout === "pip-bubble" && !fitContain
+      ? pipPanFor(slot, face?.sourceAspect ?? width / height, zoom * userScale, picture, userDx, userDy, outFrame)
+      : { objectPosX: slot.objectPosX, objectPosY: slot.objectPosY, dx: userDx, dy: userDy };
   // Built OUTSIDE the crop on purpose: the transform wraps ContentCrop below,
   // so a user correction composes ON TOP of the framing plan instead of being
   // consumed by it (see contentTransformFor's contract).
-  const contentTransform = contentTransformFor(zoom, userScale, userDx, userDy, picture);
+  const contentTransform = contentTransformFor(zoom, userScale, pan.dx, pan.dy, picture);
 
   // Value-derived id (see colorGradeFilterId): two stages in one document can
   // only collide when their grades are identical, which makes the collision
@@ -224,10 +242,11 @@ export const VideoStage: React.FC<{
             transformOrigin: `${CONTENT_TRANSFORM_ORIGIN.x * 100}% ${CONTENT_TRANSFORM_ORIGIN.y * 100}%`,
             // Crop bias consumed by EdlVideo's object-position (FINDINGS §11/§13):
             // derived from the measured face so the head lands in the band.
-            ["--ossclip-obj-y" as string]: `${slot.objectPosY * 100}%`,
+            // In pip-bubble a framing pan has already moved it (`pan` above).
+            ["--ossclip-obj-y" as string]: `${pan.objectPosY * 100}%`,
             // …and the horizontal one, which only leaves centre for a source
             // wider than the slot (a landscape take in a vertical frame).
-            ["--ossclip-obj-x" as string]: `${slot.objectPosX * 100}%`,
+            ["--ossclip-obj-x" as string]: `${pan.objectPosX * 100}%`,
           }}
         >
           {fitContain ? (
@@ -249,8 +268,8 @@ export const VideoStage: React.FC<{
               mode={contentCropMode}
               tSec={t}
               slot={{ width: wPx, height: hPx }}
-              posX={slot.objectPosX}
-              posY={slot.objectPosY}
+              posX={pan.objectPosX}
+              posY={pan.objectPosY}
             >
               {children}
             </ContentCrop>

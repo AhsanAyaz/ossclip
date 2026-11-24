@@ -4,26 +4,43 @@ import {
   applyOverrides,
   captionEditWas,
   clearGraphicRect,
+  clipSpeedEndSec,
   legacySplitId,
   mintSplitId,
   isParkedOverrideKey,
   parkedOverrideBaseKey,
   remapSceneOverrides,
   splitCues,
+  splitCuesWithLanding,
+  SPLIT_MIN_PIECE_SEC,
   atSplitPoints,
+  doubleCutNotes,
+  pass1SplitPoints,
   splitThenDropHidden,
+  survivingLandings,
   stampSceneAnchors,
   dropHiddenCues,
   clearElementTransform,
   clearTiming,
   reclampPinnedTiming,
+  resolveSrcTimingPins,
   resolveSwappedProps,
   resolveTheme,
   restoreElement,
   setElementTransform,
+  SplitSchema,
+  effectiveOverride,
+  isPlainTakeKey,
+  plainTakeOrdinal,
+  parkedOverrideKey,
+  ownFramingSplitIds,
   type OverrideDoc,
 } from "../src/overrides";
+import { remapOverridesThroughRecut } from "../src/recut";
 import { fillPlainCues } from "../src/fill";
+import { dropOverlappingAdded } from "../src/added-scenes";
+import { TimeMap } from "../src/timemap";
+import { FE_GRAPHICS, SPANS, TAKE_CLIP_STARTS, feMap } from "./take-looks.fixtures";
 import { defaultTheme, type SceneCue } from "../src/scene-schema";
 
 const cue = (id: string): SceneCue => ({
@@ -316,6 +333,109 @@ describe("component swaps refuse non-planner components (explainer plan Task 7)"
   });
 });
 
+describe("a clip's speed edit re-derives its window (clipSpeedEndSec)", () => {
+  // A 4s clip at 10s, assembled at 1x, with a card 5s after its start.
+  const clip: SceneCue = {
+    id: "shot-a",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4, speed: 1, gainDb: -13, muted: false },
+    startSec: 10,
+    endSec: 14,
+  };
+  const next: SceneCue = {
+    id: "scene-1",
+    layout: "pip-bubble",
+    component: "TitleCard",
+    props: { title: "SHIP IT" },
+    startSec: 15,
+    endSec: 18,
+  };
+
+  it("speed 2 on an unpinned 4s clip leaves a 2s window; the speaker shows after it", () => {
+    const { cues } = applyOverrides([clip, next], docWith({ "shot-a": { props: { speed: 2 } } }));
+    expect(cues[0]!.startSec).toBe(10);
+    expect(cues[0]!.endSec).toBeCloseTo(12, 9);
+    expect(cues[0]!.props).toMatchObject({ speed: 2, durationSec: 4 });
+    expect(cues[1]).toEqual(next);
+  });
+
+  it("speed 0.5 wants 8s but is cut at the next scene's start minus the gap", () => {
+    const { cues } = applyOverrides([clip, next], docWith({ "shot-a": { props: { speed: 0.5 } } }));
+    expect(cues[0]!.endSec).toBeCloseTo(15 - 0.05, 9);
+  });
+
+  it("speed 0.5 with nothing after it runs its full 8s", () => {
+    const { cues } = applyOverrides([clip], docWith({ "shot-a": { props: { speed: 0.5 } } }));
+    expect(cues[0]!.endSec).toBeCloseTo(18, 9);
+  });
+
+  it("a pinned window shorter than the clip stays exactly as dragged; the speed still merges", () => {
+    const doc = docWith({
+      "shot-a": { props: { speed: 2 }, timing: { startSec: 10, endSec: 11.5 } },
+    });
+    const { cues } = applyOverrides([clip, next], doc);
+    expect(cues[0]!.startSec).toBe(10);
+    expect(cues[0]!.endSec).toBe(11.5);
+    expect(cues[0]!.props).toMatchObject({ speed: 2 });
+  });
+
+  it("a pinned window longer than the clip is read as capped at its played length", () => {
+    // 4 s at 2x plays 2 s; the stored 4.5 s pin is capped, not honoured as a
+    // held last frame (the preview caps it too, `retimeForPreview`).
+    const doc = docWith({
+      "shot-a": { props: { speed: 2 }, timing: { startSec: 10, endSec: 14.5 } },
+    });
+    const { cues } = applyOverrides([clip, next], doc);
+    expect(cues[0]!.startSec).toBe(10);
+    expect(cues[0]!.endSec).toBeCloseTo(12, 9);
+    expect(cues[0]!.pinned).toBe(true);
+  });
+
+  it("a speed equal to the cue's own leaves a capped window as it was", () => {
+    // 20s at 1x, already cut to 15s by the ceiling: a no-op edit must not
+    // re-lengthen it (nor, with the cap, change it at all).
+    const long: SceneCue = { ...clip, props: { ...clip.props, durationSec: 20 }, endSec: 23 };
+    const { cues } = applyOverrides([long], docWith({ "shot-a": { props: { speed: 1 } } }));
+    expect(cues[0]!.endSec).toBe(23);
+    // A cue with no `speed` of its own is at 1x.
+    const legacy: SceneCue = { ...clip, props: { src: "clips/a.webm", durationSec: 4 }, endSec: 13 };
+    const again = applyOverrides([legacy], docWith({ "shot-a": { props: { speed: 1 } } }));
+    expect(again.cues[0]!.endSec).toBe(13);
+  });
+
+  it("a second pass over already-merged cues changes nothing (produce and the editor run two)", () => {
+    const doc = docWith({ "shot-a": { props: { speed: 2 } } });
+    const once = applyOverrides([clip, next], doc).cues;
+    expect(applyOverrides(once, doc).cues).toEqual(once);
+  });
+
+  it("a non-clip cue with a stray speed prop keeps its window", () => {
+    const { cues } = applyOverrides([next], docWith({ "scene-1": { props: { speed: 2 } } }));
+    expect(cues[0]!.startSec).toBe(15);
+    expect(cues[0]!.endSec).toBe(18);
+  });
+
+  it("an override that does not set speed leaves the window alone", () => {
+    const { cues } = applyOverrides([clip, next], docWith({ "shot-a": { props: { muted: true } } }));
+    expect(cues[0]!.endSec).toBe(14);
+  });
+
+  it("the 15s ceiling still applies to a slowed clip", () => {
+    const slow: SceneCue = { ...clip, props: { ...clip.props, durationSec: 10 }, endSec: 20 };
+    const { cues } = applyOverrides([slow], docWith({ "shot-a": { props: { speed: 0.5 } } }));
+    expect(cues[0]!.endSec).toBeCloseTo(25, 9);
+  });
+
+  it("the pure rule: a neighbour that already overlaps never shrinks the window below where it was", () => {
+    const merged: SceneCue = { ...clip, props: { ...clip.props, speed: 0.5 } };
+    expect(clipSpeedEndSec({ cue: clip, merged, setsSpeed: true, pinned: false, nextStartSec: 13 })).toBe(14);
+    // And a faster clip ends early even then.
+    const fast: SceneCue = { ...clip, props: { ...clip.props, speed: 4 } };
+    expect(clipSpeedEndSec({ cue: clip, merged: fast, setsSpeed: true, pinned: false, nextStartSec: 13 })).toBe(11);
+  });
+});
+
 describe("scene override anchor (handoff-edit-anchoring)", () => {
   it("round-trips a scene entry's anchor through the doc schema", () => {
     const doc = OverrideDocSchema.parse({
@@ -578,6 +698,71 @@ describe("remapSceneOverrides (handoff-edit-anchoring — the produce-side misap
     expect(out.scenes["scene-3"]).toBeUndefined(); // still never left on the impostor
     expect(notes.some((n) => n.includes("dropped"))).toBe(true);
   });
+
+  // editor-added-graphics §3: an added graphic's id is minted once by the
+  // editor and never renumbered, so its key IS its identity — the anchor
+  // logic above exists for positional planned ids and must not touch it.
+  describe("added graphics (editor-added-graphics §3)", () => {
+    it("an added key whose cue is missing stays put — never moved onto a plan cue sharing its words", () => {
+      // added-2 was skipped or dropped this run (no cue), but its stamped
+      // words are now planned scene-1. Its edits wait for it; scene-1 keeps
+      // its own (none) rather than inheriting a graphic it never showed.
+      const doc = docWith({
+        "added-2": { props: { title: "mine" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+      });
+      const cues = [cueFixture({ id: "scene-1", anchor: { startWord: 40, endWord: 50 } })];
+      const { doc: out, notes } = remapSceneOverrides(doc, cues);
+      expect(out.scenes["added-2"]).toEqual(doc.scenes["added-2"]);
+      expect(out.scenes["scene-1"]).toBeUndefined();
+      expect(notes).toEqual([]);
+    });
+
+    it("an added key whose cue exists but whose words moved stays put — not parked", () => {
+      // The case planned ids park (words gone, id now a different moment):
+      // for an added id the cue IS the same graphic, re-anchored to wherever
+      // the transcript put its span.
+      const doc = docWith({
+        "added-2": { props: { title: "mine" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+        "added-2@abc": { props: { title: "half" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+      });
+      const cues = [cueFixture({ id: "added-2", anchor: { startWord: 80, endWord: 90 } })];
+      const { doc: out, notes } = remapSceneOverrides(doc, cues);
+      expect(out.scenes["added-2"]).toEqual(doc.scenes["added-2"]);
+      expect(out.scenes["added-2@abc"]).toEqual(doc.scenes["added-2@abc"]);
+      expect(out.scenes["added-2#orphaned"]).toBeUndefined();
+      expect(out.scenes["added-2@abc#orphaned"]).toBeUndefined();
+      expect(notes).toEqual([]);
+    });
+
+    it("a planned key's orphaned edits never land on an added graphic — parked as without it", () => {
+      // scene-5's words (40..50) are now covered only by added-2; scene-5
+      // itself shows a different moment. Re-keying onto added-2 would dress
+      // the author's graphic in a planned scene's edits.
+      const doc = docWith({
+        "scene-5": { props: { title: "planned" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+      });
+      const cues = [
+        cueFixture({ id: "added-2", anchor: { startWord: 40, endWord: 50 } }),
+        cueFixture({ id: "scene-5", anchor: { startWord: 80, endWord: 90 } }),
+      ];
+      const { doc: out, notes } = remapSceneOverrides(doc, cues);
+      expect(out.scenes["added-2"]).toBeUndefined();
+      expect(out.scenes["scene-5"]).toBeUndefined();
+      expect(out.scenes["scene-5#orphaned"]!.props.title).toBe("planned");
+      expect(notes.some((n) => n.includes("added-2"))).toBe(false);
+    });
+
+    it("an already-parked planned entry is never rescued onto an added graphic", () => {
+      const doc = docWith({
+        "scene-7#orphaned": { props: { title: "old" }, elements: {}, anchor: { startWord: 40, endWord: 50 } },
+      });
+      const cues = [cueFixture({ id: "added-2", anchor: { startWord: 40, endWord: 50 } })];
+      const { doc: out, notes } = remapSceneOverrides(doc, cues);
+      expect(out.scenes["added-2"]).toBeUndefined();
+      expect(out.scenes["scene-7#orphaned"]).toEqual(doc.scenes["scene-7#orphaned"]);
+      expect(notes).toEqual([]);
+    });
+  });
 });
 
 describe("isParkedOverrideKey / parkedOverrideBaseKey", () => {
@@ -644,7 +829,69 @@ describe("override layer survives a re-plan (BRAINSTORM §4.6)", () => {
   });
 });
 
+describe("a stored clip pin is capped at the clip's played length (the author's shot)", () => {
+  // The field case: `shot-s2`, a 4.64 s clip at 2.98x (1.557 s played),
+  // pinned by an edge drag to a 4.721 s source window. Identity clock, so
+  // the source seconds are the output seconds.
+  const shot: SceneCue = {
+    id: "shot-s2",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/s2.webm", durationSec: 4.64, speed: 1, gainDb: -13, muted: false },
+    startSec: 22.9,
+    endSec: 27.54,
+  };
+  const map = new TimeMap([{ srcIn: 0, srcOut: 60, kind: "keep" }]);
+  const merge = (timing: Record<string, number>) => {
+    const doc = docWith({ "shot-s2": { props: { speed: 2.98 }, timing } });
+    const resolved = resolveSrcTimingPins(doc, map).doc;
+    return { doc, cue: applyOverrides([shot], resolved).cues[0]! };
+  };
+
+  it("the long pin is read as start + 4.64 / 2.98; the doc is not rewritten", () => {
+    const { doc, cue } = merge({ srcStart: 22.977, srcEnd: 27.698 });
+    expect(cue.startSec).toBeCloseTo(22.977, 9);
+    expect(cue.endSec).toBeCloseTo(22.977 + 4.64 / 2.98, 9);
+    expect(doc.scenes["shot-s2"]!.timing).toEqual({ srcStart: 22.977, srcEnd: 27.698 });
+  });
+
+  it("a pin shorter than the played length is left alone", () => {
+    const { cue } = merge({ srcStart: 22.977, srcEnd: 23.9 });
+    expect(cue.startSec).toBeCloseTo(22.977, 9);
+    expect(cue.endSec).toBeCloseTo(23.9, 9);
+  });
+
+  it("a second pass over the capped cue changes nothing", () => {
+    const doc = docWith({ "shot-s2": { props: { speed: 2.98 }, timing: { startSec: 22.977, endSec: 27.698 } } });
+    const once = applyOverrides([shot], doc).cues;
+    expect(applyOverrides(once, doc).cues).toEqual(once);
+  });
+
+  it("a pinned card is not capped", () => {
+    const card: SceneCue = { ...shot, component: "TitleCard", props: { title: "HI" } };
+    const doc = docWith({ "shot-s2": { timing: { startSec: 22.977, endSec: 27.698 } } });
+    expect(applyOverrides([card], doc).cues[0]!.endSec).toBe(27.698);
+  });
+});
+
 describe("reclampPinnedTiming (produce-side re-clamp after a re-plan)", () => {
+  it("does not floor a pinned clip past its played length (4 s at 4x plays 1 s)", () => {
+    // The 1.2 s floor and the clip's 1 s conflict: the clip wins, as in
+    // assembly — there are no frames past its end to stretch to.
+    const shot: SceneCue = {
+      id: "shot-a",
+      layout: "full-bleed",
+      component: "ClipScene",
+      props: { src: "clips/a.webm", durationSec: 4, speed: 4 },
+      startSec: 10,
+      endSec: 11,
+      pinned: true,
+    };
+    const { cues: out, adjusted } = reclampPinnedTiming([shot]);
+    expect(adjusted).toEqual([]);
+    expect(out[0]!.endSec).toBe(11);
+  });
+
   it("leaves a pinned cue alone when it still fits between its neighbours", () => {
     const cues: SceneCue[] = [
       { ...cue("scene-0"), startSec: 0, endSec: 4 },
@@ -1016,6 +1263,58 @@ describe("splitCues (R16 §61 — cut a scene at the playhead)", () => {
   });
 });
 
+describe("splitCuesWithLanding (take-framing-identity P2)", () => {
+  const take = (id: string, startSec: number, endSec: number): SceneCue => ({
+    id,
+    kind: "plain",
+    layout: "full-bleed",
+    startSec,
+    endSec,
+  });
+
+  it("maps a split that lands on a root to that root's id", () => {
+    const { landed } = splitCuesWithLanding(
+      [take("take-0", 0, 10), take("take-1", 10, 20)],
+      [{ at: 14, id: "s" }],
+    );
+    expect([...landed]).toEqual([["s", "take-1"]]);
+  });
+
+  it("a second split inside an existing half maps to the ROOT id, never the half's", () => {
+    // The re-key target is `${root}@${sid}` — what `splitCues` names the
+    // piece — so the landing must speak the root, not `take-0@3000`.
+    const { cues, landed } = splitCuesWithLanding(
+      [take("take-0", 0, 10)],
+      [{ at: 6, id: "6000" }, { at: 3, id: "3000" }],
+    );
+    expect(cues.map((c) => c.id)).toEqual(["take-0", "take-0@3000", "take-0@6000"]);
+    expect(landed.get("3000")).toBe("take-0");
+    expect(landed.get("6000")).toBe("take-0");
+  });
+
+  it("a split skipped by the margin, or missing every cue, is absent", () => {
+    const { landed } = splitCuesWithLanding(
+      [take("take-0", 0, 10)],
+      [
+        { at: 10 - (SPLIT_MIN_PIECE_SEC - 0.1), id: "edge" },
+        { at: 99, id: "nowhere" },
+      ],
+    );
+    expect(landed.size).toBe(0);
+  });
+
+  it("`.cues` is exactly what `splitCues` returns for the same input", () => {
+    const cues = [take("take-0", 0, 10), { ...cue("scene-1"), startSec: 10, endSec: 15 }, take("take-1", 15, 30)];
+    const points = [
+      { at: 20, id: "b" },
+      { at: 4, id: "a" },
+      { at: 12, id: "g" },
+      { at: 10.1, id: "thin" },
+    ];
+    expect(splitCuesWithLanding(cues, points).cues).toEqual(splitCues(cues, points));
+  });
+});
+
 describe("split halves inherit the original scene's edits (R16 §68)", () => {
   const take = (id: string, startSec: number, endSec: number): SceneCue => ({
     id,
@@ -1084,6 +1383,152 @@ describe("split halves inherit the original scene's edits (R16 §68)", () => {
     expect(cues[0]!.endSec).toBe(2);
     expect(cues[1]!.startSec).toBe(2);
     expect(cues[0]!.pinned).toBe(true);
+  });
+});
+
+describe("split take pieces own their framing (take-framing-identity P1)", () => {
+  const take = (id: string, startSec: number, endSec: number): SceneCue => ({
+    id,
+    kind: "plain",
+    layout: "full-bleed",
+    startSec,
+    endSec,
+  });
+
+  it("isPlainTakeKey: plain takes and their halves only", () => {
+    for (const k of ["take-2", "take-2-1", "take-2@s"]) expect(isPlainTakeKey(k), k).toBe(true);
+    // A kept-cleanup block, a graphic, an added scene and a parked edit are
+    // never take halves — every rule in the design keys on this predicate.
+    for (const k of ["take-kept-1@s", "scene-1", "added-1", "take-2#orphaned"]) {
+      expect(isPlainTakeKey(k), k).toBe(false);
+    }
+  });
+
+  it("plainTakeOrdinal: one parse of the root, null exactly where isPlainTakeKey is false", () => {
+    expect(plainTakeOrdinal("take-2")).toEqual({ n: 2, k: 0 });
+    expect(plainTakeOrdinal("take-2-1")).toEqual({ n: 2, k: 1 });
+    expect(plainTakeOrdinal("take-10-3@s")).toEqual({ n: 10, k: 3 });
+    for (const k of ["take-kept-1@s", "scene-1", "added-1", "take-2#orphaned", "take-2@s#orphaned"]) {
+      expect(plainTakeOrdinal(k), k).toBeNull();
+    }
+    for (const k of ["take-2", "take-2-1", "take-2@s", "take-kept-1@s", "scene-1", "take-2#orphaned"]) {
+      expect(isPlainTakeKey(k), k).toBe(plainTakeOrdinal(k) !== null);
+    }
+  });
+
+  it("parkedOverrideKey builds the key isParkedOverrideKey and parkedOverrideBaseKey read", () => {
+    const parked = parkedOverrideKey("take-2@s");
+    expect(parked).toBe("take-2@s#orphaned");
+    expect(isParkedOverrideKey(parked)).toBe(true);
+    expect(parkedOverrideBaseKey(parked)).toBe("take-2@s");
+  });
+
+  it("ownFramingSplitIds collects only the flagged splits", () => {
+    expect(ownFramingSplitIds([{ id: "a", at: 1, src: undefined, ownFraming: true }, { id: "b", at: 2, src: undefined, ownFraming: undefined }])).toEqual(
+      new Set(["a"]),
+    );
+  });
+
+  it("the schema keeps `ownFraming` on the object arm; the legacy number arm gives undefined", () => {
+    expect(SplitSchema.parse({ at: 1, src: 2, id: "x", ownFraming: true }).ownFraming).toBe(true);
+    expect(SplitSchema.parse(1.5).ownFraming).toBeUndefined();
+  });
+
+  it("remapOverridesThroughRecut keeps `ownFraming` on both src and legacy splits", () => {
+    const map = new TimeMap([{ srcIn: 0, srcOut: 20, kind: "keep" }]);
+    const doc = OverrideDocSchema.parse({
+      splits: [
+        { at: 4, src: 4, id: "s", ownFraming: true },
+        { at: 8, id: "t", ownFraming: true },
+      ],
+    });
+    const { doc: out } = remapOverridesThroughRecut(doc, map, map);
+    expect(out.splits.map((s) => s.ownFraming)).toEqual([true, true]);
+  });
+
+  const rootFramed = {
+    "take-0": { layout: "pip-bubble" as const, video: { scale: 2 }, pip: { x: 0.3 } },
+    "take-0@s": { captionY: 0.2 },
+  };
+  const halfOf = (doc: OverrideDoc, cues: SceneCue[]) => {
+    const split = splitCues(cues, [{ at: 4, id: "s" }]);
+    return applyOverrides(split, doc).cues.find((c) => c.id.endsWith("@s"))!;
+  };
+
+  it("a flagged take half inherits neither `video` nor `pip`, and still inherits the rest", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: rootFramed,
+      splits: [{ at: 4, id: "s", ownFraming: true }],
+    });
+    const half = halfOf(doc, [take("take-0", 0, 10)]);
+    expect(half.video).toBeUndefined();
+    expect(half.pip).toBeUndefined();
+    expect(half.captionY).toBe(0.2);
+    // R16 §68 still holds for everything that is not framing.
+    expect(half.layout).toBe("pip-bubble");
+    expect(
+      effectiveOverride(doc.scenes, "take-0@s", ownFramingSplitIds(doc.splits))?.video,
+    ).toBeUndefined();
+  });
+
+  it("an unflagged take half still inherits its root's framing", () => {
+    const doc = OverrideDocSchema.parse({ scenes: rootFramed, splits: [{ at: 4, id: "s" }] });
+    const half = halfOf(doc, [take("take-0", 0, 10)]);
+    expect(half.video?.scale).toBe(2);
+    expect(half.pip?.x).toBe(0.3);
+  });
+
+  it("the flag is ignored on a graphic half", () => {
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-1": { video: { scale: 2 } } },
+      splits: [{ at: 2, id: "s", ownFraming: true }],
+    });
+    const half = halfOf(doc, [{ ...cue("scene-1"), startSec: 0, endSec: 5 }]);
+    expect(half.id).toBe("scene-1@s");
+    expect(half.video?.scale).toBe(2);
+  });
+
+  describe("a flagged take half that arrives carrying its root's framing (final review I-1)", () => {
+    // The editor's post-carve pass splits src-only splits on cues already
+    // merged, so the half is a copy of its framed root — `video` and `pip`
+    // included. Its framing must come only from its own entry.
+    const carried = (): SceneCue => ({ ...take("take-1@s", 5, 10), video: { scale: 2 }, pip: { x: 0.3 } });
+    const docWith = (scenes: Record<string, unknown>, ownFraming?: true) =>
+      OverrideDocSchema.parse({
+        scenes: { "take-1": { video: { scale: 2 }, pip: { x: 0.3 } }, ...scenes },
+        splits: [{ src: 5, id: "s", ...(ownFraming ? { ownFraming } : {}) }],
+      });
+
+    it("with no own framing, the carried copy is dropped", () => {
+      const [half] = applyOverrides([carried()], docWith({}, true)).cues;
+      expect(half!.video).toBeUndefined();
+      expect(half!.pip).toBeUndefined();
+    });
+
+    it("with no entry at all on root or half, the carried copy is still dropped", () => {
+      const doc = OverrideDocSchema.parse({ splits: [{ src: 5, id: "s", ownFraming: true }] });
+      const [half] = applyOverrides([carried()], doc).cues;
+      expect(half!.video).toBeUndefined();
+      expect(half!.pip).toBeUndefined();
+    });
+
+    it("with own `video`, it is exactly that — nothing of the carried copy merged in", () => {
+      const [half] = applyOverrides([carried()], docWith({ "take-1@s": { video: { dx: 3 } } }, true)).cues;
+      expect(half!.video).toEqual({ dx: 3 });
+      expect(half!.pip).toBeUndefined();
+    });
+
+    it("unflagged, behaviour is unchanged: the inherited root framing applies", () => {
+      const [half] = applyOverrides([carried()], docWith({})).cues;
+      expect(half!.video).toEqual({ scale: 2 });
+      expect(half!.pip).toEqual({ x: 0.3 });
+    });
+
+    it("an unframed fill half passes through as the same object (produce's case)", () => {
+      const doc = OverrideDocSchema.parse({ splits: [{ src: 5, id: "s", ownFraming: true }] });
+      const half = take("take-1@s", 5, 10);
+      expect(applyOverrides([half], doc).cues[0]).toBe(half);
+    });
   });
 });
 
@@ -1986,6 +2431,19 @@ describe("reveal timing across edits (reveal-timing final review I-3, M-2)", () 
     expect("reveal" in applyOverrides([cued()], doc).cues[0]!).toBe(false);
   });
 
+  it("a swap to BulletList drops reveal: it stays on its 7-frame stagger (graphic-editor-modal §1, AG1)", () => {
+    // Before Part 1 BulletList had no reveal items, so this swap already
+    // dropped `reveal`; now that it has them, an all-null reveal would put
+    // the swapped list on the paced path. Recorded from the pre-Part-1
+    // overrides.ts (2026-11-22).
+    const doc = OverrideDocSchema.parse({
+      scenes: { "scene-0": { component: "BulletList", props: { items: ["A", "B", "C"] } } },
+    });
+    expect(JSON.stringify(applyOverrides([cued()], doc))).toBe(
+      '{"cues":[{"id":"scene-0","layout":"graphic-only","component":"BulletList","props":{"items":["A","B","C"]},"startSec":6.7,"endSec":9.9,"entryAtSec":7}],"orphans":[]}',
+    );
+  });
+
   it("no swap (same component, prop edit) keeps the matched item times", () => {
     const doc = OverrideDocSchema.parse({
       scenes: { "scene-0": { component: "FlowDiagram", props: { emphasizeLast: false } } },
@@ -2016,5 +2474,111 @@ describe("reveal timing across edits (reveal-timing final review I-3, M-2)", () 
     expect("entryAtSec" in second!).toBe(false);
     // Items stay inherited (absolute seconds — no re-basing needed).
     expect(second!.reveal).toEqual({ itemAtSec: [6.85, 8.35] });
+  });
+});
+
+describe("each split cuts once: the pass-1 helpers (split-positions-by-source D2, R7–R9)", () => {
+  // FE Loop (take-looks.fixtures.ts): `shot-s1` at [10.085, 17.950]. fc1 is
+  // a normal ⌘B in it; fc2 drifted — its graphic cut at `at` 16.0, while
+  // `src` 14.0 now plays at 11.515.
+  const fc1 = { at: 14.015, src: 16.5, id: "fc1" };
+  const fc2 = { at: 16.0, src: 14.0, id: "fc2" };
+  const shotS1 = () => FE_GRAPHICS.filter((c) => c.id === "shot-s1");
+  const ids = (cues: readonly SceneCue[]) => cues.map((c) => c.id);
+
+  describe("pass1SplitPoints (R8-2)", () => {
+    const doc = OverrideDocSchema.parse({
+      splits: [fc1, { at: 30, id: "legacy" }, { src: 66.055, id: "srconly" }],
+    });
+    // The FE Loop clock with source [16, 17] cut: fc1's footage is gone.
+    const cutMap = new TimeMap(
+      SPANS.flatMap((s) =>
+        s.srcIn < 16 && s.srcOut > 17
+          ? [
+              { srcIn: s.srcIn, srcOut: 16, kind: "keep" as const },
+              { srcIn: 17, srcOut: s.srcOut, kind: "keep" as const },
+            ]
+          : [{ srcIn: s.srcIn, srcOut: s.srcOut, kind: "keep" as const }],
+      ),
+    );
+
+    it("is atSplitPoints when every `src` is playing", () => {
+      expect(pass1SplitPoints(doc.splits, feMap())).toEqual(atSplitPoints(doc.splits));
+    });
+
+    it("drops a split whose `src` the map removes — inert in pass 1 too (R7-3)", () => {
+      expect(pass1SplitPoints(doc.splits, cutMap)).toEqual([{ at: 30, id: "legacy" }]);
+    });
+
+    it("filters nothing with no map", () => {
+      expect(pass1SplitPoints(doc.splits, null)).toEqual(atSplitPoints(doc.splits));
+    });
+  });
+
+  it("splitThenDropHidden reports landed (roots) and landedHost (pieces) for a chained split (R9-1)", () => {
+    const doc = OverrideDocSchema.parse({ splits: [fc1, fc2] });
+    const out = splitThenDropHidden(shotS1(), doc, pass1SplitPoints(doc.splits, feMap()));
+    expect(ids(out.cues)).toEqual(["shot-s1", "shot-s1@fc1", "shot-s1@fc2"]);
+    expect(out.landed).toEqual(new Map([["fc1", "shot-s1"], ["fc2", "shot-s1"]]));
+    // fc2 cut the piece fc1 had already made.
+    expect(out.landedHost).toEqual(new Map([["fc1", "shot-s1"], ["fc2", "shot-s1@fc1"]]));
+  });
+
+  it("splitCuesWithLanding records nothing for a split the margin skips", () => {
+    const out = splitCuesWithLanding(shotS1(), [{ at: 17.8, id: "late" }]);
+    expect(out.landed.size).toBe(0);
+    expect(out.landedHost.size).toBe(0);
+  });
+
+  describe("survivingLandings (R7-2, R8-4)", () => {
+    it("a split whose host piece and half are both hidden no longer counts as landed", () => {
+      // fc2's pieces are `shot-s1@fc1` and `shot-s1@fc2`; testing the root
+      // `shot-s1` (still shown) would have kept it (r7 S4).
+      const doc = OverrideDocSchema.parse({
+        splits: [fc1, fc2],
+        scenes: { "shot-s1@fc1": { hidden: true }, "shot-s1@fc2": { hidden: true } },
+      });
+      const out = splitThenDropHidden(shotS1(), doc, pass1SplitPoints(doc.splits, feMap()));
+      expect(ids(out.cues)).toEqual(["shot-s1"]);
+      expect(survivingLandings(out.landedHost, out.cues)).toEqual(new Set(["fc1"]));
+    });
+
+    it("one surviving piece is enough", () => {
+      const doc = OverrideDocSchema.parse({ splits: [fc1, fc2], scenes: { "shot-s1@fc2": { hidden: true } } });
+      const out = splitThenDropHidden(shotS1(), doc, pass1SplitPoints(doc.splits, feMap()));
+      expect(survivingLandings(out.landedHost, out.cues)).toEqual(new Set(["fc1", "fc2"]));
+    });
+
+    it("an added graphic dropped for overlap takes its landing with it", () => {
+      // The split lands in `added-1` alone (the plan graphics either side
+      // are too close to it); both added pieces then overlap a plan graphic
+      // and give way (`dropOverlappingAdded`).
+      const g = (id: string, startSec: number, endSec: number): SceneCue => ({ ...cue(id), startSec, endSec });
+      const doc = OverrideDocSchema.parse({ splits: [{ at: 25, src: 25, id: "s" }] });
+      const shown = splitThenDropHidden([g("scene-0", 19, 24.9), g("added-1", 20, 30), g("scene-1", 25.1, 31)], doc);
+      expect(shown.landedHost).toEqual(new Map([["s", "added-1"]]));
+      const visible = dropOverlappingAdded(shown.cues);
+      expect(ids(visible.cues)).toEqual(["scene-0", "scene-1"]);
+      expect(survivingLandings(shown.landedHost, visible.cues)).toEqual(new Set());
+    });
+  });
+
+  describe("doubleCutNotes (D5, R7-1)", () => {
+    const run = (splits: unknown[]) => {
+      const map = feMap();
+      const doc = OverrideDocSchema.parse({ splits });
+      const pass1 = splitThenDropHidden(shotS1(), doc, pass1SplitPoints(doc.splits, map));
+      const surviving = survivingLandings(pass1.landedHost, pass1.cues);
+      const filled = fillPlainCues(pass1.cues, { outputDurationSec: map.outputDuration, clipStarts: TAKE_CLIP_STARTS });
+      return doubleCutNotes(doc.splits, surviving, pass1.landedHost, filled, map);
+    };
+
+    it("names fc2, which used to cut shot-s1 a second time at 11.515", () => {
+      expect(run([fc1, fc2])).toEqual(["split fc2 cuts only shot-s1 now (it used to cut shot-s1 too)"]);
+    });
+
+    it("is silent once fc2's `src` names its `at` — the reconciled doc", () => {
+      expect(run([fc1, { ...fc2, src: 18.485 }])).toEqual([]);
+    });
   });
 });

@@ -15,6 +15,7 @@ import {
   ALIGN_FLOOR,
   MAX_SCRIPT_CUES,
   ProductionScriptSchema,
+  ProductionStoryboardSchema,
   SceneSchema,
   ScriptComponentIdSchema,
   ScriptMomentSchema,
@@ -30,6 +31,7 @@ import {
   type OverrideDoc,
   type PlannerComponentId,
   type ProductionScript,
+  type ProductionStoryboard,
   type Scene,
   type ScriptCue,
   type ScriptMoment,
@@ -65,6 +67,24 @@ export function storedScriptFrom(productionJson: string): ProductionScript | und
 }
 
 /**
+ * The `storyboard` record out of a production.json's TEXT, or undefined
+ * (§169; storyboard design §9). Tolerant and parsed exactly as
+ * `storedScriptFrom` is, and here beside it for the same reason: produce's
+ * replay carry-forward and `ossclip kit`'s clip lookup share one parse, and
+ * kit.ts must not import produce.ts to get it.
+ */
+export function storedStoryboardFrom(productionJson: string): ProductionStoryboard | undefined {
+  try {
+    const raw = JSON.parse(productionJson) as { storyboard?: unknown };
+    if (raw.storyboard === undefined) return undefined;
+    const parsed = ProductionStoryboardSchema.safeParse(raw.storyboard);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Whether this run is a script project (§163; scene-backdrop-choice design,
  * Terms): keyed on the stored script, not on `--script`. The editor's Render
  * and the kit's refresh replay with `--script` dropped and `--scenes` pinned
@@ -77,13 +97,25 @@ export function storedScriptFrom(productionJson: string): ProductionScript | und
  * `--produce` over the same workdir) writes none and plans no script scenes,
  * so it is not one, whatever the last run left behind (G6). Pure: produce
  * reads production.json (`priorScript`) and hands the record in.
+ *
+ * A storyboard project is treated as a script project here (storyboard
+ * design §8, §9; §169): the author chose each approved shot's backdrop as a
+ * script author chooses a cue's. By the same two rules — the `--storyboard`
+ * flag on the run that writes the record, or a `--scenes` replay over a
+ * stored `storyboard` record, which the editor's Render strips the flag from.
  */
 export function isScriptProject(run: {
   scriptFlag: boolean;
   scenesPinned: boolean;
   storedScript: ProductionScript | undefined;
+  storyboardFlag: boolean;
+  storedStoryboard: ProductionStoryboard | undefined;
 }): boolean {
-  return run.scriptFlag || (run.scenesPinned && run.storedScript !== undefined);
+  return (
+    run.scriptFlag ||
+    run.storyboardFlag ||
+    (run.scenesPinned && (run.storedScript !== undefined || run.storedStoryboard !== undefined))
+  );
 }
 
 /**

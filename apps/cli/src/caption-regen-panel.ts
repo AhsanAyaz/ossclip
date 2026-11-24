@@ -72,3 +72,16 @@ export function captionRegenProvider(inputs: CaptionRegenProviderInputs): Captio
   }
   return { status: "ready", provider: defaultProviderName(inputs.env, inputs.hasBin) };
 }
+
+/**
+ * The model the recorded command pins (`--llm-model`), or undefined: the
+ * provider's own default then decides. The editor's storyboard calls read it
+ * so a project's plan and its drawings come from one model. Without it the
+ * Claude CLI's default decided per call, and a real project was planned by
+ * one model and drawn by another when that default changed in between
+ * (2026-11-20, §169).
+ */
+export function recordedLlmModel(commandArgs: readonly string[] | null): string | undefined {
+  const model = lastFlagValue(commandArgs ?? [], ["--llm-model"])?.trim();
+  return model !== undefined && model !== "" && !model.startsWith("-") ? model : undefined;
+}

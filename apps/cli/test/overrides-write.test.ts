@@ -108,16 +108,57 @@ describe("writeOverrideDoc — which write may spend the `.bak` (§137)", () => 
 });
 
 describe("overridesWriteLine", () => {
+  const none = {
+    cutChanged: false,
+    captionKeysReanchored: false,
+    hidesPruned: false,
+    sceneKeysRemapped: false,
+    splitSrcResolved: false,
+    splitHalvesChanged: false,
+    takeLooksMigrated: false,
+    splitsReconciled: false,
+  };
+  const cut = { ...none, cutChanged: true };
+  const captions = { ...none, captionKeysReanchored: true };
+
   it("claims a kept copy only on the run that actually kept one", () => {
     // A line saying "previous copy kept as .bak" over a run that took no
     // backup is how a user finds out too late.
-    expect(overridesWriteLine(true)).toContain("previous copy kept as .bak");
-    expect(overridesWriteLine(false)).not.toContain("kept as .bak");
-    expect(overridesWriteLine(false)).toContain("left alone");
+    expect(overridesWriteLine(cut)).toContain("previous copy kept as .bak");
+    expect(overridesWriteLine(captions)).not.toContain("kept as .bak");
+    expect(overridesWriteLine(captions)).toContain("left alone");
   });
 
   it("names which re-anchoring happened, either way", () => {
-    expect(overridesWriteLine(true)).toContain("the new cut");
-    expect(overridesWriteLine(false)).toContain("source-time caption keys");
+    expect(overridesWriteLine(cut)).toContain("the new cut");
+    expect(overridesWriteLine(captions)).toContain("source-time caption keys");
+  });
+
+  it("a migration-only write names the take-look move, not a caption re-anchoring (take-looks-by-source final review)", () => {
+    // `looks1.log`: the one-time migration was the run's only write reason,
+    // and the line said "re-anchored to source-time caption keys".
+    const line = overridesWriteLine({ ...none, takeLooksMigrated: true });
+    expect(line).toContain("take looks moved onto source time");
+    expect(line).not.toContain("caption");
+    expect(line).not.toContain("new cut");
+    expect(line).toContain("left alone");
+  });
+
+  it("a reconcile-only write names the split anchors (split-positions-by-source R8-3)", () => {
+    // The run after the upgrade: the drifted split's `src` was written onto
+    // its `at`, and nothing else moved.
+    const line = overridesWriteLine({ ...none, splitsReconciled: true });
+    expect(line).toBe(
+      "▸ overrides.json saved — split anchors reconciled to where they cut " +
+        "(overrides.json.bak left alone — it may be an older, pre-cut copy worth more than this one)",
+    );
+  });
+
+  it("lists every reason that fired, the cut's .bak claim first", () => {
+    const line = overridesWriteLine({ ...cut, takeLooksMigrated: true, splitHalvesChanged: true });
+    expect(line).toMatch(/^▸ overrides\.json re-anchored to the new cut and saved \(previous copy kept as \.bak\); also /);
+    expect(line).toContain("take halves re-keyed to their splits");
+    expect(line).toContain("take looks moved onto source time");
+    expect(line).not.toContain("caption");
   });
 });

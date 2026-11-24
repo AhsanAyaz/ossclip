@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { assembleScenes, ENTRY_LEAD_SEC, ITEM_LEAD_SEC } from "../src/assemble";
+import {
+  assembleScenes,
+  ENTRY_LEAD_SEC,
+  ITEM_LEAD_SEC,
+  MAX_SCENE_SEC,
+  maxCueSec,
+  wordOutputStart,
+} from "../src/assemble";
 import { fillPlainCues } from "../src/fill";
 import { TimeMap } from "../src/timemap";
 import type { Segment, Transcript } from "../src/schema";
@@ -441,6 +448,125 @@ describe("assembleScenes — on-cue start and spoken item times (reveal-timing �
   });
 });
 
+describe("assembleScenes — BulletList in the reveal system (graphic-editor-modal §1, AG1)", () => {
+  const long: Transcript = {
+    language: "en",
+    words: Array.from({ length: 100 }, (_, i) => ({
+      text: `w${i}`,
+      start: i * 0.5,
+      end: i * 0.5 + 0.4,
+    })),
+  };
+  // Removes source 6.9–7.5, all of word 14 (7.0–7.4): the entry word falls
+  // to word 15, and everything after shifts 0.6 s earlier.
+  const cutMap = new TimeMap([
+    { srcIn: 0, srcOut: 6.9, kind: "keep" },
+    { srcIn: 6.9, srcOut: 7.5, kind: "remove", reason: "pause" },
+    { srcIn: 7.5, srcOut: 50, kind: "keep" },
+  ]);
+  const bullets = (cue?: Scene["cue"]): Scene => ({
+    id: "scene-0",
+    anchor: { startWord: 0, endWord: 19 },
+    layout: "blurred-behind",
+    component: "BulletList",
+    props: { title: "NEED", items: ["AI HARNESS", "CONTEXT"] },
+    overrides: {},
+    ...(cue ? { cue } : {}),
+  });
+
+  it("a stored {entryWord}-only BulletList assembles byte-equal to before Part 1", () => {
+    // Recorded from the pre-Part-1 assemble.ts (2026-11-22). Every stored
+    // BulletList cue holds `entryWord` only (the planner wrote no itemWords
+    // while `revealItemTexts` had no BulletList case), so this is every
+    // existing project's bullet list: it must not gain an all-null `reveal`,
+    // which would move it from the 7-frame stagger onto the paced path.
+    expect(JSON.stringify(assembleScenes([bullets({ entryWord: 14 })], long, cutMap))).toBe(
+      '{"cues":[{"id":"scene-0","anchor":{"startWord":0,"endWord":19},"layout":"blurred-behind","component":"BulletList","props":{"title":"NEED","items":["AI HARNESS","CONTEXT"]},"startSec":6.6000000000000005,"endSec":9.3,"entryAtSec":6.9}],"dropped":[],"shortened":[]}',
+    );
+    // And a plan from before reveal timing (no cue at all), likewise.
+    expect(JSON.stringify(assembleScenes([bullets()], long, cutMap))).toBe(
+      '{"cues":[{"id":"scene-0","anchor":{"startWord":0,"endWord":19},"layout":"blurred-behind","component":"BulletList","props":{"title":"NEED","items":["AI HARNESS","CONTEXT"]},"startSec":0,"endSec":9.3}],"dropped":[],"shortened":[]}',
+    );
+  });
+
+  it("with itemWords, each item lands on its word's output start minus the item lead", () => {
+    // Word 16 (src 8.0) and word 18 (src 9.0) are after the cut: output 7.4
+    // and 8.4.
+    const [cue] = assembleScenes([bullets({ entryWord: 14, itemWords: [16, 18] })], long, cutMap).cues;
+    expect(cue!.reveal!.itemAtSec).toHaveLength(2);
+    expect(cue!.reveal!.itemAtSec[0]).toBeCloseTo(7.4 - ITEM_LEAD_SEC, 9);
+    expect(cue!.reveal!.itemAtSec[1]).toBeCloseTo(8.4 - ITEM_LEAD_SEC, 9);
+  });
+
+  it("with itemWords of the wrong count, the items pace like any other new plan", () => {
+    const [cue] = assembleScenes([bullets({ entryWord: 14, itemWords: [16] })], long, cutMap).cues;
+    expect(cue!.reveal).toEqual({ itemAtSec: [null, null] });
+  });
+
+  it("invariant: a BulletList with no itemWords never carries a reveal", () => {
+    for (const cue of [undefined, { entryWord: 14 }, { entryWord: 0 }]) {
+      const [out] = assembleScenes([bullets(cue)], long, cutMap).cues;
+      expect("reveal" in out!).toBe(false);
+    }
+  });
+});
+
+describe("wordOutputStart (graphic-editor-modal Terms, \"Word time\")", () => {
+  const long: Transcript = {
+    language: "en",
+    words: Array.from({ length: 100 }, (_, i) => ({
+      text: `w${i}`,
+      start: i * 0.5,
+      end: i * 0.5 + 0.4,
+    })),
+  };
+  // Removes source 6.9–7.1: word 14 (7.0–7.4) loses its first 0.1 s but its
+  // middle survives, so it is still spoken — its start clamps to the kept
+  // edge (output 6.9). Word 13 (6.5–6.9) ends exactly on the cut.
+  const clipMap = new TimeMap([
+    { srcIn: 0, srcOut: 6.9, kind: "keep" },
+    { srcIn: 6.9, srcOut: 7.1, kind: "remove", reason: "pause" },
+    { srcIn: 7.1, srcOut: 50, kind: "keep" },
+  ]);
+  // Removes source 6.9–7.5, all of word 14.
+  const cutMap = new TimeMap([
+    { srcIn: 0, srcOut: 6.9, kind: "keep" },
+    { srcIn: 6.9, srcOut: 7.5, kind: "remove", reason: "user" },
+    { srcIn: 7.5, srcOut: 50, kind: "keep" },
+  ]);
+
+  it("is the planner's own conversion: mapWord's start, null when the word is cut", () => {
+    for (const map of [clipMap, cutMap]) {
+      for (const w of long.words) expect(wordOutputStart(w, map)).toBe(map.mapWord(w)?.start ?? null);
+    }
+    expect(wordOutputStart(long.words[14]!, cutMap)).toBeNull();
+  });
+
+  it("a word whose start is clipped by a cut is still timed, at the kept edge", () => {
+    expect(wordOutputStart(long.words[14]!, clipMap)).toBeCloseTo(6.9, 9);
+    expect(wordOutputStart(long.words[17]!, clipMap)).toBeCloseTo(8.3, 9);
+  });
+
+  it("plannedCue's entry and item times are byte-equal to before the extraction", () => {
+    // Recorded from assemble.ts before `wordOutputStart` was extracted
+    // (2026-11-22): the clipped word 14 is both the entry (6.9) and item 0
+    // (6.9 − 0.15), so the extraction must keep a clipped start timed rather
+    // than treat it as cut.
+    const flow: Scene = {
+      id: "scene-0",
+      anchor: { startWord: 0, endWord: 19 },
+      layout: "graphic-only",
+      component: "FlowDiagram",
+      props: { nodes: ["IDEA", "BUILD", "SHIP"] },
+      overrides: {},
+      cue: { entryWord: 14, itemWords: [14, 17, 12] },
+    };
+    expect(JSON.stringify(assembleScenes([flow], long, clipMap))).toBe(
+      '{"cues":[{"id":"scene-0","anchor":{"startWord":0,"endWord":19},"layout":"graphic-only","component":"FlowDiagram","props":{"nodes":["IDEA","BUILD","SHIP"],"emphasizeLast":true},"startSec":6.6000000000000005,"endSec":9.700000000000001,"entryAtSec":6.9,"reveal":{"itemAtSec":[6.75,8.15,5.85]}}],"dropped":[],"shortened":[]}',
+    );
+  });
+});
+
 describe("assembleScenes — fixed clip duration and the shortened report (explainer spec 1.4)", () => {
   /** 100 words, 0.5s apart: a 50s take, so the floor is the plain 1.2s. */
   const long: Transcript = {
@@ -467,6 +593,14 @@ describe("assembleScenes — fixed clip duration and the shortened report (expla
     expect(cues[0]!.startSec).toBeCloseTo(2.0, 5);
     expect(cues[0]!.endSec).toBeCloseTo(6.6, 5);
     expect(shortened).toEqual([]);
+  });
+
+  it("a 4s clip planned at speed 2 lasts 2s: its slot is the clip's played length", () => {
+    const fast: Scene = { ...clip("c", 4, 21, 4), props: { src: "clips/a.webm", durationSec: 4, speed: 2 } };
+    const { cues } = assembleScenes([fast], long, longMap);
+    expect(cues[0]!.endSec - cues[0]!.startSec).toBeCloseTo(2, 5);
+    // `durationSec` stays the file's own 1x length; only the slot changes.
+    expect(cues[0]!.props).toMatchObject({ durationSec: 4, speed: 2 });
   });
 
   it("a 20s clip is cut at 15s and reported", () => {
@@ -511,5 +645,26 @@ describe("assembleScenes — fixed clip duration and the shortened report (expla
       ).shortened,
     ).toEqual([]);
     expect(assembleScenes([scene("a", 2, 5)], transcript, identity).shortened).toEqual([]);
+  });
+});
+
+describe("maxCueSec (a clip block is never longer than its clip)", () => {
+  const clip = (props: Record<string, unknown>) => ({ component: "ClipScene" as const, props });
+
+  it("a clip's is its played length, durationSec / speed", () => {
+    expect(maxCueSec(clip({ src: "a.webm", durationSec: 4 }))).toBe(4);
+    expect(maxCueSec(clip({ src: "a.webm", durationSec: 4, speed: 2 }))).toBe(2);
+    // The field case: 4.64 s at 2.98x.
+    expect(maxCueSec(clip({ src: "a.webm", durationSec: 4.64, speed: 2.98 }))).toBeCloseTo(1.557, 3);
+  });
+
+  it("is held to the 15 s ceiling assembly cuts a clip to", () => {
+    expect(maxCueSec(clip({ src: "a.webm", durationSec: 10, speed: 0.5 }))).toBe(MAX_SCENE_SEC);
+  });
+
+  it("is undefined for a card, a plain take, and a clip with no length", () => {
+    expect(maxCueSec({ component: "TitleCard", props: { title: "HI" } })).toBeUndefined();
+    expect(maxCueSec({})).toBeUndefined();
+    expect(maxCueSec(clip({ src: "a.webm" }))).toBeUndefined();
   });
 });

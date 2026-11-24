@@ -589,14 +589,29 @@ export function replayStoredRepairs(
   });
 }
 
-/** Whether the caption words differ from the raw ones in count or text —
- * produce writes `captionWords` only then, so a project with nothing repaired
- * keeps a byte-identical production.json. Times are not compared: every
- * word edit before the caption build keeps or re-derives them from the raw
- * stamps, so a text-equal list is the raw list. */
+/** Whether the caption words differ from the raw ones in count, text or
+ * timing — produce writes `captionWords` only then, so a project with
+ * nothing repaired keeps a byte-identical production.json.
+ *
+ * Times are compared too (graphic-editor-modal Task 4, 2026-11-22). On a
+ * `--clip` run the raw slice is cut by TIME and the caption words by INDEX,
+ * so a split repair the window starts inside ("agents" → "AI agents",
+ * window on the second half) leaves the two lists equal in count and text
+ * while the first word starts mid raw word. Unrecorded, the editor server
+ * rebuilt the list by replaying the repair on the raw slice and got "AI"
+ * in front: every word index one off, in the sound-effect lane and in the
+ * graphic editor's anchor words alike. An ordinary repair changes text or
+ * count along with any timing it re-derives, so its answer, and the file,
+ * are as before (clip-edge-repair.test.ts holds production.json to that). */
 export function captionWordsDiffer(
-  raw: readonly { text: string }[],
-  caption: readonly { text: string }[],
+  raw: readonly { text: string; start: number; end: number }[],
+  caption: readonly { text: string; start: number; end: number }[],
 ): boolean {
-  return raw.length !== caption.length || raw.some((w, i) => w.text !== caption[i]!.text);
+  return (
+    raw.length !== caption.length ||
+    raw.some((w, i) => {
+      const c = caption[i]!;
+      return w.text !== c.text || w.start !== c.start || w.end !== c.end;
+    })
+  );
 }

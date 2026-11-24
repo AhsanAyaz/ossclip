@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { captionRegenProvider } from "../src/caption-regen-panel";
+import { captionRegenProvider, recordedLlmModel } from "../src/caption-regen-panel";
 
 const none = (): boolean => false;
 
@@ -84,5 +84,18 @@ describe("captionRegenProvider (2026-08-29)", () => {
         hasBin: none,
       }),
     ).toEqual({ status: "ready", provider: "claude-cli" });
+  });
+});
+
+describe("recordedLlmModel: the model the recorded command pins (§169)", () => {
+  it("reads the last --llm-model", () => {
+    expect(recordedLlmModel(["produce", "x.mp4", "--llm-model", "a", "--llm-model", "claude-opus-5-5"])).toBe("claude-opus-5-5");
+  });
+
+  it("is undefined with no flag, no command, an empty value, or a flag where the value should be", () => {
+    expect(recordedLlmModel(["produce", "x.mp4", "--llm", "claude-cli"])).toBeUndefined();
+    expect(recordedLlmModel(null)).toBeUndefined();
+    expect(recordedLlmModel(["produce", "--llm-model", " "])).toBeUndefined();
+    expect(recordedLlmModel(["produce", "--llm-model", "--storyboard"])).toBeUndefined();
   });
 });

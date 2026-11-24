@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "nextShot": 4,
+  "shots": [
+    {
+      "id": "s1",
+      "startWord": 19,
+      "endWord": 24,
+      "idea": "A crowd of small figures each types one line into a chat box, and one answer pops back to each.",
+      "why": "Shows the one-prompt habit the speaker is about to contrast.",
+      "priority": 2,
+      "assets": [],
+      "kept": true,
+      "origin": "planner",
+      "touched": false
+    },
+    {
+      "id": "s2",
+      "startWord": 43,
+      "endWord": 52,
+      "idea": "A loop arrow circles a small robot that writes code, runs it and checks it, round and round.",
+      "why": "An agentic loop is easier to see than to hear.",
+      "priority": 1,
+      "assets": [],
+      "kept": true,
+      "origin": "planner",
+      "touched": false
+    },
+    {
+      "id": "s3",
+      "startWord": 70,
+      "endWord": 74,
+      "idea": "A counter ticks up to 5000 while tiny developer icons fill the frame.",
+      "why": "Makes the community's size concrete.",
+      "priority": 3,
+      "assets": [],
+      "kept": false,
+      "origin": "planner",
+      "touched": true
+    }
+  ]
+}

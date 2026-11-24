@@ -10,7 +10,7 @@ import { produceArgv, type ProduceAnswers, type ProduceExtras } from "./produce-
 import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } from "./prompts";
 
 /**
- * The produce wizard. Forty-six flags (plus the positional input path)
+ * The produce wizard. Forty-eight flags (plus the positional input path)
  * sorted into three tiers: six prompts asked directly — the input path, plus
  * five flags (--out, --cleanup, --aspect, --produce, --intent) — twelve
  * behind one "anything else?" multiselect (--sfx being the twelfth, with
@@ -59,6 +59,17 @@ import { assertInteractive, confirm, intro, multiselect, select, text, unwrap } 
  * `look` in ~/.ossclip/config.json, and the run it exists for is the
  * --script explainer flow above, itself flags-only. A menu entry would offer
  * a preset whose only preview is a full render.
+ *
+ * --storyboard (2026-11-20, storyboard Phase B1, §168) stays flags-only.
+ * It is experimental, and its surface is the editor, not this menu: the run
+ * plans a table of drawn shots and stops before rendering, so everything the
+ * author decides about the shots happens in the editor that opens after it.
+ * A wizard entry would also have to undo the graphics answer and hide the
+ * --clip extra, the same dependency design --script is waiting on.
+ *
+ * --assets (2026-11-20, §168) stays flags-only with it: it means nothing
+ * without --storyboard (produce refuses it alone), and it names a folder,
+ * which is the file prompt the wizard does not have yet.
  *
  * --library-dir (2026-11-05, hidden) is not offered either: it is a
  * test-isolation seam pointing a fresh run at a temp overlay library

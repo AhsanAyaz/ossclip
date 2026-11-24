@@ -4,15 +4,28 @@ import { createRoot } from "react-dom/client";
 import type { PlayerRef } from "@remotion/player";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  OverrideDocSchema,
   livePreviewMap,
+  mapFromKeptSpans,
   previewClockMappers,
   type KeptSpan,
   type OverrideDoc,
   type SceneCue,
   type Segment,
+  type TimeMap,
 } from "@ossclip/core/browser";
-import { DYNAMIC_ID, Overlay, blurTypingElement, buildArrayPatch, elementTextOf } from "../src/Overlay";
+import {
+  DYNAMIC_ID,
+  Overlay,
+  blurTypingElement,
+  buildArrayPatch,
+  elementTextOf,
+  videoPressGesture,
+  type Selection,
+  type VideoPreview,
+} from "../src/Overlay";
 import { useEdits } from "../src/useEdits";
+import { LOOK_NEEDS_CLOCK, withVideoPreview } from "../src/takeLookTarget";
 import { onSaveEffect } from "../src/save";
 
 // Same one-time act() opt-in as project-picker.test.ts/Inspector.test.ts —
@@ -287,6 +300,21 @@ describe("blurTypingElement — bug 6's fix (PLAN 2026-08-04 Task 2)", () => {
     expect(document.activeElement).toBe(document.body);
     expect(() => blurTypingElement()).not.toThrow();
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe("videoPressGesture — which drag a press on the bare picture arms (2026-11-20, §107)", () => {
+  it("in a pip bubble a plain drag moves the bubble and a Shift-drag pans the picture inside it", () => {
+    expect(videoPressGesture("pip-bubble", false)).toBe("move-pip");
+    expect(videoPressGesture("pip-bubble", true)).toBe("pan");
+  });
+
+  it("every other layout pans, Shift or not, so their gesture is unchanged", () => {
+    for (const layout of ["full-bleed", "blurred-behind", "lower-third", "graphic-only"] as const) {
+      expect(videoPressGesture(layout, false)).toBe("pan");
+      expect(videoPressGesture(layout, true)).toBe("pan");
+    }
+    expect(videoPressGesture(undefined, false)).toBe("pan");
   });
 });
 
@@ -1039,5 +1067,233 @@ describe("dragging a graphic box (§163): a full-frame component is kept inside 
   it("the same drag on a TitleCard stops at the caption-safe area (5% from the right in 16:9)", async () => {
     const rect = await dragBy(cueOf("TitleCard"), 288);
     expect(rect).toEqual({ x: 0.55, y: 0.5, w: 0.4, h: 0.3 });
+  });
+});
+
+/**
+ * Look mode on the stage (take-looks-by-source L4, R4-S2, R4-S3, R6-4,
+ * R6-7): a press on the picture picks the take under the PLAYHEAD — the
+ * tail, when a carved take's tail is playing, though the DOM names only the
+ * id it shares with the lead — and the drag writes that piece's footage
+ * through `patchTakeLook`, previewing on that piece alone. A legacy doc keeps
+ * the id-keyed write. Mounted for real: the piece is resolved at mousedown and
+ * committed at mouseup, two listeners apart.
+ */
+describe("stage drags in look mode write the piece under the playhead (take-looks-by-source L4)", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let doc: OverrideDoc | null = null;
+  const FPS = 30;
+  const CLOCK = mapFromKeptSpans([{ srcIn: 0, srcOut: 30, outIn: 0, outOut: 30 }]);
+  const cuesOf = (layout: SceneCue["layout"]): SceneCue[] => [
+    { id: "take-1", kind: "plain", layout, startSec: 0, endSec: 10 },
+    { id: "take-kept-10000", kind: "plain", layout, startSec: 10, endSec: 12 },
+    { id: "take-1", kind: "plain", layout, startSec: 12, endSec: 20, video: { scale: 2, dx: 10 } },
+    { id: "scene-2", layout: "video-top", component: "StatCard", props: { label: "X", value: "1" }, startSec: 20, endSec: 25 },
+  ];
+  const lookDoc = () =>
+    OverrideDocSchema.parse({ takeLooks: [{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 } } }] });
+
+  function Harness(props: {
+    initial: OverrideDoc;
+    cues: SceneCue[];
+    playheadSec: number;
+    selection?: Selection | null;
+    onVideoPreview?: (p: VideoPreview | null) => void;
+    onSelect?: (s: Selection | null) => void;
+    /** Defaults to `CLOCK`; null is an unrendered workdir's. */
+    clock?: TimeMap | null;
+    /** The Player has no frame to report yet. */
+    noFrame?: boolean;
+    onClockRefused?: (message: string) => void;
+  }) {
+    const edits = useEdits();
+    doc = edits.doc;
+    React.useEffect(() => {
+      edits.load(props.initial);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+    const stageRef = useRef<HTMLDivElement>(null);
+    const playerRef = useRef({
+      getScale: () => 0.5,
+      getCurrentFrame: () => (props.noFrame ? undefined : Math.round(props.playheadSec * FPS)),
+    } as unknown as PlayerRef);
+    return React.createElement(
+      "div",
+      { ref: stageRef, "data-testid": "stage" },
+      React.createElement("div", { "data-edit-video": "take-1", "data-testid": "picture" }),
+      React.createElement(Overlay, {
+        stageRef,
+        selection: props.selection ?? null,
+        onSelect: props.onSelect ?? vi.fn(),
+        edits,
+        onSave: vi.fn(),
+        settings: { width: 1080, height: 1920, fps: FPS },
+        cues: props.cues,
+        onToggleHelp: vi.fn(),
+        onRequestDelete: vi.fn(),
+        playerRef,
+        onTransport: vi.fn(),
+        onVideoPreview: props.onVideoPreview ?? vi.fn(),
+        onGraphicPreview: vi.fn(),
+        cue: null,
+        cueClock: props.clock === undefined ? CLOCK : props.clock,
+        onClockRefused: props.onClockRefused,
+      }),
+    );
+  }
+
+  const rectAt = (left: number, top: number, width: number, height: number) =>
+    ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) }) as DOMRect;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    doc = null;
+    document.elementFromPoint = () => container.querySelector('[data-testid="picture"]');
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.dataset.testid === "stage" ? rectAt(0, 0, 540, 960) : rectAt(0, 0, 0, 0);
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  /** Press the picture, move by `dx` page px, release; rAF gets a tick. */
+  async function drag(props: Parameters<typeof Harness>[0], dx: number) {
+    await act(async () => {
+      root.render(React.createElement(Harness, props));
+    });
+    const picture = container.querySelector<HTMLElement>('[data-testid="picture"]')!;
+    act(() => {
+      picture.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, clientX: 100, clientY: 100 }));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 100 + dx, clientY: 100 }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    act(() => {
+      window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: 100 + dx, clientY: 100 }));
+    });
+  }
+
+  it("a pan with the tail playing writes the tail's footage, keeps its scale, and previews the tail only", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const onSelect = vi.fn();
+    await drag({ initial: lookDoc(), cues: cuesOf("full-bleed"), playheadSec: 15, onVideoPreview: (p) => previews.push(p), onSelect }, 20);
+    // 20 page px at a Player scale of 0.5 is 40 composition px.
+    expect(doc!.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 50, dy: 0 } } }]);
+    expect(doc!.scenes).toEqual({});
+    expect(previews[0]).toEqual({ sceneId: "take-1", patch: { dx: 50, dy: 0 }, pieceExtent: { srcIn: 12, srcOut: 20 } });
+    expect(previews.at(-1)).toBeNull();
+    expect(onSelect).toHaveBeenCalledWith({ sceneId: "take-1", elementId: null, pieceExtent: { srcIn: 12, srcOut: 20 } });
+  });
+
+  it("the same press with the LEAD playing writes the lead's footage, from the lead's own (empty) base", async () => {
+    await drag({ initial: lookDoc(), cues: cuesOf("full-bleed"), playheadSec: 5 }, 20);
+    expect(doc!.takeLooks).toEqual([
+      { srcIn: 0, srcOut: 10, look: { video: { dx: 40, dy: 0 } } },
+      { srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 } } },
+    ]);
+  });
+
+  it("a pip-bubble drag moves the tail's bubble through patchTakeLook", async () => {
+    await drag({ initial: lookDoc(), cues: cuesOf("pip-bubble"), playheadSec: 15 }, 54);
+    const tailLook = doc!.takeLooks!.find((e) => e.srcIn === 12)!.look;
+    expect(tailLook.pip?.x).toBeGreaterThan(0);
+    expect(tailLook.video).toEqual({ scale: 2, dx: 10 });
+    expect(doc!.scenes).toEqual({});
+  });
+
+  // take-looks-by-source final review T3-M1: the stage painted `take-1` but
+  // the Player reports a frame of the kept block between lead and tail (a
+  // boundary, a transition). This used to fall through to the legacy branch:
+  // an id-only selection that revalidates to the LEAD, an id preview on lead
+  // AND tail, and a commit the reducer refuses.
+  it("a press whose playhead is just off the carved tail selects the tail and previews the tail only", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const onSelect = vi.fn();
+    const refused = vi.fn();
+    const cues = cuesOf("full-bleed");
+    await drag(
+      { initial: lookDoc(), cues, playheadSec: 11.9, onVideoPreview: (p) => previews.push(p), onSelect, onClockRefused: refused },
+      20,
+    );
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith({ sceneId: "take-1", elementId: null, pieceExtent: { srcIn: 12, srcOut: 20 } });
+    expect(previews[0]).toEqual({ sceneId: "take-1", patch: { dx: 50, dy: 0 }, pieceExtent: { srcIn: 12, srcOut: 20 } });
+    // Laid over the cues the way App does: the tail moves, the lead does not.
+    const shown = withVideoPreview(cues, previews[0]!, CLOCK);
+    expect(shown[0]!.video).toBeUndefined();
+    expect(shown[2]!.video).toEqual({ scale: 2, dx: 50, dy: 0 });
+    expect(doc!.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 50, dy: 0 } } }]);
+    expect(doc!.scenes).toEqual({});
+    expect(refused).not.toHaveBeenCalled();
+  });
+
+  it("with no clock, a press on a take arms nothing, selects nothing and says why", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const onSelect = vi.fn();
+    const refused = vi.fn();
+    await drag(
+      { initial: lookDoc(), cues: cuesOf("full-bleed"), playheadSec: 15, clock: null, onVideoPreview: (p) => previews.push(p), onSelect, onClockRefused: refused },
+      20,
+    );
+    expect(refused).toHaveBeenCalledWith(LOOK_NEEDS_CLOCK);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(previews).toEqual([]);
+    expect(doc!.takeLooks).toEqual(lookDoc().takeLooks);
+    expect(doc!.scenes).toEqual({});
+  });
+
+  it("with no frame yet, a press on a take arms nothing, selects nothing and says why", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const onSelect = vi.fn();
+    const refused = vi.fn();
+    await drag(
+      { initial: lookDoc(), cues: cuesOf("pip-bubble"), playheadSec: 15, noFrame: true, onVideoPreview: (p) => previews.push(p), onSelect, onClockRefused: refused },
+      54,
+    );
+    expect(refused).toHaveBeenCalledWith(LOOK_NEEDS_CLOCK);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(previews).toEqual([]);
+    expect(doc!.takeLooks).toEqual(lookDoc().takeLooks);
+    expect(doc!.scenes).toEqual({});
+  });
+
+  it("legacy mode is unchanged: the pan writes the id-keyed framing", async () => {
+    const previews: Array<VideoPreview | null> = [];
+    const legacy = OverrideDocSchema.parse({ scenes: { "take-1": { video: { scale: 2, dx: 10 } } } });
+    await drag({ initial: legacy, cues: cuesOf("full-bleed"), playheadSec: 15, onVideoPreview: (p) => previews.push(p) }, 20);
+    expect(doc!.scenes["take-1"]!.video).toEqual({ scale: 2, dx: 50, dy: 0 });
+    expect(doc!.takeLooks).toBeUndefined();
+    expect(previews[0]).toEqual({ sceneId: "take-1", patch: { dx: 50, dy: 0 } });
+  });
+
+  it("⌥→ from the tail walks to the graphic, not back into the kept block", async () => {
+    const onSelect = vi.fn();
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          initial: lookDoc(),
+          cues: cuesOf("full-bleed"),
+          playheadSec: 15,
+          selection: { sceneId: "take-1", elementId: null, pieceExtent: { srcIn: 12, srcOut: 20 } },
+          onSelect,
+        }),
+      );
+    });
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", altKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(onSelect).toHaveBeenLastCalledWith({ sceneId: "scene-2", elementId: null });
   });
 });

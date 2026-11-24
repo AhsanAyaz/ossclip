@@ -65,13 +65,36 @@ export function remapOverridesThroughRecut(
   // (§137, `SplitSchema`) — re-deriving it here is what renamed the half and
   // orphaned the overrides on it.
   const splits = doc.splits.map((s) => {
-    // A src-anchored split passes through UNTOUCHED — the `doc.cuts`
-    // non-remap rule below, for the same reason `cleanup.kept` needs no
-    // entry here at all: source time is stable across every re-cut, and
-    // `resolveSplitPoints` re-derives the output instant fresh at each
-    // application. Only the src-less legacy shape still carries an
-    // old-clock `at` worth moving.
-    if (s.src !== undefined) return s;
+    // `src` is never touched — the `doc.cuts` non-remap rule below, for the
+    // same reason `cleanup.kept` needs no entry here at all: source time is
+    // stable across every re-cut. A src-only split therefore passes through
+    // whole; it has no `at`.
+    if (s.at === undefined) return s;
+    // `at` follows the cut for EVERY split that has one
+    // (split-positions-by-source D1): the graphic pass cuts at `at`, so a
+    // `{at, src}` split left on the old clock cut its graphic at a stale
+    // moment and pass 2 cut it again at `src`. Three branches on where `src`
+    // falls (R8-1, R9-2):
+    if (s.src !== undefined) {
+      // 1. `src` removed on the new map: `at` stays as it is, with no report.
+      // The split is inert this run in both passes (`pass1SplitPoints`,
+      // `resolveSplitPoints`), and `resolveSplitPoints`' inert line — printed
+      // every run — is its report; one here would say it twice, and only on
+      // the run whose remap happened to fire (r8 S2).
+      if (newMap.toOutput(s.src) === null) return s;
+      // 2. `src` removed on the OLD map, kept on the new: a restore. The
+      // stored `at` was never moved while the split was inert, so it speaks
+      // a clock two cuts back and `remapPoint` would read it as the wrong
+      // source second — off by the restored length, then made permanent by
+      // the reconcile (r7 B1). `src` is the one anchor that held, so `at`
+      // comes from it, rounded to the millisecond so the restore writes
+      // 14.015, not 14.01488 (r8 S2).
+      if (oldMap.toOutput(s.src) === null) {
+        return { ...s, at: Math.round(newMap.toOutput(s.src)! * 1000) / 1000 };
+      }
+      // 3. Kept on both: `remapPoint`, the legacy path below, reports
+      // included (R7-5 S4).
+    }
     const before = reports.length;
     const atBefore = s.at!;
     const at = remapPoint(`split "${s.id}"`, atBefore, oldMap, newMap, reports);

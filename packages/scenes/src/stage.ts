@@ -1216,6 +1216,99 @@ export function pictureZoomStateFor(
   };
 }
 
+/** The pip-bubble pan resolved for the stage: a crop window, then what is left as a translate. */
+export interface PipPan {
+  objectPosX: number;
+  objectPosY: number;
+  /** The residual translate for `contentTransformFor`, in output pixels. */
+  dx: number;
+  dy: number;
+}
+
+/**
+ * What the user's framing pan (`cue.video.dx/dy`) means inside the speaker
+ * bubble (2026-11-20, correcting §107). Everywhere else it is a translate of
+ * the picture, which is right when the picture fills the frame. In the bubble
+ * the content box IS the mask, so the same translate slid the already-cropped
+ * picture aside and uncovered the backdrop, and never changed which part of
+ * the camera frame the bubble showed. Same stored fields, new meaning here:
+ * the pan moves a crop window that is held so the footage covers the bubble.
+ *
+ * Per axis, the pan is spent first on the cover excess (`object-fit: cover`
+ * of `sourceAspect` into the slot, as `pictureZoomStateFor` models it): a
+ * change Δp of object-position moves the footage −Δp·excess content pixels,
+ * which every scale in the transform multiplies on screen, so a positive pan
+ * (picture moves right/down) LOWERS the position. Held to [0, 1]. What is left
+ * becomes a translate, held so the transformed content box still covers the
+ * slot: the box is scaled by the head zoom about its own origin, then by
+ * `scale` about `CONTENT_TRANSFORM_ORIGIN`, exactly as `contentTransformFor`
+ * writes it. Net effect: the picture follows the pan pixel for pixel until it
+ * meets the footage's edge, then stops.
+ *
+ * Two cases keep today's behaviour exactly. A zero pan on an axis returns that
+ * axis untouched (not a clamped 0, which could come out as −0 or 1e−14 and
+ * change the transform string). A total scale under 1 already shows backdrop
+ * around the picture (user scale below 1 is the "show more of the source"
+ * escape hatch), so there is no cover to hold and the pan stays a translate.
+ *
+ * `picture` must be the head zoom solved for the UNPANNED slot: re-solving it
+ * against the panned window would re-centre the face and cancel the pan. Not
+ * modelled, as in `pictureZoomStateFor`: an active framing crop box
+ * (`activeCropBox`), which spends object-position on its own box.
+ */
+export function pipPanFor(
+  slot: Pick<VideoSlotState, "rect" | "objectPosX" | "objectPosY">,
+  sourceAspect: number,
+  /** The idle zoom × the user's scale: `contentTransformFor`'s `scale()` term. */
+  scale: number,
+  picture: PictureZoom | null,
+  dx: number,
+  dy: number,
+  frame: FrameSize = PORTRAIT_FRAME,
+): PipPan {
+  const w = slot.rect.w * frame.width;
+  const h = slot.rect.h * frame.height;
+  // `contentTransformFor` drops a scale-1 head zoom; so does the clamp.
+  const head = picture && picture.scale !== 1 ? picture : { scale: 1, dx: 0, dy: 0 };
+  const total = scale * head.scale;
+  const pass: PipPan = { objectPosX: slot.objectPosX, objectPosY: slot.objectPosY, dx, dy };
+  if (total < 1) return pass;
+  const axis = (size: number, shown: number, pos: number, origin: number, headD: number, pan: number) => {
+    if (pan === 0) return { pos, t: 0 };
+    const excess = shown - size;
+    let nextPos = pos;
+    let rest = pan;
+    if (excess > 0) {
+      nextPos = Math.min(Math.max(pos - pan / (excess * total), 0), 1);
+      rest = pan + (nextPos - pos) * excess * total;
+    }
+    // The box's near edge on screen: origin·(1 − total) + scale·headD·(1 − head),
+    // written so that at total 1 with no head zoom it is exactly 0.
+    const near = origin * (1 - total) + scale * headD * (1 - head.scale);
+    const lo = size * (1 - total) - near;
+    const hi = -near;
+    // `+ 0` turns the −0 that the [0, −0] interval at total 1 yields into 0.
+    return { pos: nextPos, t: Math.min(Math.max(rest, lo), hi) + 0 };
+  };
+  const x = axis(
+    w,
+    Math.max(w, h * sourceAspect),
+    slot.objectPosX,
+    CONTENT_TRANSFORM_ORIGIN.x * w,
+    head.dx,
+    dx,
+  );
+  const y = axis(
+    h,
+    Math.max(h, w / sourceAspect),
+    slot.objectPosY,
+    CONTENT_TRANSFORM_ORIGIN.y * h,
+    head.dy,
+    dy,
+  );
+  return { objectPosX: x.pos, objectPosY: y.pos, dx: x.t, dy: y.t };
+}
+
 /**
  * Caption anchor at time t. Resolved from the settled layout at the line's
  * start (never animated — a caption sliding mid-word reads as a bug).

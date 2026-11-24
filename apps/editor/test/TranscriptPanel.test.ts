@@ -318,6 +318,7 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
     onDeleteWords,
     onFrame,
     toPlayerSec,
+    onSelectionChange,
   }: {
     lines: CaptionLine[];
     /** Pristine pre-edit lines when they differ from the live ones — the
@@ -334,6 +335,8 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
      * follow-up); absent takes the panel's own identity default, exactly
      * like a session with no veto. */
     toPlayerSec?: (sec: number) => number;
+    /** Spy on what the panel reports to App (the storyboard's selection). */
+    onSelectionChange?: (words: { srcStart: number }[] | null, reason?: "away") => void;
   }) {
     const edits = useEdits();
     // A fake player rather than a null ref: the seek-suppression assertion
@@ -381,6 +384,7 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
         },
         width: 300,
         ...(toPlayerSec ? { toPlayerSec } : {}),
+        ...(onSelectionChange ? { onSelectionChange } : {}),
       }),
     );
   }
@@ -537,6 +541,176 @@ describe("TranscriptPanel selection and caption word hide (§59b revisited)", ()
     expect(menu()).not.toBeNull();
     await keydown("Escape");
     expect(menu()).toBeNull();
+  });
+
+  // Clearing by clicking (2026-11-21): every click-to-seek selects, so a
+  // selection the panel could only drop on Escape stuck in the storyboard
+  // for good ("Selected in the transcript: “has”").
+  const body = () => container.querySelector<HTMLElement>('[data-testid="transcript-body"]')!;
+  const press = async (el: Element, init: MouseEventInit = {}) => {
+    await act(async () => {
+      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, ...init }));
+      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, ...init }));
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ...init }));
+    });
+  };
+
+  it("the bar's ✕ clears the selection, like Escape", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b", "c"])] }));
+    });
+    await click(word(0));
+    await click(word(2), true);
+    const clear = container.querySelector<HTMLButtonElement>('[data-testid="transcript-selection-clear"]')!;
+    expect(clear).not.toBeNull();
+    expect(clear.getAttribute("aria-label")).toBe("Clear selection");
+    expect(clear.title).toBe("Clear selection (Esc)");
+    // After the count: the last thing on the bar.
+    expect(menu()!.lastElementChild).toBe(clear);
+    await press(clear);
+    expect(menu()).toBeNull();
+  });
+
+  it("clicking the one selected word again clears it, and still seeks", async () => {
+    const seeks: number[] = [];
+    await act(async () => {
+      root.render(
+        React.createElement(Harness, {
+          lines: [line(["a", "b", "c"])],
+          seekTo: (f: number) => seeks.push(f),
+        }),
+      );
+    });
+    await click(word(1));
+    expect(menu()).not.toBeNull();
+    await click(word(1));
+    expect(menu()).toBeNull();
+    expect(seeks).toEqual([Math.ceil(0.3 * 30), Math.ceil(0.3 * 30)]);
+    // And a third click selects it again.
+    await click(word(1));
+    expect(menu()!.textContent).toContain("1 word");
+  });
+
+  it("a double-click's second click keeps the word selected (the retype opens over it)", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b"])] }));
+    });
+    await act(async () => {
+      word(1).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+      word(1).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 2 }));
+    });
+    expect(menu()!.textContent).toContain("1 word");
+  });
+
+  it("a click on a word inside a multi-word selection narrows to it, as before", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b", "c"])] }));
+    });
+    await click(word(0));
+    await click(word(2), true);
+    await click(word(1));
+    expect(menu()!.textContent).toContain("1 word");
+  });
+
+  it("a click on the body's empty space clears the selection", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b", "c"])] }));
+    });
+    await click(word(1));
+    expect(menu()).not.toBeNull();
+    // A shift-click there is not a clear.
+    await press(body(), { shiftKey: true });
+    expect(menu()).not.toBeNull();
+    await press(body());
+    expect(menu()).toBeNull();
+  });
+
+  it("a click on the bar's own surface or its count does not clear", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b", "c"])] }));
+    });
+    await click(word(1));
+    await press(menu()!);
+    expect(menu()).not.toBeNull();
+    await press(menu()!.querySelector("span")!);
+    expect(menu()).not.toBeNull();
+  });
+
+  it("a drag-select that starts in a gap keeps what it selected — the click that ends it is not a clear", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b", "c"])] }));
+    });
+    const range = document.createRange();
+    range.setStart(word(0).firstChild!, 0);
+    range.setEnd(word(1).firstChild!, 1);
+    document.getSelection()!.removeAllRanges();
+    document.getSelection()!.addRange(range);
+    // Pressed on the gap (the body), released over the words: the click's
+    // target is the body, the two presses' common ancestor.
+    await press(body(), { detail: 1 });
+    expect(menu()!.textContent).toContain("2 words");
+  });
+
+  it("reports a click-away as `away`, every other clear without a reason, and nothing at mount", async () => {
+    const reports: Array<[number[] | null, string | undefined]> = [];
+    const onSelectionChange = (w: { srcStart: number }[] | null, reason?: "away") =>
+      reports.push([w === null ? null : w.map((x) => x.srcStart), reason]);
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b", "c"])], onSelectionChange }));
+    });
+    // Mounting with no selection is not a clear: App would forget the
+    // selection it holds whenever the panel remounts.
+    expect(reports).toEqual([]);
+    await click(word(1));
+    expect(reports).toEqual([[[11], undefined]]);
+    // A press outside the panel (the Storyboard button) keeps App's copy.
+    await act(async () => {
+      document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    expect(menu()).toBeNull();
+    expect(reports.at(-1)).toEqual([null, "away"]);
+    // Escape is the author asking to forget it.
+    await click(word(2));
+    await keydown("Escape");
+    expect(reports.slice(-2)).toEqual([
+      [[12], undefined],
+      [null, undefined],
+    ]);
+    // The toggle, the ✕ and the empty-space click are too.
+    await click(word(0));
+    await click(word(0));
+    expect(reports.at(-1)).toEqual([null, undefined]);
+    await click(word(0));
+    await press(container.querySelector('[data-testid="transcript-selection-clear"]')!);
+    expect(reports.at(-1)).toEqual([null, undefined]);
+    await click(word(0));
+    await press(body());
+    expect(reports.at(-1)).toEqual([null, undefined]);
+    // A null after a null is not reported again.
+    const n = reports.length;
+    await keydown("Escape");
+    await press(body());
+    expect(reports).toHaveLength(n);
+  });
+
+  it("a word-count change drops the panel's selection but reports it as `away`: App's copy is source-keyed and survives a render", async () => {
+    const reports: Array<[number[] | null, string | undefined]> = [];
+    const onSelectionChange = (w: { srcStart: number }[] | null, reason?: "away") =>
+      reports.push([w === null ? null : w.map((x) => x.srcStart), reason]);
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b", "c"])], onSelectionChange }));
+    });
+    await click(word(2));
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b"])], onSelectionChange }));
+    });
+    expect(menu()).toBeNull();
+    // Exactly the selection, then the clear: the commit that swapped the list
+    // must not report the old indices sliced out of the NEW words.
+    expect(reports).toEqual([
+      [[12], undefined],
+      [null, "away"],
+    ]);
   });
 
   it("Delete hands App a PLAN — SOURCE-keyed words, LIVE text as `was`, prev-end clamp", async () => {
@@ -2472,6 +2646,30 @@ describe("TranscriptPanel native drag-select", () => {
     expect(word(2).style.background).toBe("");
   });
 
+  it("a BACKWARD shift-click extends from the anchor, though the browser leaves a native range for it", async () => {
+    await act(async () => {
+      root.render(React.createElement(Harness, { lines: [line(["a", "b", "c", "d", "e"])] }));
+    });
+    // Click word 3: the selection's anchor.
+    await act(async () => {
+      word(3).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    // Shift-click word 1 as Chromium does it: the caret of the last click
+    // extended back to word 1 (anchor at 3, focus at 1), a shift mouseup on
+    // the body, then the word's shift click.
+    const selection = document.getSelection()!;
+    selection.removeAllRanges();
+    selection.setBaseAndExtent(word(3).firstChild!, 0, word(1).firstChild!, 0);
+    await act(async () => {
+      body().dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, detail: 1, shiftKey: true }));
+    });
+    await act(async () => {
+      word(1).dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true }));
+    });
+    expect(menu()!.textContent).toContain("3 words");
+    expect(document.getSelection()!.rangeCount).toBe(0);
+  });
+
   it("a drag that ends where it started (COLLAPSED) changes nothing — the click path seeks", async () => {
     await act(async () => {
       root.render(React.createElement(Harness, { lines: [line(["a", "b", "c"])] }));
@@ -3028,7 +3226,7 @@ describe("TranscriptPanel bar chrome and placement", () => {
     ).toBe("auto");
   });
 
-  it("orders the row Edit · Timing · Delete ▾, with the count LAST", async () => {
+  it("orders the row Edit · Timing · Delete ▾ · count, then the ✕ that dismisses it", async () => {
     await act(async () => {
       root.render(React.createElement(Harness, { lines: [line(["a", "b"])] }));
     });
@@ -3038,9 +3236,15 @@ describe("TranscriptPanel bar chrome and placement", () => {
       "Edit",
       "Timing",
       "Delete ▾",
+      "✕",
     ]);
-    // The muted count is a readout, not an action — it trails the actions.
-    expect(bar.lastElementChild!.textContent).toBe("1 word");
+    // The muted count is a readout, not an action — it trails the actions;
+    // only the ✕ (2026-11-21), behind a divider, comes after it, because it
+    // dismisses the bar rather than acting on the words.
+    const tail = Array.from(bar.children).slice(-3);
+    expect(tail[0]!.textContent).toBe("1 word");
+    expect(tail[1]!.getAttribute("aria-hidden")).toBe("true");
+    expect(tail[2]!.getAttribute("data-testid")).toBe("transcript-selection-clear");
   });
 
   it("centres the bar on the selection's union and clamps it inside the pane", async () => {

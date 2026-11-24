@@ -134,6 +134,25 @@ describe("orphanEditLine", () => {
     expect(line).not.toContain("dropped");
   });
 
+  it("a parked take half says its split moved, not that its words left (take-framing-identity P2)", () => {
+    // `rekeyTakeHalves` parks a half whose split landed in a piece that
+    // already had an edit; its words are still in the plan.
+    expect(orphanEditLine("take-2@66055#orphaned")).toBe(
+      "  ⚠ edit for take-2@66055 is parked — its split moved to a piece that already has an edit",
+    );
+    expect(orphanEditLine("scene-3#orphaned")).toBe(
+      "  ⚠ edit for scene-3 is parked — its words are not in this plan",
+    );
+    // A parked whole take (no `@`) and a parked kept-block half are not
+    // `rekeyTakeHalves`' parks, so they keep the remap's sentence.
+    expect(orphanEditLine("take-2#orphaned")).toContain("its words are not in this plan");
+    expect(orphanEditLine("take-kept-1@s#orphaned")).toContain("its words are not in this plan");
+    // Never parked: still the dropped sentence.
+    expect(orphanEditLine("take-2@66055")).toBe(
+      "  ⚠ edit for take-2@66055 dropped — the plan no longer has that scene",
+    );
+  });
+
   it("a parked entry in the doc reaches the warning loop as its parked key", () => {
     // End-to-end through applyOverrides: the parked key IS what the loop
     // receives, so the special case above is reachable, not decorative.
@@ -173,7 +192,7 @@ describe("produce's remap wiring (source-text guard)", () => {
     const remapAt = src.indexOf("remapSceneOverrides(overrideDoc, assembled)");
     const firstApplyAt = src.indexOf("applyOverrides(routed.cues");
     const dropHiddenAt = src.indexOf("splitThenDropHidden(editedCues");
-    const splitAt = src.indexOf("splitCues(filled");
+    const splitAt = src.indexOf("splitCuesWithLanding(filled");
     const applyAt = src.indexOf("applyOverrides(split");
     expect(remapAt).toBeGreaterThan(-1);
     expect(remapAt).toBeLessThan(firstApplyAt);
@@ -186,7 +205,144 @@ describe("produce's remap wiring (source-text guard)", () => {
     expect(src).toMatch(/console\.log\(orphanEditLine\(id\)\)/);
   });
 
+  it("re-keys take halves on the split's landing and adopts the doc before the final join (take-framing-identity P2)", () => {
+    // Three ways to compute the re-key and still render the stale keys: drop
+    // `takeRekey.doc`, keep the pre-rekey `pinnedDoc` the final pass reads,
+    // or run either after `applyOverrides(split`. Each typechecks and prints
+    // truthful notes. `splitLanded` is the landing map (`landed` was taken).
+    const splitAt = src.indexOf("splitCuesWithLanding(filled");
+    // Two arguments since split-positions-by-source D4 (step 7's `points`
+    // and `graphicWindows` went), so the trailing comma is optional.
+    const rekeyAt = src.search(/rekeyTakeHalves\(\s*overrideDoc,\s*splitLanded\s*,?\s*\)/);
+    const adoptAt = src.indexOf("overrideDoc = takeRekey.doc");
+    const pinAt = src.indexOf("pinnedDoc = resolveSrcTimingPins(overrideDoc", adoptAt);
+    const applyAt = src.indexOf("applyOverrides(split");
+    expect(splitAt).toBeGreaterThan(-1);
+    expect(rekeyAt).toBeGreaterThan(splitAt);
+    expect(adoptAt).toBeGreaterThan(rekeyAt);
+    expect(pinAt).toBeGreaterThan(adoptAt);
+    expect(applyAt).toBeGreaterThan(pinAt);
+  });
+
+  it("pass 1 cuts graphics at the live `at` points and pass 2 takes only the splits that did not land (split-positions-by-source D2, R8-2)", () => {
+    // Each claim typechecks wrong: the default points (inert splits cut a
+    // graphic), the root-checking `landed` (a chained split's hidden halves
+    // still count), the unfiltered set in pass 2 (a drifted split cuts
+    // twice, the bug), or the filter computed and left unused.
+    expect(src).toMatch(/splitThenDropHidden\(editedCues, overrideDoc, pass1SplitPoints\(overrideDoc\.splits, map\)\)/);
+    const dropAt = src.indexOf("dropOverlappingAdded(shownCues)");
+    const survAt = src.search(/const pass1Surviving = survivingLandings\(pass1LandedHost, visibleCues\)/);
+    const filterAt = src.search(/const notLandedInPass1 = overrideDoc\.splits\.filter\(\(s\) => !pass1Surviving\.has\(s\.id\)\)/);
+    const resolveAt = src.indexOf("resolveSplitPoints(notLandedInPass1, map)");
+    const splitAt = src.indexOf("splitCuesWithLanding(filled, resolvedSplits.points)");
+    expect(dropAt).toBeGreaterThan(-1);
+    expect(survAt).toBeGreaterThan(dropAt);
+    expect(filterAt).toBeGreaterThan(survAt);
+    expect(resolveAt).toBeGreaterThan(filterAt);
+    expect(splitAt).toBeGreaterThan(resolveAt);
+    // The only `resolveSplitPoints(` call: no second, unfiltered pass.
+    expect(src.match(/resolveSplitPoints\(/g)).toHaveLength(1);
+  });
+
+  it("names the one-time double cut, and reconciles the anchors after the re-key and before the migration, adopting the doc (R7-1, R7-4)", () => {
+    const splitAt = src.indexOf("splitCuesWithLanding(filled, resolvedSplits.points)");
+    const notesAt = src.search(/doubleCutNotes\(overrideDoc\.splits, pass1Surviving, pass1LandedHost, filled, map\)/);
+    const rekeyAt = src.search(/rekeyTakeHalves\(\s*overrideDoc,\s*splitLanded\s*,?\s*\)/);
+    const reconcileAt = src.search(
+      /reconcileSplitAnchors\(\s*overrideDoc,\s*pass1Surviving,\s*splitLanded,\s*resolvedSplits\.points,\s*editedCues\.map\(/,
+    );
+    const adoptAt = src.indexOf("overrideDoc = splitReconcile.doc");
+    const pinAt = src.indexOf("pinnedDoc = resolveSrcTimingPins(overrideDoc", adoptAt);
+    const migrateAt = src.indexOf("migrateTakeLooks(");
+    expect(notesAt).toBeGreaterThan(splitAt);
+    expect(rekeyAt).toBeGreaterThan(notesAt);
+    expect(reconcileAt).toBeGreaterThan(rekeyAt);
+    expect(adoptAt).toBeGreaterThan(reconcileAt);
+    expect(pinAt).toBeGreaterThan(adoptAt);
+    expect(migrateAt).toBeGreaterThan(pinAt);
+    expect(src).toMatch(/const splitsReconciled = splitReconcile\.changed/);
+  });
+
+  it("a split reconcile earns the sanctioned write without spending the `.bak`, and the line says so (R8-3)", () => {
+    const gate = /if \(([^{]*)\)\s*\{\s*await writeOverrideDoc\(overridesPath, overrideDoc, \{ refreshBackup: cutResult\.changed \}\)/.exec(src);
+    expect(gate).not.toBeNull();
+    expect(gate![1]).toMatch(/\|\|\s*splitsReconciled\b/);
+    const line = /console\.log\(\s*overridesWriteLine\(\{([^}]*)\}\)/.exec(src);
+    expect(line![1]).toMatch(/\bsplitsReconciled\b/);
+  });
+
+  it("resolves take looks after the final join, gated on the marker, and feeds the item times (take-looks-by-source L2, R7-6)", () => {
+    // Three ways to compute the looks and still render the id-keyed ones:
+    // run the pass before `applyOverrides(split` (the merge then writes the
+    // stale fields back over it), hand `resolveItemTimings` the unlooked
+    // cues, or run it ungated, which strips every legacy doc's framing.
+    const applyAt = src.indexOf("applyOverrides(split");
+    const lookAt = src.indexOf("applyTakeLooks(");
+    const itemsAt = src.indexOf("resolveItemTimings(lookedCues,");
+    expect(applyAt).toBeGreaterThan(-1);
+    expect(lookAt).toBeGreaterThan(applyAt);
+    expect(itemsAt).toBeGreaterThan(lookAt);
+    expect(src).toMatch(
+      /const lookedCues =\s*overrideDoc\.takeLooks !== undefined\s*\?\s*applyTakeLooks\(overriddenCues, overrideDoc\.takeLooks, map\)\s*:\s*overriddenCues;/,
+    );
+  });
+
+  it("migrates take looks after the final join and before the look pass, and adopts the doc (take-looks-by-source L3, R7-6)", () => {
+    // Three ways to compute the migration and still render or write the
+    // legacy doc: run it before `applyOverrides(split` (its pieces are not
+    // this run's yet — N3), after `applyTakeLooks(` (the marker this run
+    // sets never reaches the gate, so the first run renders the id-keyed
+    // fields and the next one SETs them from source time), or drop
+    // `migration.doc`, which typechecks and prints a truthful note.
+    const applyAt = src.indexOf("applyOverrides(split");
+    const migrateAt = src.search(/migrateTakeLooks\(\s*overrideDoc,\s*overriddenCues,\s*map,\s*ownFramingSplitIds\(overrideDoc\.splits\),?\s*\)/);
+    const adoptAt = src.indexOf("overrideDoc = migration.doc");
+    const lookAt = src.indexOf("applyTakeLooks(");
+    expect(applyAt).toBeGreaterThan(-1);
+    expect(migrateAt).toBeGreaterThan(applyAt);
+    expect(adoptAt).toBeGreaterThan(migrateAt);
+    expect(lookAt).toBeGreaterThan(adoptAt);
+    expect(src).toMatch(/const takeLooksMigrated = migration\.changed/);
+  });
+
+  it("a take-look migration earns the sanctioned write without spending the `.bak` (L3 rule 7)", () => {
+    const gate = /if \(([^{]*)\)\s*\{\s*await writeOverrideDoc\(overridesPath, overrideDoc, \{ refreshBackup: cutResult\.changed \}\)/.exec(src);
+    expect(gate).not.toBeNull();
+    expect(gate![1]).toMatch(/\|\|\s*takeLooksMigrated\b/);
+  });
+
+  it("the write line is told about the take-look migration (take-looks-by-source final review)", () => {
+    // Without the flag the line falls back to whatever else fired — on a
+    // migration-only run that was a false "caption keys" claim (`looks1.log`).
+    const line = /console\.log\(\s*overridesWriteLine\(\{([^}]*)\}\)/.exec(src);
+    expect(line).not.toBeNull();
+    expect(line![1]).toMatch(/\btakeLooksMigrated\b/);
+    expect(line![1]).toMatch(/cutChanged:\s*cutResult\.changed/);
+  });
+
+  it("a take-half re-key earns the sanctioned write without spending the `.bak`", () => {
+    expect(src).toMatch(/const splitHalvesChanged = takeRekey\.changed/);
+    const gate = /if \(([^{]*)\)\s*\{\s*await writeOverrideDoc\(overridesPath, overrideDoc, \{ refreshBackup: cutResult\.changed \}\)/.exec(src);
+    expect(gate).not.toBeNull();
+    expect(gate![1]).toContain("splitHalvesChanged");
+  });
+
   it("the sanctioned write persists the `overrideDoc` binding the remap reassigned, not a snapshot", () => {
     expect(src).toMatch(/writeOverrideDoc\(overridesPath,\s*overrideDoc,/);
+  });
+
+  it("the take fill's clip starts are the ones written to render-props (take-framing-identity P0, R5-S5)", () => {
+    // Two halves of one claim: the fill numbers takes from `takeClipStarts`,
+    // and the editor reads that same binding back. An inlined list at either
+    // site typechecks and lets the editor's `take-N` drift from the render's.
+    expect(src).toContain("clipStarts: takeClipStarts");
+    const propsAt = src.indexOf("const props = {");
+    const spansAt = src.indexOf("spans: [...map.spans]", propsAt);
+    const propsEnd = src.indexOf("\n  };", spansAt);
+    const keyAt = src.indexOf("takeClipStarts,", spansAt);
+    expect(propsAt).toBeGreaterThan(-1);
+    expect(spansAt).toBeGreaterThan(propsAt);
+    expect(keyAt).toBeGreaterThan(spansAt);
+    expect(keyAt).toBeLessThan(propsEnd);
   });
 });

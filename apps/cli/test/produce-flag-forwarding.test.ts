@@ -155,6 +155,27 @@ describe("produce flag forwarding", () => {
     expect(produceSpy.mock.calls[0]![1]).toMatchObject({ whisperBackend: "remote" });
   });
 
+  it("--storyboard implies --produce, never renders, and opens the editor (§168)", async () => {
+    offerEditorSpy.mockClear();
+    const opts = await runProduce(["produce", "in.mp4", "--storyboard"]);
+    expect(opts).toMatchObject({ storyboard: true, produce: true, render: false });
+    expect(opts.assets).toBeUndefined();
+    expect(offerEditorSpy.mock.calls[0]![1]).toMatchObject({ flag: true });
+    const plain = await runProduce(["produce", "in.mp4", "--no-render"]);
+    expect(plain).toMatchObject({ storyboard: false, produce: false });
+  });
+
+  it("--storyboard honours a typed --no-open-editor, unlike --review", async () => {
+    offerEditorSpy.mockClear();
+    await runProduce(["produce", "in.mp4", "--storyboard", "--no-open-editor"]);
+    expect(offerEditorSpy.mock.calls[0]![1]).toMatchObject({ flag: false });
+  });
+
+  it("--assets reaches produce absolute", async () => {
+    const opts = await runProduce(["produce", "in.mp4", "--storyboard", "--assets", "art", "--no-open-editor"]);
+    expect(opts.assets).toBe(resolve(process.env.INIT_CWD ?? process.cwd(), "art"));
+  });
+
   it("a typed --editor-port is pinned, and reaches the offer", async () => {
     offerEditorSpy.mockClear();
     await runProduce(["produce", "in.mp4", "--no-render", "--open-editor", "--editor-port", "5200"]);

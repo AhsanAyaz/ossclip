@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BulletListProps,
   ChatMockProps,
   FlowDiagramProps,
   StrikethroughRevealProps,
@@ -9,7 +10,8 @@ import { flowDelays } from "../src/components/FlowDiagram";
 import { chatDelays } from "../src/components/ChatMock";
 import { terminalDelays } from "../src/components/TerminalMock";
 import { strikeRowDelays } from "../src/components/StrikethroughReveal";
-import { enterFrames } from "../src/anim";
+import { bulletDelays, bulletEnterStyle } from "../src/components/BulletList";
+import { enterFrames, pop, rise } from "../src/anim";
 
 /**
  * The four staggered components on the shared schedule (reveal-timing spec
@@ -160,5 +162,40 @@ describe("StrikethroughReveal", () => {
       { row: LATEST, strike: LATEST },
       { row: LATEST, strike: LATEST },
     ]);
+  });
+});
+
+describe("BulletList (graphic-editor-modal §1)", () => {
+  const props = BulletListProps.parse({ title: "NEED", items: ["one", "two", "three"] });
+
+  it("legacy: item i*7 — with no timing, or timing with nothing reveal-related", () => {
+    // Every BulletList rendered before Part 1 (AG1): no `itemAtSec` (the
+    // assembler and the swap never give it one without itemWords) and no
+    // reveal props.
+    expect(bulletDelays(props, FPS)).toEqual([0, 7, 14]);
+    expect(bulletDelays(props, FPS, timed(undefined))).toEqual([0, 7, 14]);
+  });
+
+  it("synced: items on their words", () => {
+    expect(bulletDelays(props, FPS, timed([10, 11, 12.5]))).toEqual([0, 30, 75]);
+  });
+
+  it("an entrance alone does not re-time the items — it is a style", () => {
+    const fade = BulletListProps.parse({ items: ["one", "two", "three"], entrance: "fade" });
+    expect(bulletDelays(fade, FPS, timed(undefined))).toEqual([0, 7, 14]);
+  });
+
+  it("an author's reveal prop takes effect, as on the other reveal components (AG1's exception)", () => {
+    const paced = BulletListProps.parse({ items: ["one", "two", "three"], reveal: "paced" });
+    const delays = bulletDelays(paced, FPS, timed(undefined));
+    expect(delays).not.toEqual([0, 7, 14]);
+    expect(delays[0]).toBe(0);
+  });
+
+  it("an unset entrance keeps the bullet's own rise; a set one is the shared style", () => {
+    // Unset is `rise` for BulletList (its style since R16 §67), not the
+    // shared default `pop` — an unset entrance must render as before.
+    expect(bulletEnterStyle(undefined, 0.4)).toEqual(rise(0.4, 26));
+    expect(bulletEnterStyle("pop", 0.4)).toEqual(pop(0.4));
   });
 });

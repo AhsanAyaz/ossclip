@@ -12,6 +12,8 @@ import type { Scene, SceneCue } from "../src/scene-schema";
 import type { Transcript } from "../src/schema";
 import type { Segment } from "../src/schema";
 import { mapFromKeptSpans, TimeMap } from "../src/timemap";
+import { applyOverrides, OverrideDocSchema } from "../src/overrides";
+import { fillPlainCues } from "../src/fill";
 
 /**
  * Cut review step 4: the editor's live post-veto preview. The proposal below
@@ -721,5 +723,80 @@ describe("retimeForPreview keeps a clip at its own length (explainer plan Task 7
     );
     expect(fields.sceneCues).toEqual([]);
     expect(reports).toContain('scene "scene-0" removed from the live preview by a cut');
+  });
+});
+
+describe("a pinned clip keeps its pin, never past the clip's played length (clip-block cap)", () => {
+  // Same clocks as the describe above: a veto revives source 5..7, so old
+  // output 5..8 lands at 7..10 on the new clock and nothing before 5 moves.
+  const oldMap = mapFromKeptSpans(oldSpans);
+  const newMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+  const clip = (startSec: number, endSec: number, speed = 1): SceneCue => ({
+    id: "shot-s2",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4, speed, gainDb: -13, muted: false },
+    startSec,
+    endSec,
+    pinned: true,
+  });
+  const props = (cues: SceneCue[]): RetimeablePreviewProps => ({
+    outputDurationSec: 8,
+    captionLines: [],
+    sceneCues: cues,
+  });
+
+  it("a trimmed pin stays trimmed: 1.5 s of a 4 s clip does not grow back to 4 s", () => {
+    // Old 5.5..7 is new 7.5..9. Re-deriving the end from the clip's length
+    // ran it to the video's end (10) — the snap-back, the other way round.
+    const { fields } = retimeForPreview(props([clip(5.5, 7)]), oldMap, newMap);
+    expect(fields.sceneCues[0]!.startSec).toBeCloseTo(7.5, 9);
+    expect(fields.sceneCues[0]!.endSec).toBeCloseTo(9, 9);
+  });
+
+  it("a pin longer than the played length is capped at it", () => {
+    // 4 s at 2x plays 2 s; the pin asks for 4.
+    const { fields } = retimeForPreview(props([clip(0.5, 4.5, 2)]), oldMap, newMap);
+    expect(fields.sceneCues[0]!.endSec).toBeCloseTo(2.5, 9);
+  });
+
+  it("a pin across the revived pause is capped at the clip's length, not stretched", () => {
+    // Old 3..6 remaps to new 3..8; the clip has 4 s of frames.
+    const { fields } = retimeForPreview(props([clip(3, 6)]), oldMap, newMap);
+    expect(fields.sceneCues[0]!.endSec).toBeCloseTo(7, 9);
+  });
+
+  it("a pinned card still takes its pin's remapped end", () => {
+    const card: SceneCue = { ...clip(3, 6), component: "TitleCard", props: { title: "HI" } };
+    const { fields } = retimeForPreview(props([card]), oldMap, newMap);
+    expect(fields.sceneCues[0]!.endSec).toBeCloseTo(8, 9);
+  });
+
+  it("the editor's chain: a long stored pin leaves no hole before the take after it", () => {
+    // The author's numbers: a 4.64 s clip at 2.98x plays 1.557 s, pinned to
+    // a 4.7 s window. The editor merges, fills the plain takes, THEN
+    // retimes (App.tsx's `live` memo). The take after the clip is filled
+    // against the stored window; a preview that shows the clip shorter than
+    // that left the take starting 3 s after the clip ended — the
+    // neighbour that moved when the drag was released.
+    const base: SceneCue = {
+      id: "shot-s2",
+      kind: "graphic",
+      layout: "full-bleed",
+      component: "ClipScene",
+      props: { src: "clips/a.webm", durationSec: 4.64, speed: 1, gainDb: -13, muted: false },
+      startSec: 0.2,
+      endSec: 4.84,
+    };
+    const doc = OverrideDocSchema.parse({
+      scenes: { "shot-s2": { props: { speed: 2.98 }, timing: { startSec: 0.2, endSec: 4.9 } } },
+    });
+    const merged = applyOverrides([base], doc).cues;
+    const filled = fillPlainCues(merged, { outputDurationSec: 8, clipStarts: oldSpans.map((s) => s.outIn) });
+    const { fields } = retimeForPreview(props(filled), oldMap, newMap);
+    const shot = fields.sceneCues.find((c) => c.id === "shot-s2")!;
+    const after = fields.sceneCues.find((c) => c.kind === "plain" && c.startSec >= shot.startSec)!;
+    expect(shot.endSec).toBeCloseTo(0.2 + 4.64 / 2.98, 9);
+    expect(after.startSec).toBeCloseTo(shot.endSec, 9);
   });
 });

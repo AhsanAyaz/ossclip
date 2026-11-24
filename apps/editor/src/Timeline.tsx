@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PlayerRef } from "@remotion/player";
-import type { KeptSpan, SceneCue, Segment } from "@ossclip/core/browser";
+import type { KeptSpan, SceneCue, Segment, TimeMap } from "@ossclip/core/browser";
 import { chipMenuLabels, removalSeams, type RemovalSeam } from "./cleanup";
 import { ContextMenu } from "./ContextMenu";
 import {
@@ -25,6 +25,7 @@ import {
   type SfxPlaybackMarker,
 } from "./sfxPlayback";
 import { blurTypingElement, type Selection } from "./Overlay";
+import { pieceSelection, selectedPiece } from "./takeLookTarget";
 
 /** One `doc.cuts` entry, as far as the Timeline needs it — mirrors
  * `OverrideDoc["cuts"][number]` structurally without importing the whole
@@ -79,6 +80,14 @@ interface TimelineProps {
   selection: Selection | null;
   onSelect: (selection: Selection | null) => void;
   edits: ReturnType<typeof useEdits>;
+  /**
+   * The clock `cues` are on (`liveRetimed.cueClock`, take-looks-by-source
+   * R6-4). In look mode a take block is selected by the footage it plays,
+   * and the selected block is the one `selectedPiece` resolves on this
+   * clock — carved lead and tail share an id, so an id match would light
+   * both. Defaults to null; a legacy doc never reads it.
+   */
+  cueClock?: TimeMap | null;
   /** The served video URL (R20 §97) — feeds the take filmstrips. Optional:
    * without it (or when the file 404s) blocks simply stay flat panels. */
   videoSrc?: string;
@@ -100,6 +109,10 @@ interface TimelineProps {
    * legacy old-clock write when this is absent).
    */
   pinSourceSec?: ((sec: number) => number) | null;
+  /** Whether a SOURCE second plays on the clock `pinSourceSec` inverts, so
+   * the pin's ms rounding never lands an edge in removed material
+   * (`pinTiming`'s `keptSrc`). Absent: plain rounding. */
+  pinKeptSrc?: (src: number) => boolean;
   /**
    * OLD-clock output seconds → the live (player) clock this ruler draws
    * (cut review step 4 follow-up, the struck band's DISPLAY half): a
@@ -459,9 +472,11 @@ export const Timeline: React.FC<TimelineProps> = ({
   selection,
   onSelect,
   edits,
+  cueClock = null,
   videoSrc,
   toSourceSec,
   pinSourceSec = null,
+  pinKeptSrc,
   toLive = (sec: number): number => sec,
   onRevived,
   sfxMarkers = null,
@@ -479,6 +494,13 @@ export const Timeline: React.FC<TimelineProps> = ({
   onOpenSuggestion,
 }) => {
   const trackRef = useRef<HTMLDivElement>(null);
+  // Look mode (take-looks-by-source L3 marker, R6-4): a migrated doc, where a
+  // take selection carries its footage's extent. `lookPiece` is the cue it
+  // resolves to — undefined outside look mode or for an id-only selection,
+  // which keep the id match.
+  const lookMode = edits.doc.takeLooks !== undefined;
+  const lookPiece =
+    lookMode && selection?.pieceExtent !== undefined ? selectedPiece(cues, selection, cueClock) : undefined;
   const dragRef = useRef<DragState | null>(null);
   const scrubbingRef = useRef(false);
   const blockPressRef = useRef<BlockPress | null>(null);
@@ -681,10 +703,18 @@ export const Timeline: React.FC<TimelineProps> = ({
     // pointer did. The follow is for selections made WITHOUT a pointer on
     // the strip (⌥/⌘+arrows); a pressed block is already under the pointer.
     if (scrubbingRef.current || blockPressRef.current !== null || dragRef.current !== null) return;
+    // Look mode (R6-4): the block of the piece the selection resolves to,
+    // by its start as well as its id — the lead's block shares the testid.
+    // `cues` and `cueClock` are read from the render that changed the
+    // selection, which is the one this follow is for.
+    const piece = lookMode && selection.pieceExtent !== undefined ? selectedPiece(cues, selection, cueClock) : null;
     const block = scrollerRef.current?.querySelector<HTMLElement>(
-      `[data-testid="timeline-block-${selection.sceneId}"]`,
+      piece !== null
+        ? `[data-testid="timeline-block-${piece.id}"][data-piece-start="${piece.startSec.toFixed(3)}"]`
+        : `[data-testid="timeline-block-${selection.sceneId}"]`,
     );
     block?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection]);
 
   const seekTrack = useCallback(
@@ -960,7 +990,7 @@ export const Timeline: React.FC<TimelineProps> = ({
               // a dragged block landed seconds away and snapped back).
               edits.patchTiming(
                 press.sceneId,
-                pinTiming(preview.startSec, preview.endSec, pinSourceSec),
+                pinTiming(preview.startSec, preview.endSec, pinSourceSec, pinKeptSrc),
               );
             }
             return null;
@@ -989,7 +1019,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           // Source-anchored like the body-drag commit above, same reasoning.
           edits.patchTiming(
             drag.sceneId,
-            pinTiming(preview.startSec, preview.endSec, pinSourceSec),
+            pinTiming(preview.startSec, preview.endSec, pinSourceSec, pinKeptSrc),
           );
         }
         return null;
@@ -1002,7 +1032,7 @@ export const Timeline: React.FC<TimelineProps> = ({
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [cues, durationSec, edits, seekTrack, fps, pinSourceSec, sfxWords, overlayWords]);
+  }, [cues, durationSec, edits, seekTrack, fps, pinSourceSec, pinKeptSrc, sfxWords, overlayWords]);
 
   const playheadPct = durationSec > 0 ? Math.min(1, frame / fps / durationSec) * 100 : 0;
 
@@ -1557,15 +1587,26 @@ export const Timeline: React.FC<TimelineProps> = ({
               const endSec = isDragging ? dragPreview.endSec : cue.endSec;
               const left = durationSec > 0 ? (startSec / durationSec) * 100 : 0;
               const width = durationSec > 0 ? Math.max(0, ((endSec - startSec) / durationSec) * 100) : 0;
-              const isSelected = selection?.sceneId === cue.id;
+              // Look mode resolves the selected PIECE (R6-4), so the tail's
+              // block lights without the lead's that shares its id.
+              const isSelected = lookPiece !== undefined ? lookPiece === cue : selection?.sceneId === cue.id;
               const thumb =
                 isPlain && toSourceSec
                   ? takeThumbs[toSourceSec((cue.startSec + cue.endSec) / 2).toFixed(1)]
                   : undefined;
               return (
                 <div
-                  key={cue.id}
+                  // Carved pieces share an id, so the React key adds the start
+                  // (R6-4, R7-4); the testid stays the id, and
+                  // `data-piece-start` tells the pieces apart for tests and
+                  // the scroll follow. Not gated on look mode: a duplicate
+                  // `take-1` key is already wrong on a legacy doc, and when a
+                  // reload flips the doc into look mode mid-session, keys that
+                  // changed scheme under duplicates left a stale block behind
+                  // (measured in Timeline.test.ts's look-mode suite).
+                  key={`${cue.id}:${cue.startSec.toFixed(3)}`}
                   data-testid={`timeline-block-${cue.id}`}
+                  data-piece-start={cue.startSec.toFixed(3)}
                   onMouseDown={(e) => {
                     e.stopPropagation();
                     e.preventDefault();
@@ -1578,7 +1619,8 @@ export const Timeline: React.FC<TimelineProps> = ({
                     // track was given). Below the threshold BOTH stay a bare
                     // select — no seek: clicking a scene to edit it kept
                     // yanking the playhead away (field report 2026-08-07).
-                    onSelect({ sceneId: cue.id, elementId: null });
+                    // Look mode names a take by its footage (R4-S2).
+                    onSelect(lookMode && isPlain ? pieceSelection(cue, cueClock) : { sceneId: cue.id, elementId: null });
                     blockPressRef.current = {
                       sceneId: cue.id,
                       startX: e.clientX,

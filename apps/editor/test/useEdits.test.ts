@@ -6,8 +6,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { OverrideDocSchema, atSplitPoints, splitCues, type SceneCue } from "@ossclip/core/browser";
-import { COALESCE_MS, editReducer, initialEditState, useEdits } from "../src/useEdits";
+import {
+  OverrideDocSchema,
+  applyOverrides,
+  atSplitPoints,
+  splitCues,
+  type SceneCue,
+} from "@ossclip/core/browser";
+import {
+  COALESCE_MS,
+  editReducer,
+  initialEditState,
+  mintAddedSceneId,
+  unseenRefusal,
+  useEdits,
+} from "../src/useEdits";
 
 describe("edit state", () => {
   it("starts clean", () => {
@@ -57,6 +70,124 @@ describe("edit state", () => {
     expect(s.doc.scenes["scene-0"]!.timing).toEqual({ srcStart: 21, srcEnd: 25 });
     // Still one undo step, still the shape the schema accepts.
     expect(editReducer(s, { type: "undo" }).doc.scenes["scene-0"]?.timing).toBeUndefined();
+  });
+});
+
+describe("a clip's speed and its resized window are one undo step", () => {
+  // A pinned clip (dragged to 10..14), then a speed scrub that resizes it:
+  // undo must land on the dragged window AND the old speed together, or the
+  // clip plays at 1x in a block sized for 2x.
+  const pinned = () =>
+    editReducer(initialEditState(), {
+      type: "patchTiming", sceneId: "clip-1", timing: { srcStart: 10, srcEnd: 14 },
+    });
+  const speed = (value: number, srcEnd: number) =>
+    ({
+      type: "patchProps",
+      sceneId: "clip-1",
+      patch: { speed: value },
+      coalesce: "props:clip-1:speed",
+      timing: { srcStart: 10, srcEnd },
+    }) as const;
+
+  it("writes both, and one undo restores both", () => {
+    let s = editReducer(pinned(), speed(2, 12));
+    expect(s.doc.scenes["clip-1"]!.props.speed).toBe(2);
+    expect(s.doc.scenes["clip-1"]!.timing).toEqual({ srcStart: 10, srcEnd: 12 });
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.scenes["clip-1"]!.props.speed).toBeUndefined();
+    expect(s.doc.scenes["clip-1"]!.timing).toEqual({ srcStart: 10, srcEnd: 14 });
+  });
+
+  it("a scrub coalesces like any slider: every tick's window, one step back", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    let s = editReducer(pinned(), speed(1.5, 12.667));
+    s = editReducer(s, speed(2, 12));
+    expect(s.past).toHaveLength(2);
+    s = editReducer(s, { type: "undo" });
+    expect(s.doc.scenes["clip-1"]!.props.speed).toBeUndefined();
+    expect(s.doc.scenes["clip-1"]!.timing).toEqual({ srcStart: 10, srcEnd: 14 });
+    vi.restoreAllMocks();
+  });
+
+  it("a props patch without a window leaves the pin as it was", () => {
+    const s = editReducer(pinned(), { type: "patchProps", sceneId: "clip-1", patch: { muted: true } });
+    expect(s.doc.scenes["clip-1"]!.timing).toEqual({ srcStart: 10, srcEnd: 14 });
+    expect("timing" in editReducer(initialEditState(), speed(2, 12)).doc.scenes["clip-1"]!).toBe(true);
+    expect(
+      "timing" in
+        editReducer(initialEditState(), { type: "patchProps", sceneId: "clip-1", patch: { speed: 2 } }).doc.scenes[
+          "clip-1"
+        ]!,
+    ).toBe(false);
+  });
+});
+
+describe("patchProps carries item pins and cleared props in the same step (graphic-editor-modal §6)", () => {
+  const listDoc = () =>
+    OverrideDocSchema.parse({
+      scenes: {
+        "scene-2": {
+          props: { title: "OLD", items: ["A", "B"], kicker: "GONE SOON" },
+          itemPins: { component: "BulletList", pins: [null, { src: 3.5, text: "B" }] },
+        },
+      },
+    });
+  const save = {
+    type: "patchProps",
+    sceneId: "scene-2",
+    patch: { items: ["A", "B", "C"] },
+    itemPins: { component: "BulletList", pins: [null, { src: 3.5, text: "B" }, null] },
+    clearKeys: ["kicker"],
+  } as const;
+
+  it("writes the props, the pins and the removal as ONE undo step", () => {
+    const before = { ...initialEditState(), doc: listDoc() };
+    const s = editReducer(before, save);
+    const scene = s.doc.scenes["scene-2"]!;
+    expect(scene.props).toEqual({ title: "OLD", items: ["A", "B", "C"] });
+    expect(scene.itemPins).toEqual(save.itemPins);
+    expect(s.past).toHaveLength(1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(before.doc);
+  });
+
+  it("a key both patched and cleared ends absent: clearKeys names what the save leaves unset", () => {
+    const s = editReducer(
+      { ...initialEditState(), doc: listDoc() },
+      { type: "patchProps", sceneId: "scene-2", patch: { kicker: "X" }, clearKeys: ["kicker"] },
+    );
+    expect("kicker" in s.doc.scenes["scene-2"]!.props).toBe(false);
+  });
+
+  it("without itemPins the stored marker is left as it was; with timing, the pin rides the same step", () => {
+    const s = editReducer(
+      { ...initialEditState(), doc: listDoc() },
+      { type: "patchProps", sceneId: "scene-2", patch: { title: "NEW" }, timing: { srcStart: 3, srcEnd: 6 } },
+    );
+    expect(s.doc.scenes["scene-2"]!.itemPins).toEqual(listDoc().scenes["scene-2"]!.itemPins);
+    expect(s.doc.scenes["scene-2"]!.timing).toEqual({ srcStart: 3, srcEnd: 6 });
+    expect(s.past).toHaveLength(1);
+  });
+
+  it("the hook takes them as an options object, one undo step", () => {
+    let api!: ReturnType<typeof useEdits>;
+    const Harness = (): null => {
+      api = useEdits();
+      return null;
+    };
+    const root = createRoot(document.createElement("div"));
+    act(() => {
+      root.render(React.createElement(Harness));
+    });
+    act(() => api.load(listDoc()));
+    act(() =>
+      api.patchProps("scene-2", save.patch, { itemPins: save.itemPins, clearKeys: [...save.clearKeys] }),
+    );
+    expect(api.doc.scenes["scene-2"]!.props).toEqual({ title: "OLD", items: ["A", "B", "C"] });
+    expect(api.doc.scenes["scene-2"]!.itemPins).toEqual(save.itemPins);
+    act(() => api.undo());
+    expect(api.doc).toEqual(listDoc());
+    act(() => root.unmount());
   });
 });
 
@@ -562,6 +693,244 @@ describe("scene splits (R16 §61)", () => {
     let s = editReducer(initialEditState(), { type: "addSplit", at: 7.5 });
     s = editReducer(s, { type: "undo" });
     expect(s.doc.splits).toEqual([]);
+  });
+});
+
+describe("a ⌘B on a take copies the piece's framing (take-framing-identity P1)", () => {
+  const take = (): SceneCue =>
+    ({ id: "take-1", kind: "plain", layout: "full-bleed", startSec: 0, endSec: 10 }) as SceneCue;
+  const loaded = (doc: unknown) =>
+    editReducer(initialEditState(), { type: "load", doc: OverrideDocSchema.parse(doc) });
+  /** The split the last ⌘B minted — found by its anchor, so the tests never
+   * restate `mintSplitId`'s derivation. */
+  const minted = (s: ReturnType<typeof loaded>, src: number) => s.doc.splits.find((x) => x.src === src)!;
+
+  it("17: splitting a root take copies its framing onto the new half, flags the split, and undoes in one step", () => {
+    const before = loaded({ scenes: { "take-1": { video: { scale: 2, dx: 10 } } } });
+    const s = editReducer(before, { type: "addSplit", at: 5, src: 5, targetId: "take-1" });
+    const split = minted(s, 5);
+    expect(s.doc.scenes[`take-1@${split.id}`]!.video).toEqual({ scale: 2, dx: 10 });
+    expect(split.ownFraming).toBe(true);
+    // One commit: the copy and the flag are one decision.
+    expect(s.past).toHaveLength(before.past.length + 1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(before.doc);
+  });
+
+  it("18: splitting a flagged half copies that half's OWN framing, not its root's", () => {
+    const s0 = loaded({
+      scenes: { "take-1": { video: { scale: 2, dx: 10 } }, "take-1@s1": { video: { dx: -5 } } },
+      splits: [{ at: 2, src: 2, id: "s1", ownFraming: true }],
+    });
+    const s = editReducer(s0, { type: "addSplit", at: 5, src: 5, targetId: "take-1@s1" });
+    expect(s.doc.scenes[`take-1@${minted(s, 5).id}`]!.video).toEqual({ dx: -5 });
+  });
+
+  it("19: splitting an unflagged legacy half copies the framing it was showing (its root's)", () => {
+    const s0 = loaded({
+      scenes: { "take-1": { video: { scale: 2, dx: 10 } } },
+      splits: [{ at: 2, src: 2, id: "s1" }],
+    });
+    const s = editReducer(s0, { type: "addSplit", at: 5, src: 5, targetId: "take-1@s1" });
+    expect(s.doc.scenes[`take-1@${minted(s, 5).id}`]!.video).toEqual({ scale: 2, dx: 10 });
+  });
+
+  it("20: a root with no framing stores no half entry, still flags the split, and a later root reframe leaves the half alone", () => {
+    let s = editReducer(initialEditState(), { type: "addSplit", at: 5, src: 5, targetId: "take-1" });
+    const split = minted(s, 5);
+    expect(s.doc.scenes[`take-1@${split.id}`]).toBeUndefined();
+    expect(split.ownFraming).toBe(true);
+    s = editReducer(s, { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } });
+    const { cues } = applyOverrides(splitCues([take()], atSplitPoints(s.doc.splits)), s.doc);
+    expect(cues.find((c) => c.id === "take-1")!.video).toEqual({ scale: 3 });
+    expect(cues.find((c) => c.id === `take-1@${split.id}`)!.video).toBeUndefined();
+  });
+
+  it("21: clearing either piece's framing leaves the other's", () => {
+    const s0 = editReducer(loaded({ scenes: { "take-1": { video: { scale: 2 } } } }), {
+      type: "addSplit", at: 5, src: 5, targetId: "take-1",
+    });
+    const half = `take-1@${minted(s0, 5).id}`;
+    const halfCleared = editReducer(s0, { type: "clearVideo", sceneId: half });
+    expect(halfCleared.doc.scenes["take-1"]!.video).toEqual({ scale: 2 });
+    const rootCleared = editReducer(s0, { type: "clearVideo", sceneId: "take-1" });
+    expect(rootCleared.doc.scenes[half]!.video).toEqual({ scale: 2 });
+  });
+
+  it("22: a duplicate ⌘B within a millisecond copies nothing", () => {
+    const s0 = loaded({
+      scenes: { "take-1": { video: { scale: 2 } } },
+      splits: [{ at: 5, src: 5, id: "5000" }],
+    });
+    expect(editReducer(s0, { type: "addSplit", at: 5.0004, src: 5.0004, targetId: "take-1" })).toBe(s0);
+  });
+
+  it("23: a graphic or kept-block target behaves exactly as before — no copy, no flag", () => {
+    for (const targetId of ["scene-2", "take-kept-5000"]) {
+      const s0 = loaded({ scenes: { [targetId]: { video: { scale: 2 } } } });
+      const s = editReducer(s0, { type: "addSplit", at: 5, src: 5, targetId });
+      const split = minted(s, 5);
+      expect(s.doc.scenes[`${targetId}@${split.id}`], targetId).toBeUndefined();
+      expect(split.ownFraming, targetId).toBeUndefined();
+    }
+  });
+
+  it("24: a stale entry under a reused half key has its framing replaced and its other fields kept", () => {
+    const s0 = loaded({
+      scenes: {
+        "take-1": { video: { scale: 2 } },
+        "take-1@5000": { captionY: 0.3, video: { dx: 1 }, pip: { x: 0.4 } },
+      },
+    });
+    const s = editReducer(s0, { type: "addSplit", at: 5, src: 5, targetId: "take-1" });
+    expect(minted(s, 5).id).toBe("5000");
+    const half = s.doc.scenes["take-1@5000"]!;
+    expect(half.video).toEqual({ scale: 2 });
+    // The root has no pip, so the stale one goes: the copy is the framing
+    // the piece was showing, field for field.
+    expect(half.pip).toBeUndefined();
+    expect(half.captionY).toBe(0.3);
+  });
+});
+
+describe("look mode: take looks are written to source ranges (take-looks-by-source L4)", () => {
+  // A migrated doc — `takeLooks` present is the marker (L3). The tail of
+  // take-1 plays source 12..20 and already has a framing.
+  const TAIL = [{ srcIn: 12, srcOut: 20 }];
+  const migrated = (extra: Record<string, unknown> = {}) =>
+    editReducer(initialEditState(), {
+      type: "load",
+      doc: OverrideDocSchema.parse({
+        takeLooks: [{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 } } }],
+        ...extra,
+      }),
+    });
+
+  it("patchTakeLook writes onto the piece's footage, and clearTakeLookFields is a real reset", () => {
+    const s0 = migrated();
+    const s1 = editReducer(s0, { type: "patchTakeLook", ranges: TAIL, patch: { captionY: 0.3 } });
+    expect(s1.doc.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 }, captionY: 0.3 } }]);
+    expect(s1.doc.scenes).toEqual({});
+    expect(s1.past).toHaveLength(1);
+    const s2 = editReducer(s1, { type: "clearTakeLookFields", ranges: TAIL, fields: ["video"] });
+    expect(s2.doc.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { captionY: 0.3 } }]);
+    const s3 = editReducer(s2, { type: "clearTakeLookFields", ranges: TAIL, fields: ["captionY"] });
+    // Nothing left to say: the entry goes, the marker stays (L3).
+    expect(s3.doc.takeLooks).toEqual([]);
+    expect(editReducer(s3, { type: "undo" }).doc).toEqual(s2.doc);
+  });
+
+  it("the framing unit is expanded from the part's own values: a dx patch keeps the stored scale (R6-2, R7-3)", () => {
+    const s = editReducer(migrated(), { type: "patchTakeLook", ranges: TAIL, patch: { video: { dx: -4 } } });
+    expect(s.doc.takeLooks![0]!.look.video).toEqual({ scale: 2, dx: -4 });
+    // A member absent from the look and from the patch stays absent — never
+    // written as a default.
+    expect("dy" in s.doc.takeLooks![0]!.look.video!).toBe(false);
+  });
+
+  it("a coalesced drag is ONE undo step", () => {
+    const key = "look:12:framing";
+    let s = migrated();
+    for (const dx of [1, 2, 3]) s = editReducer(s, { type: "patchTakeLook", ranges: TAIL, patch: { video: { dx } }, coalesce: key });
+    expect(s.past).toHaveLength(1);
+    expect(s.doc.takeLooks![0]!.look.video).toEqual({ scale: 2, dx: 3 });
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(migrated().doc);
+  });
+
+  it("a write that changes nothing makes no commit — the same state back (S1)", () => {
+    const s = migrated();
+    expect(editReducer(s, { type: "patchTakeLook", ranges: TAIL, patch: { video: { scale: 2 } } })).toBe(s);
+    expect(editReducer(s, { type: "clearTakeLookFields", ranges: TAIL, fields: ["pip", "captionY"] })).toBe(s);
+    expect(editReducer(s, { type: "patchTakeLook", ranges: [], patch: { captionY: 0.4 } })).toBe(s);
+  });
+
+  it("patchCaptionStyleAll writes graphics by id and takes by range, in ONE commit, dropping take ids (N6, R6-6)", () => {
+    const s = editReducer(migrated(), {
+      type: "patchCaptionStyleAll",
+      sceneIds: ["scene-0", "take-1", "take-kept-5000", "added-1"],
+      takeRanges: [[{ srcIn: 0, srcOut: 10 }], TAIL],
+      y: 0.8,
+      scale: 1.2,
+    });
+    expect(Object.keys(s.doc.scenes).sort()).toEqual(["added-1", "scene-0"]);
+    expect(s.doc.scenes["scene-0"]).toMatchObject({ captionY: 0.8, captionScale: 1.2 });
+    expect(s.doc.takeLooks).toEqual([
+      { srcIn: 0, srcOut: 10, look: { captionY: 0.8, captionScale: 1.2 } },
+      { srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 }, captionY: 0.8, captionScale: 1.2 } },
+    ]);
+    expect(s.past).toHaveLength(1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(migrated().doc);
+  });
+
+  it("clearCaptionStyle on a take is refused: the look lives on source time, the reset is clearTakeLookFields", () => {
+    const s0 = editReducer(migrated(), { type: "patchTakeLook", ranges: TAIL, patch: { captionY: 0.3, captionScale: 1.5 } });
+    const refused = editReducer(s0, { type: "clearCaptionStyle", sceneId: "take-1" });
+    expect(refused.doc).toBe(s0.doc);
+    expect(refused.lastRefusal?.seq).toBe(1);
+    const reset = editReducer(s0, { type: "clearTakeLookFields", ranges: TAIL, fields: ["captionY", "captionScale"] });
+    expect(reset.doc.takeLooks).toEqual([{ srcIn: 12, srcOut: 20, look: { video: { scale: 2, dx: 10 } } }]);
+  });
+
+  it("every id-keyed look action on a look-piece id is refused with lastRefusal; graphics still write (R4-S4, R6-5)", () => {
+    const s0 = migrated();
+    const actions = [
+      { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } },
+      { type: "clearVideo", sceneId: "take-1@14000" },
+      { type: "patchPip", sceneId: "take-kept-5000", patch: { x: 0.1 } },
+      { type: "clearPip", sceneId: "take-2" },
+      { type: "patchLayout", sceneId: "take-2-1", layout: "pip-bubble", from: "full-bleed" },
+      { type: "patchCaptionY", sceneId: "take-1", y: 0.2 },
+      { type: "patchCaptionScale", sceneId: "take-1", scale: 2 },
+      { type: "clearCaptionStyle", sceneId: "take-kept-5000@s1" },
+    ] as const;
+    let s = s0;
+    actions.forEach((action, i) => {
+      const next = editReducer(s, action);
+      expect(next.doc, action.type).toBe(s0.doc);
+      expect(next.past, action.type).toBe(s0.past);
+      expect(next.dirty, action.type).toBe(false);
+      expect(next.lastRefusal, action.type).toEqual({ message: expect.any(String), seq: i + 1 });
+      s = next;
+    });
+    // A graphic's look is still id-keyed in look mode.
+    const g = editReducer(s0, { type: "patchVideo", sceneId: "scene-3", patch: { scale: 3 } });
+    expect(g.doc.scenes["scene-3"]!.video).toEqual({ scale: 3 });
+    expect(g.lastRefusal).toBeNull();
+    // A legacy doc is untouched by the refusal: the same action writes.
+    const legacy = editReducer(initialEditState(), { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } });
+    expect(legacy.doc.scenes["take-1"]!.video).toEqual({ scale: 3 });
+  });
+
+  it("a look action on a legacy doc is refused, never invented", () => {
+    const s0 = initialEditState();
+    const s = editReducer(s0, { type: "patchTakeLook", ranges: TAIL, patch: { captionY: 0.3 } });
+    expect(s.doc).toBe(s0.doc);
+    expect(s.doc.takeLooks).toBeUndefined();
+    expect(s.lastRefusal?.seq).toBe(1);
+  });
+
+  it("⌘B on a take adds ONLY the split: no copy, no ownFraming flag (L4)", () => {
+    const s0 = migrated({ scenes: { "take-1": { hidden: true } } });
+    const s = editReducer(s0, { type: "addSplit", at: 14, src: 14, targetId: "take-1" });
+    expect(s.doc.splits).toEqual([{ at: 14, src: 14, id: s.doc.splits[0]!.id }]);
+    expect(s.doc.scenes).toEqual(s0.doc.scenes);
+    expect(s.doc.takeLooks).toEqual(s0.doc.takeLooks);
+  });
+
+  it("App shows each refusal once per seq, the same words included (R6-5)", () => {
+    expect(unseenRefusal(null, 0)).toBeNull();
+    expect(unseenRefusal({ message: "no", seq: 1 }, 0)).toBe("no");
+    expect(unseenRefusal({ message: "no", seq: 1 }, 1)).toBeNull();
+    expect(unseenRefusal({ message: "no", seq: 2 }, 1)).toBe("no");
+  });
+
+  it("load bumps loadCount and keeps the refusal seq growing", () => {
+    let s = migrated();
+    expect(s.loadCount).toBe(1);
+    s = editReducer(s, { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } });
+    s = editReducer(s, { type: "load", doc: s.doc });
+    expect(s.loadCount).toBe(2);
+    s = editReducer(s, { type: "patchVideo", sceneId: "take-1", patch: { scale: 3 } });
+    expect(s.lastRefusal?.seq).toBe(2);
   });
 });
 
@@ -1842,5 +2211,133 @@ describe("rekeyCaptionKeys — caption anchors after a range re-transcription (P
     });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("addScene / removeAddedScene (editor-added-graphics §6)", () => {
+  const add = {
+    component: "TitleCard",
+    props: { title: "HELLO" },
+    srcStart: 1,
+    srcEnd: 2.4,
+    baseIds: [] as string[],
+  };
+
+  it("addScene appends a minted entry in ONE undo step, and undo restores the doc", () => {
+    const before = initialEditState();
+    const s = editReducer(before, { type: "addScene", ...add });
+    expect(s.doc.addedScenes).toEqual([
+      { id: "added-1", component: "TitleCard", props: { title: "HELLO" }, srcStart: 1, srcEnd: 2.4 },
+    ]);
+    expect(s.past).toHaveLength(1);
+    expect(s.dirty).toBe(true);
+    const undone = editReducer(s, { type: "undo" });
+    expect(undone.doc).toEqual(before.doc);
+    // The emptied list is not left behind as `addedScenes: []` (§1).
+    expect("addedScenes" in undone.doc).toBe(false);
+  });
+
+  it("mints one past the highest id in the doc, the scenes keys AND the base cues", () => {
+    let s = editReducer(initialEditState(), { type: "addScene", ...add });
+    s = editReducer(s, { type: "addScene", ...add });
+    expect(s.doc.addedScenes!.map((e) => e.id)).toEqual(["added-1", "added-2"]);
+    // `added-7` lives only in the base cues (a past run baked it, the entry
+    // is gone): reusing it would preview that old cue (§1).
+    const fromBase = editReducer(initialEditState(), { type: "addScene", ...add, baseIds: ["scene-0", "added-7"] });
+    expect(fromBase.doc.addedScenes!.map((e) => e.id)).toEqual(["added-8"]);
+    // A leftover split-half edit names its root too.
+    const fromKeys = editReducer(
+      { ...initialEditState(), doc: OverrideDocSchema.parse({ scenes: { "added-4@s1#orphaned": { hidden: true } } }) },
+      { type: "addScene", ...add },
+    );
+    expect(fromKeys.doc.addedScenes!.map((e) => e.id)).toEqual(["added-5"]);
+  });
+
+  it("mintAddedSceneId is the reducer's own mint", () => {
+    const doc = OverrideDocSchema.parse({ scenes: { "added-2": { props: { title: "X" } } } });
+    expect(mintAddedSceneId(doc, ["added-3"])).toBe("added-4");
+    const s = editReducer({ ...initialEditState(), doc }, { type: "addScene", ...add, baseIds: ["added-3"] });
+    expect(s.doc.addedScenes!.at(-1)!.id).toBe("added-4");
+  });
+
+  it("removeAddedScene removes the entry and every key rooted at it, not added-10, and leaves splits", () => {
+    const doc = OverrideDocSchema.parse({
+      addedScenes: [
+        { id: "added-1", component: "TitleCard", props: { title: "A" }, srcStart: 1, srcEnd: 2 },
+        { id: "added-10", component: "TitleCard", props: { title: "B" }, srcStart: 5, srcEnd: 6 },
+      ],
+      scenes: {
+        "added-1": { props: { title: "EDITED" } },
+        "added-1@3": { hidden: true },
+        "added-1#orphaned": { props: { title: "OLD" } },
+        "added-10": { props: { title: "KEEP" } },
+        "scene-0": { props: { value: "9" } },
+      },
+      splits: [{ id: "3", at: 1.5 }],
+    });
+    const s = editReducer({ ...initialEditState(), doc }, { type: "removeAddedScene", id: "added-1" });
+    expect(s.doc.addedScenes!.map((e) => e.id)).toEqual(["added-10"]);
+    expect(Object.keys(s.doc.scenes).sort()).toEqual(["added-10", "scene-0"]);
+    // A split is a time point, not tied to an id (§6).
+    expect(s.doc.splits).toEqual(doc.splits);
+    expect(s.past).toHaveLength(1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(doc);
+  });
+
+  it("addScene writes the entry and scenes[newId] (item pins, timing) in ONE commit (graphic-editor-modal §6)", () => {
+    const before = initialEditState();
+    const scenePatch = {
+      itemPins: { component: "BulletList", pins: [null, null] },
+      timing: { srcStart: 1.1, srcEnd: 2.4 },
+    };
+    const s = editReducer(before, {
+      type: "addScene",
+      ...add,
+      component: "BulletList",
+      props: { items: ["A", "B"] },
+      scenePatch,
+    });
+    expect(s.doc.addedScenes!.map((e) => e.id)).toEqual(["added-1"]);
+    expect(s.doc.scenes["added-1"]).toEqual({ props: {}, elements: {}, ...scenePatch });
+    expect(s.past).toHaveLength(1);
+    expect(editReducer(s, { type: "undo" }).doc).toEqual(before.doc);
+  });
+
+  it("addScene with an empty or absent scenePatch leaves scenes untouched", () => {
+    expect(editReducer(initialEditState(), { type: "addScene", ...add }).doc.scenes).toEqual({});
+    expect(editReducer(initialEditState(), { type: "addScene", ...add, scenePatch: {} }).doc.scenes).toEqual({});
+  });
+
+  it("removing the last entry removes the key; an unknown id is a no-op", () => {
+    let s = editReducer(initialEditState(), { type: "addScene", ...add });
+    s = editReducer(s, { type: "removeAddedScene", id: "added-1" });
+    expect("addedScenes" in s.doc).toBe(false);
+    expect(editReducer(s, { type: "removeAddedScene", id: "added-9" })).toBe(s);
+  });
+
+  it("the hook's addScene returns the id the reducer minted", () => {
+    let api!: ReturnType<typeof useEdits>;
+    const Harness = (): null => {
+      api = useEdits();
+      return null;
+    };
+    const root = createRoot(document.createElement("div"));
+    act(() => {
+      root.render(React.createElement(Harness));
+    });
+    let first = "";
+    act(() => {
+      first = api.addScene({ ...add, baseIds: ["added-2"] });
+    });
+    expect(first).toBe("added-3");
+    expect(api.doc.addedScenes!.map((e) => e.id)).toEqual(["added-3"]);
+    let second = "";
+    act(() => {
+      second = api.addScene(add);
+    });
+    expect(second).toBe("added-4");
+    act(() => api.removeAddedScene("added-3"));
+    expect(api.doc.addedScenes!.map((e) => e.id)).toEqual(["added-4"]);
+    act(() => root.unmount());
   });
 });

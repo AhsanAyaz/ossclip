@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { healRecordedProduceArgs, renderReplayArgs, reviewedScenesText } from "../src/render-replay-args";
+import {
+  healRecordedProduceArgs,
+  isStoryboardCommand,
+  renderReplayArgs,
+  reviewedScenesText,
+  storyboardSyncArgs,
+} from "../src/render-replay-args";
 
 /**
  * What the editor's Render button replays (2026-08-29).
@@ -73,6 +79,19 @@ describe("renderReplayArgs", () => {
     ]);
   });
 
+  it("drops --storyboard and --assets with its value when it pins the reviewed plan, and keeps both on replan (§168)", () => {
+    const sb = ["produce", "in.mp4", "--produce", "--storyboard", "--assets", "/v/assets", "--aspect", "16:9"];
+    expect(renderReplayArgs(sb, { scenesPath: "/w/s.json" })).toEqual([
+      "produce",
+      "in.mp4",
+      "--aspect",
+      "16:9",
+      "--scenes",
+      "/w/s.json",
+    ]);
+    expect(renderReplayArgs(sb, { scenesPath: "/w/s.json", replan: true })).toEqual(sb);
+  });
+
   it("carries --sfx and its level through the --produce swap", () => {
     // Only --produce and --scenes are dropped, and this pins that: --sfx-level
     // is a VALUE option, so a filter that treated it as a bare flag would
@@ -126,6 +145,21 @@ describe("healRecordedProduceArgs (§129)", () => {
   });
 });
 
+describe("isStoryboardCommand (§169)", () => {
+  it("is true when the recorded argv holds --storyboard, wherever it sits", () => {
+    expect(isStoryboardCommand(["produce", "in.mp4", "--storyboard"])).toBe(true);
+    expect(isStoryboardCommand(["produce", "--storyboard", "in.mp4", "--assets", "/v/a"])).toBe(true);
+  });
+
+  it("is false for any other command, a pinned replay of a storyboard project included", () => {
+    expect(isStoryboardCommand(["produce", "in.mp4", "--produce"])).toBe(false);
+    expect(isStoryboardCommand(["produce", "in.mp4", "--script", "/v/s.md"])).toBe(false);
+    // What a Render records once it has pinned: `--storyboard` already stripped.
+    expect(isStoryboardCommand(["produce", "in.mp4", "--scenes", "/w/scenes-reviewed.json"])).toBe(false);
+    expect(isStoryboardCommand([])).toBe(false);
+  });
+});
+
 describe("reviewedScenesText", () => {
   it("is production.json's scenes, pretty-printed with a trailing newline", () => {
     const scenes = [{ id: "scene-0", component: "CardRow" }];
@@ -140,5 +174,59 @@ describe("reviewedScenesText", () => {
     expect(reviewedScenesText(JSON.stringify({ scenes: "x" }))).toBeUndefined();
     expect(reviewedScenesText("null")).toBeUndefined();
     expect(reviewedScenesText("{ not json")).toBeUndefined();
+  });
+});
+
+describe("storyboardSyncArgs (plan B2a Task 4; §169)", () => {
+  it("a storyboard record: --no-render and --open-editor go, --no-open-editor is added, the rest is kept", () => {
+    expect(
+      storyboardSyncArgs(["produce", "in.mp4", "--storyboard", "--assets", "/v/a", "--no-render", "--open-editor", "-o", "out.mp4"], "/v/a"),
+    ).toEqual(["produce", "in.mp4", "--storyboard", "-o", "out.mp4", "--assets", "/v/a", "--no-open-editor"]);
+  });
+
+  it("a Render's record (--scenes, no --storyboard): --scenes goes with its value and --storyboard is added", () => {
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--render", "--scenes", "/w/scenes-reviewed.json"], undefined)).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--no-open-editor",
+    ]);
+  });
+
+  it("the storyboard's assets folder replaces a recorded one; with none given a recorded one is kept", () => {
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--assets", "/old"], "/new")).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--assets",
+      "/new",
+      "--no-open-editor",
+    ]);
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--storyboard", "--assets", "/old"], undefined)).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--assets",
+      "/old",
+      "--no-open-editor",
+    ]);
+  });
+
+  it("--review goes: it contradicts --no-open-editor, and the run would refuse to start", () => {
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--review", "--storyboard"], undefined)).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--no-open-editor",
+    ]);
+  });
+
+  it("flags already in place are not doubled", () => {
+    expect(storyboardSyncArgs(["produce", "in.mp4", "--storyboard", "--no-open-editor"], undefined)).toEqual([
+      "produce",
+      "in.mp4",
+      "--storyboard",
+      "--no-open-editor",
+    ]);
   });
 });

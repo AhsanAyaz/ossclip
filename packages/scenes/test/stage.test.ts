@@ -39,6 +39,7 @@ import {
   clearOfPicture,
   pictureZoomAt,
   pictureZoomStateFor,
+  pipPanFor,
   pipRectFor,
   pipZoomFor,
   placedPictureFor,
@@ -1401,6 +1402,152 @@ describe("the speaker picture in 16:9 (§163)", () => {
         "translate(3px, 0px) scale(1.05) scale(1.5)",
       );
     });
+  });
+});
+
+describe("pipPanFor: a pan in the bubble moves what it shows, never the mask (2026-11-20)", () => {
+  const PT = PORTRAIT_FRAME;
+  // Today's portrait bubble: a 324 px square. A 9:16 source under cover is
+  // width-constrained there: 324 wide, 576 tall, so 252 px of vertical
+  // excess and none horizontally.
+  const base = layoutSlots("pip-bubble", DEFAULT_FACE, [], PT).video;
+  const slot = { ...base, objectPosX: 0.5, objectPosY: 0.3 };
+  const side = PIP_RECT.w * PT.width;
+  const portrait = 9 / 16;
+  const EX_Y = side / portrait - side;
+
+  // Where the content box lands on screen, worked out the way CSS composes
+  // the content div's transform: origin at CONTENT_TRANSFORM_ORIGIN, then
+  // translate(t), scale(s), and the head zoom's translate·scale·translate,
+  // applied right to left to each corner.
+  const placed = (s: number, picture: { scale: number; dx: number; dy: number } | null, tx: number, ty: number) => {
+    const ox = CONTENT_TRANSFORM_ORIGIN.x * side;
+    const oy = CONTENT_TRANSFORM_ORIGIN.y * side;
+    const map = (px: number, py: number) => {
+      let x = px - ox;
+      let y = py - oy;
+      if (picture) {
+        x = (x - picture.dx) * picture.scale + picture.dx;
+        y = (y - picture.dy) * picture.scale + picture.dy;
+      }
+      return { x: x * s + tx + ox, y: y * s + ty + oy };
+    };
+    const a = map(0, 0);
+    const b = map(side, side);
+    return { left: a.x, top: a.y, right: b.x, bottom: b.y };
+  };
+  const covers = (r: { left: number; top: number; right: number; bottom: number }) => {
+    expect(r.left).toBeLessThanOrEqual(1e-9);
+    expect(r.top).toBeLessThanOrEqual(1e-9);
+    expect(r.right).toBeGreaterThanOrEqual(side - 1e-9);
+    expect(r.bottom).toBeGreaterThanOrEqual(side - 1e-9);
+  };
+
+  it("is the identity with no pan, so the stage's strings are today's", () => {
+    for (const [s, picture] of [[1, null], [1.08, null], [2, { scale: 1.8, dx: 12, dy: -7 }], [0.8, null]] as const) {
+      expect(pipPanFor(slot, portrait, s, picture, 0, 0, PT)).toEqual({
+        objectPosX: 0.5,
+        objectPosY: 0.3,
+        dx: 0,
+        dy: 0,
+      });
+    }
+  });
+
+  it("at scale 1, dy moves the crop window, not the picture, and stops at the source's edge", () => {
+    // +50 px down on screen = the window moves UP the source: position falls.
+    const down = pipPanFor(slot, portrait, 1, null, 0, 50, PT);
+    expect(down.objectPosY).toBeCloseTo(0.3 - 50 / EX_Y, 12);
+    expect(down.dy).toBe(0);
+    expect(down.objectPosX).toBe(0.5);
+    const up = pipPanFor(slot, portrait, 1, null, 0, -50, PT);
+    expect(up.objectPosY).toBeCloseTo(0.3 + 50 / EX_Y, 12);
+    expect(up.dy).toBe(0);
+    // Past the source's edge the window stops: clamped to [0, 1], no translate.
+    expect(pipPanFor(slot, portrait, 1, null, 0, 5000, PT)).toMatchObject({ objectPosY: 0, dy: 0 });
+    expect(pipPanFor(slot, portrait, 1, null, 0, -5000, PT)).toMatchObject({ objectPosY: 1, dy: 0 });
+  });
+
+  it("at scale 1, dx in a portrait source does nothing: no excess to show, no room to translate", () => {
+    for (const dx of [40, -40, 900]) {
+      const r = pipPanFor(slot, portrait, 1, null, dx, 0, PT);
+      expect(r).toEqual({ objectPosX: 0.5, objectPosY: 0.3, dx: 0, dy: 0 });
+    }
+  });
+
+  it("at user scale 2, dx is a translate held to the overflow; the 50% x-origin makes it symmetric", () => {
+    // The box is 648 wide about x = 162: it overhangs 162 px each side.
+    expect(pipPanFor(slot, portrait, 2, null, 100, 0, PT)).toEqual({ objectPosX: 0.5, objectPosY: 0.3, dx: 100, dy: 0 });
+    expect(pipPanFor(slot, portrait, 2, null, 900, 0, PT).dx).toBeCloseTo(162, 9);
+    expect(pipPanFor(slot, portrait, 2, null, -900, 0, PT).dx).toBeCloseTo(-162, 9);
+  });
+
+  it("at user scale 2, dy spends the window first, then a translate held to the 40% origin's uneven overflow", () => {
+    // On screen the window is worth EX_Y × 2 px per unit of position.
+    const small = pipPanFor(slot, portrait, 2, null, 0, 60, PT);
+    expect(small.objectPosY).toBeCloseTo(0.3 - 60 / (EX_Y * 2), 12);
+    expect(small.dy).toBeCloseTo(0, 9);
+    // Down: the window has 0.3 × 2 × EX_Y px to give, then the box's top
+    // overhang (0.4 × 324 = 129.6 px).
+    const down = pipPanFor(slot, portrait, 2, null, 0, 5000, PT);
+    expect(down.objectPosY).toBe(0);
+    expect(down.dy).toBeCloseTo(0.4 * side, 9);
+    // Up: 0.7 × 2 × EX_Y px of window, then the bottom overhang (194.4 px).
+    const up = pipPanFor(slot, portrait, 2, null, 0, -5000, PT);
+    expect(up.objectPosY).toBe(1);
+    expect(up.dy).toBeCloseTo(-0.6 * side, 9);
+    // Short of the limit, the picture moves by exactly the pan.
+    const mid = pipPanFor(slot, portrait, 2, null, 0, 0.3 * 2 * EX_Y + 50, PT);
+    expect(mid.objectPosY).toBe(0);
+    expect(mid.dy).toBeCloseTo(50, 9);
+  });
+
+  it("never uncovers the bubble, however far the pan goes", () => {
+    for (const s of [1, 1.08, 1.5, 2, 3])
+      for (const [dx, dy] of [[1e5, 0], [-1e5, 0], [0, 1e5], [0, -1e5], [1e5, -1e5], [-1e5, 1e5]]) {
+        const r = pipPanFor(slot, portrait, s, null, dx, dy, PT);
+        covers(placed(s, null, r.dx, r.dy));
+        expect(r.objectPosY).toBeGreaterThanOrEqual(0);
+        expect(r.objectPosY).toBeLessThanOrEqual(1);
+      }
+  });
+
+  it("under scale 1 the picture already shows the backdrop: inputs pass through, exactly as today", () => {
+    // User scale below 1 is the documented "show more of the source" escape.
+    expect(pipPanFor(slot, portrait, 0.8, null, 70, -30, PT)).toEqual({
+      objectPosX: 0.5,
+      objectPosY: 0.3,
+      dx: 70,
+      dy: -30,
+    });
+  });
+
+  it("a head zoom counts toward the scale and the clamp", () => {
+    // Head zoom 2 about (O + (30, −20)) at s 1: the box overhangs by
+    // 162 + 30 = 192 on the left, 162 − 30 = 132 on the right.
+    const picture = { scale: 2, dx: 30, dy: -20 };
+    expect(pipPanFor(slot, portrait, 1, picture, 900, 0, PT).dx).toBeCloseTo(192, 9);
+    expect(pipPanFor(slot, portrait, 1, picture, -900, 0, PT).dx).toBeCloseTo(-132, 9);
+    // The window's worth on screen is scaled by the head zoom too.
+    const dy = pipPanFor(slot, portrait, 1, picture, 0, 40, PT);
+    expect(dy.objectPosY).toBeCloseTo(0.3 - 40 / (EX_Y * 2), 12);
+    expect(dy.dy).toBeCloseTo(0, 9);
+    for (const [dx, dy] of [[1e5, 1e5], [-1e5, -1e5], [1e5, -1e5], [-1e5, 1e5]]) {
+      for (const s of [0.6, 1, 1.3]) {
+        const r = pipPanFor(slot, portrait, s, picture, dx, dy, PT);
+        covers(placed(s, picture, r.dx, r.dy));
+      }
+    }
+  });
+
+  it("works in a 16:9 bubble, where a landscape source has horizontal excess", () => {
+    const LS = LANDSCAPE_FRAME;
+    const land = { ...layoutSlots("pip-bubble", DEFAULT_FACE, [], LS).video, objectPosX: 0.5, objectPosY: 0.5 };
+    const w = land.rect.w * LS.width;
+    const ex = w * (16 / 9) - w;
+    const r = pipPanFor(land, 16 / 9, 1, null, 30, 30, LS);
+    expect(r.objectPosX).toBeCloseTo(0.5 - 30 / ex, 12);
+    expect(r).toMatchObject({ objectPosY: 0.5, dx: 0, dy: 0 });
   });
 });
 

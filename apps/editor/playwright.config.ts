@@ -107,7 +107,7 @@ export default defineConfig({
   // specs running in a parallel worker. A dependent project serializes it:
   // `landscape` starts only after `main` has fully finished.
   projects: [
-    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays|logo-finder)\.spec\.ts/ },
+    { name: "main", testIgnore: /(landscape|renderflow|recut|sliver-cut|overlays|logo-finder|storyboard|clip-speed|added-graphics|graphic-editor)\.spec\.ts/ },
     { name: "landscape", testMatch: /landscape\.spec\.ts/, dependencies: ["main"] },
     // Writes a command.json into the shared workdir (the main project's
     // R11 test asserts its ABSENCE), so it runs last, serialized.
@@ -130,6 +130,23 @@ export default defineConfig({
     // candidate files into the workdir and adds to the temp-HOME library —
     // a rewriter like `overlays`, so serialized behind it.
     { name: "logo-finder", testMatch: /logo-finder\.spec\.ts/, dependencies: ["overlays"] },
+    // Writes a transcript.json into the shared workdir (the storyboard's word
+    // space, which the committed fixture lacks so no other spec's captions
+    // are rebuilt from it), edits storyboard.json and deletes it for the
+    // no-button case, restoring all three after: a rewriter, serialized last.
+    { name: "storyboard", testMatch: /storyboard\.spec\.ts/, dependencies: ["logo-finder"] },
+    // Adds a ClipScene to the shared render-props.json (no committed fixture
+    // has one) and starts from no overrides.json, restoring both after: a
+    // rewriter, serialized last like the others.
+    { name: "clip-speed", testMatch: /clip-speed\.spec\.ts/, dependencies: ["storyboard"] },
+    // Gives production.json a transcript (the word list a fresh add previews
+    // on, editor-added-graphics §4) and starts from no overrides.json,
+    // restoring both after: a rewriter, serialized last like the others.
+    { name: "added-graphics", testMatch: /added-graphics\.spec\.ts/, dependencies: ["clip-speed"] },
+    // Gives production.json a transcript (the words items land on,
+    // graphic-editor-modal §5) and starts from an overrides.json that hides
+    // one plan graphic, restoring both after: a rewriter, serialized last.
+    { name: "graphic-editor", testMatch: /graphic-editor\.spec\.ts/, dependencies: ["added-graphics"] },
   ],
   use: {
     baseURL: `http://127.0.0.1:${VITE_PORT}`,
@@ -150,7 +167,15 @@ export default defineConfig({
       // headless Chromium's autoplay policy would otherwise reject the
       // keyboard-initiated play() and the test would fail for a reason that
       // has nothing to do with the shortcut.
-      args: ["--autoplay-policy=no-user-gesture-required"],
+      //
+      // No real audio device (§168): after that test plays media and its
+      // page closes, WSLg's PulseAudio server stops answering for a while,
+      // and the next page's `new AudioContext()` (Remotion's shared context,
+      // made at Player mount) blocks the page thread 20 s per call — two
+      // calls, so the following test times out at "Loading production…".
+      // Measured with a wrapper around the constructor; `pactl info` timed
+      // out in the same window. No spec listens to the output.
+      args: ["--autoplay-policy=no-user-gesture-required", "--disable-audio-output"],
     },
   },
   webServer: [

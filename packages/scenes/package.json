@@ -11,7 +11,9 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./geometry": "./src/geometry.ts"
+    "./geometry": "./src/geometry.ts",
+    "./draw": "./src/draw/index.ts",
+    "./draw/reference": "./src/draw/reference.ts"
   },
   "files": [
     "README.md",

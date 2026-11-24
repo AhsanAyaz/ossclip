@@ -24,9 +24,12 @@ import {
 } from "./schema";
 import type { TimeMap } from "./timemap";
 import { resolveOverlayCues } from "./overlay-cues";
-import { SCENE_REGISTRY, resolveSceneProps } from "./scene-registry";
-import { revealItemTexts } from "./reveal-match";
+import { SCENE_REGISTRY, clipSpeed, resolveSceneProps } from "./scene-registry";
+import { ITEM_LEAD_SEC, maxCueSec, wordOutputStart } from "./assemble";
+import { resolveItemWords, revealItemTexts, type RevealItem } from "./reveal-match";
 import { keepsBoxAcross } from "./framing";
+import { AddedSceneSchema, isAddedKey } from "./added-scenes";
+import { normalizeTakeLooks } from "./take-looks";
 import {
   captionKeyFor,
   CaptionThemeIdSchema,
@@ -170,7 +173,11 @@ export const SceneOverrideSchema = z.object({
        * 2026-08-31: one concatenated clip was recorded quieter than the
        * rest). Lives inside `video` on purpose — it is a property of this
        * window's playback, and the key already merges per scene, inherits
-       * across split halves, and has patch/clear plumbing. 0 mutes. Above 1
+       * across split halves, and has patch/clear plumbing. Except a flagged
+       * take half (take-framing-identity P1): it inherits no `video` at all,
+       * `volume` included — the piece's `volume` is copied onto the half when
+       * the split is flagged instead (⌘B, or produce's legacy migration), so
+       * muting the root afterwards leaves the other pieces audible. 0 mutes. Above 1
        * amplifies — in the render via allowAmplificationDuringRender, and in
        * the preview via the Player's own WebAudio gain (Remotion ≥4.0.5xx,
        * use-amplification). Max 4: a field clip arrived quiet enough that 2x
@@ -238,6 +245,37 @@ export const SceneOverrideSchema = z.object({
    * an override with nothing to say.
    */
   hidden: z.boolean().optional(),
+  /**
+   * Word timing for a list graphic's items (graphic-editor-modal §2).
+   * PRESENT is the switch, even with every pin null: absent, the graphic
+   * renders exactly as before this key existed (AG1). One entry per item,
+   * in item order: null is auto (matched from its text on every resolve,
+   * never stored, so an edited text re-finds its word, G3); a pin is the
+   * chosen word's SOURCE start, recut-immune like `splits[].src`, plus the
+   * item's text when pinned, so a pin whose item has since changed is
+   * recognised and dropped to auto instead of landing on the wrong item.
+   * `component` names what the pins were made for: a swap turns them all
+   * auto, and the marker stays so swapping back restores them (§3 step 2).
+   * A plain string, not the component enum, `AddedSceneSchema`'s reasoning:
+   * a component that leaves the registry must not fail the parse of the
+   * whole doc. Resolved by `resolveItemTimings`. Named apart from
+   * BulletList's own `props.items`.
+   */
+  itemPins: z
+    .object({
+      component: z.string(),
+      pins: z.array(
+        z.union([
+          z.null(),
+          z.object({
+            // `.finite()` stated, `SplitSchema`'s reasoning (`1e400`).
+            src: z.number().finite().nonnegative(),
+            text: z.string(),
+          }),
+        ]),
+      ),
+    })
+    .optional(),
 });
 export type SceneOverride = z.infer<typeof SceneOverrideSchema>;
 
@@ -361,10 +399,19 @@ export const SplitSchema = z.union([
   // `src` (cut-review rework, 2026-08-26) is the split's SOURCE second — the
   // §155 principle ("key on the property the disruption cannot move")
   // applied to splits, the way `cuts[].src`, `cleanup.kept` and the caption
-  // keys already anchor. When present it is AUTHORITATIVE and the split is
-  // recut-immune (`remapOverridesThroughRecut` passes it through untouched);
-  // `at` then survives only as the historical old-clock record, the
-  // `cuts[].startSec` posture. Three shapes, all meaningful:
+  // keys already anchor. `src` itself is recut-immune — no re-cut ever
+  // rewrites it. `at` is "output time on the last render's clock"
+  // (split-positions-by-source D1): `remapOverridesThroughRecut` moves it
+  // through every re-cut, three ways (R8-1) — unchanged while `src` sits in
+  // removed material, re-derived from `src` on the run that restores it,
+  // `remapPoint` otherwise. Each split then cuts in exactly ONE pass (D2):
+  // pass 1 cuts graphics at `at`, and a split that landed there (and whose
+  // piece survived, R8-4) never cuts again; every other split cuts its take
+  // at `toOutput(src)`. After both passes produce's `reconcileSplitAnchors`
+  // (R7-4, R8-3) writes the anchor that did NOT cut onto the one that did —
+  // `src` for a graphic split, `at` for a take split, never `at` into or out
+  // of a graphic window — so the two stop disagreeing. Three shapes, all
+  // meaningful:
   //   {at}       — legacy doc; produce backfills `src` once via priorMap.
   //   {at, src}  — a normal ⌘B: the editor dual-writes both.
   //   {src}      — ⌘B INSIDE revived material (a kept cleanup removal): no
@@ -381,6 +428,14 @@ export const SplitSchema = z.union([
       at: z.number().finite().nonnegative().optional(),
       src: z.number().finite().nonnegative().optional(),
       id: z.string().min(1),
+      // The take half this split makes OWNS its framing (take-framing-identity
+      // P1): `effectiveOverride` stops layering the root's `video`/`pip` under
+      // it, so reframing one piece of a split take never moves another. Set
+      // by the editor's ⌘B on a plain take, which copies the framing the
+      // piece had at that moment onto it first, so the flag changes nothing
+      // on screen when it is written. Absent on every older split, which
+      // keeps inheriting exactly as before. Ignored on graphic halves.
+      ownFraming: z.boolean().optional(),
     })
     .refine((s) => s.at !== undefined || s.src !== undefined, {
       message: "a split needs `at` or `src`",
@@ -393,7 +448,15 @@ export const SplitSchema = z.union([
     .nonnegative()
     // `src: undefined` spelled out so both union arms share one output
     // shape — consumers read `s.src` without narrowing the arm first.
-    .transform((at) => ({ at: at as number | undefined, src: undefined as number | undefined, id: legacySplitId(at) })),
+    // `ownFraming` likewise (take-framing-identity P1): a pre-§137 split
+    // predates the flag, so its half inherits its root's framing as it
+    // always did.
+    .transform((at) => ({
+      at: at as number | undefined,
+      src: undefined as number | undefined,
+      id: legacySplitId(at),
+      ownFraming: undefined as boolean | undefined,
+    })),
 ]);
 export type Split = z.infer<typeof SplitSchema>;
 
@@ -405,12 +468,31 @@ export interface ResolvedSplitPoint {
   id: string;
 }
 
-/** The splits that carry an old-clock `at` — the editor's pass-1 input (its
- * cue windows speak the last render's clock) and the no-map fallback. A
- * src-only split is NOT here by definition; it applies via
- * `resolveSplitPoints` on the clock the map defines. */
+/** The splits that carry an `at` — fresh on the last render's clock, since
+ * `remapOverridesThroughRecut` moves every one through each re-cut
+ * (split-positions-by-source D1) — at that `at`. A src-only split is NOT
+ * here by definition; it applies via `resolveSplitPoints` on the clock the
+ * map defines. The graphic pass reads it through `pass1SplitPoints`, which
+ * also skips the inert ones. */
 export function atSplitPoints(splits: readonly Split[]): ResolvedSplitPoint[] {
   return splits.flatMap((s) => (s.at !== undefined ? [{ at: s.at, id: s.id }] : []));
+}
+
+/**
+ * The graphic pass's points (split-positions-by-source R8-2): `atSplitPoints`
+ * minus every split whose `src` is in material `map` removes. Such a split
+ * is INERT this run in BOTH passes (R7-3) — the remap leaves its `at`
+ * untouched while `src` is gone (R8-1 row 1), so that `at` would cut a
+ * graphic at a moment whose footage is not even playing; pass 2 already
+ * skips it with `resolveSplitPoints`' inert report, the one report it gets.
+ * No map (an unrendered workdir in the editor) filters nothing: there is no
+ * clock to call anything removed on. One helper for produce's pass 1, the
+ * editor's graphic pass and `ghosts.ts`, so the three cannot disagree about
+ * which splits a graphic sees.
+ */
+export function pass1SplitPoints(splits: readonly Split[], map: TimeMap | null): ResolvedSplitPoint[] {
+  const live = map === null ? splits : splits.filter((s) => s.src === undefined || map.toOutput(s.src) !== null);
+  return atSplitPoints(live);
 }
 
 /**
@@ -419,9 +501,11 @@ export function atSplitPoints(splits: readonly Split[]): ResolvedSplitPoint[] {
  * material the CURRENT cut removes — the split is INERT this run, skipped
  * with a report, never clamped to a seam (`cleanup.kept`'s inert-entry
  * posture: the doc keeps it, and it wakes up when that material is kept
- * again). A src-less split passes its old-clock `at` through — meaningful
- * only when `map` IS that old clock, which is produce's situation after
- * `remapOverridesThroughRecut` re-anchored it, and the editor's pass-1.
+ * again). A src-less split passes its `at` through — meaningful only when
+ * `map` IS the clock `at` speaks, which is produce's situation after
+ * `remapOverridesThroughRecut` re-anchored it, and the editor's on the old
+ * clock. Pass 2 only (split-positions-by-source D2): callers hand it the
+ * splits that did not land in the graphic pass.
  */
 export function resolveSplitPoints(
   splits: readonly Split[],
@@ -611,6 +695,19 @@ export function stripFilledThemeDefaults(theme: Partial<Theme>): Partial<Theme> 
   ) as Partial<Theme>;
 }
 
+/**
+ * One stored take look as parsed, before `normalizeTakeLooks` (see
+ * `OverrideDocSchema.takeLooks`). The look is `SceneOverrideSchema`'s own
+ * five fields, so a take look is valid exactly when the same values on a
+ * scene would be — no second copy of their limits. Lives here, not in
+ * take-looks.ts, which imports this module for types only (R6-8).
+ */
+const TakeLookEntryInputSchema = z.object({
+  srcIn: z.number(),
+  srcOut: z.number(),
+  look: SceneOverrideSchema.pick({ video: true, pip: true, layout: true, captionY: true, captionScale: true }),
+});
+
 export const OverrideDocSchema = z.object({
   /**
    * Global style tokens — the look is a system, so these are not per-element.
@@ -791,9 +888,10 @@ export const OverrideDocSchema = z.object({
    * cut-review rework (2026-08-26) `src` — SOURCE seconds — is the
    * authoritative anchor when present (recut-immune, the `cleanup.kept`
    * trick; see SplitSchema for the three shapes and the editor-may-write-src
-   * divergence). `at` is the old-clock output second: authoritative only on
-   * src-less legacy entries, where it still moves under
-   * `remapOverridesThroughRecut`. `id` is minted once when the split is
+   * divergence). `at` is the output second on the last render's clock,
+   * moved through every re-cut by `remapOverridesThroughRecut`: the anchor
+   * a graphic split cuts at, and the only one a src-less legacy entry has
+   * (split-positions-by-source D1, D2). `id` is minted once when the split is
    * created and NEVER recomputed (§137). The split half is named
    * `${rootId}@${id}`, so re-anchoring cannot rename the half out from under
    * a `hidden` (or any other) override on it — the bug that resurrected a
@@ -1012,6 +1110,54 @@ export const OverrideDocSchema = z.object({
       skippedSuggestions: z.array(z.string()).optional(),
     })
     .optional(),
+  /**
+   * Template graphics the author added in the editor (editor-added-graphics
+   * §1). Produce converts them to scenes before assembly on every run
+   * (`addedSceneToScene`), so no sync run or Render can lose them (AG1).
+   * The entry shape is loose on purpose — see `AddedSceneSchema`: one stale
+   * entry must not fail the parse every reader of this file makes (AG3).
+   *
+   * Optional with NO default (the `sfx` / `captionsHidden` rule), and the
+   * editor writes it through `withAddedScenes`, which deletes an empty
+   * list, so a project that never added a graphic grows no key.
+   *
+   * Recut-immune by construction: source seconds only, which a re-cut does
+   * not move, so it has no entry in `remapOverridesThroughRecut`.
+   */
+  addedScenes: z.array(AddedSceneSchema).optional(),
+  /**
+   * Take looks attached to SOURCE time (take-looks-by-source L1): `video`,
+   * `pip`, `layout`, `captionY` and `captionScale` for whatever take piece
+   * plays that footage, resolved by `applyTakeLooks` — instead of under the
+   * positional `take-*` keys in `scenes`, which a cut in front, a graphic
+   * change or a kept range renumbered onto other footage.
+   *
+   * PRESENT, even `[]`, is the "migrated" marker (L3); absent is a legacy doc,
+   * for which both pipelines skip the look pass and behave exactly as before.
+   * So it is optional with NO default — a default would migrate every doc on
+   * parse — the `sfx`/`captionsHidden` rule for a second reason.
+   *
+   * Normalized, never rejected (S9): one bad entry must not fail the parse
+   * every reader of this file makes (the `addedScenes` reasoning). Each item
+   * is checked on its own against the look fields' own schema — a look value
+   * out of range drops its entry — and `normalizeTakeLooks` then drops
+   * non-finite, inverted and empty entries, sorts, resolves overlaps (the
+   * later entry wins) and coalesces equal neighbours.
+   *
+   * Recut-immune by construction: source seconds only, so it has no entry in
+   * `remapOverridesThroughRecut` (the `cleanup.kept` property).
+   */
+  takeLooks: z
+    .array(z.unknown())
+    .transform((raw) =>
+      normalizeTakeLooks(
+        raw.flatMap((item) => {
+          const parsed = TakeLookEntryInputSchema.safeParse(item);
+          return parsed.success ? [parsed.data] : [];
+        }),
+      ),
+    )
+    .optional(),
 });
 export type OverrideDoc = z.infer<typeof OverrideDocSchema>;
 
@@ -1081,6 +1227,63 @@ export function resolveSwappedProps(
 }
 
 /**
+ * A plain take, or a piece of one: the key every take-framing-identity rule
+ * keys on. `take-N` and `take-N-k` are what `fillPlainCues` mints; a kept
+ * cleanup block (`take-kept-*`) is out of scope (its pieces are a different
+ * ordinal space), and a parked key (`#orphaned`) is bookkeeping that matches
+ * no cue, so it is never a half.
+ */
+export function isPlainTakeKey(key: string): boolean {
+  return plainTakeOrdinal(key) !== null;
+}
+
+/**
+ * The one parse of a plain take key (take-framing-identity): the root's clip
+ * index `n` and its per-clip piece `k`, read from the text before the first
+ * `@`. `k` is 0 for a bare `take-N` — `fillPlainCues`' own per-clip ordinal,
+ * whose first piece keeps the bare name — so ordering by `(n, k)` puts
+ * `take-2` before `take-2-1` before `take-2-10`, and `take-2` before
+ * `take-10`. Null for anything `isPlainTakeKey` rejects; that predicate is
+ * this function's non-null, so the two cannot drift.
+ */
+export function plainTakeOrdinal(key: string): { n: number; k: number } | null {
+  if (isParkedOverrideKey(key)) return null;
+  const m = /^take-(\d+)(?:-(\d+))?$/.exec(splitRootId(key));
+  if (!m) return null;
+  return { n: Number(m[1]), k: m[2] === undefined ? 0 : Number(m[2]) };
+}
+
+/**
+ * A key that names a take PIECE whose look comes from source time in a
+ * migrated doc (take-looks-by-source R4-S4, R7-5): a plain take or its half
+ * (`plainTakeOrdinal`), or a kept cleanup block or its half (`take-kept-<ms>`,
+ * which `isPlainTakeKey` leaves out on purpose — its ids are a different
+ * ordinal space). Never a parked key: `#orphaned` is bookkeeping that names no
+ * piece. Migration (L3) reads look fields off these keys, and in look mode the
+ * editor refuses the id-keyed look actions on them, so a write cannot land
+ * on a key nothing reads any more.
+ */
+export function isLookPieceKey(id: string): boolean {
+  return !isParkedOverrideKey(id) && (plainTakeOrdinal(id) !== null || /^take-kept-\d+$/.test(splitRootId(id)));
+}
+
+/** The ids of the splits whose take halves own their framing
+ * (take-framing-identity P1) — built once per `applyOverrides` call and
+ * handed to `effectiveOverride`. */
+export function ownFramingSplitIds(splits: readonly Split[]): Set<string> {
+  return new Set(splits.filter((s) => s.ownFraming === true).map((s) => s.id));
+}
+
+/** A plain take HALF whose split owns its framing (take-framing-identity
+ * P1) — the one predicate `effectiveOverride` and `applyOverrides` both ask,
+ * so the layer that stops inheriting framing and the merge that stops
+ * keeping a carried copy of it cannot disagree about which cues they mean. */
+function ownsTakeFraming(id: string, ownFraming: ReadonlySet<string> | undefined): boolean {
+  const at = id.indexOf("@");
+  return ownFraming !== undefined && at !== -1 && isPlainTakeKey(id) && ownFraming.has(id.slice(at + 1));
+}
+
+/**
  * The override entry a cue resolves against: its own, layered over its split
  * ROOT's (R16 §68). A split half is still the same scene — captions scaled
  * on the original must render scaled on both halves — so `id@<split id>`
@@ -1091,17 +1294,36 @@ export function resolveSwappedProps(
  * The half's OWN entry wins key by key, and the record-shaped keys merge
  * field-wise so nudging one field on a half doesn't drop the rest of what it
  * inherited.
+ *
+ * A third exception, for take halves only (take-framing-identity P1): when
+ * `id` is a plain take key and its split's id is in `ownFraming`, the half
+ * inherits neither `video` nor `pip` — as whole objects, `volume` and
+ * `autoZoom` included. Framing is the one edit that is about a PIECE of a
+ * take, not the scene: inheriting it is what made reframing the first piece
+ * move every later half that had no value of its own. The editor's ⌘B
+ * copies the piece's framing onto the half before flagging it, so the
+ * resolved framing is unchanged at the moment the flag is written. Graphic
+ * halves ignore the flag: their framing is the scene's, and overrides apply
+ * to them before their split (`produce.ts`'s first pass). Everything else
+ * still inherits (R16 §68).
+ *
+ * Exported (take-framing-identity P1) for the editor's ⌘B, which copies a
+ * piece's framing from this layer — never from the cue's resolved `video`.
  */
-function effectiveOverride(
+export function effectiveOverride(
   scenes: Record<string, SceneOverride>,
   id: string,
+  ownFraming?: ReadonlySet<string>,
 ): SceneOverride | undefined {
   const own = scenes[id];
   const at = id.indexOf("@");
   if (at === -1) return own;
   const root = scenes[id.slice(0, at)];
   if (!root) return own;
-  const { timing: _timing, hidden: _hidden, ...base } = root;
+  const ownsFraming = ownsTakeFraming(id, ownFraming);
+  const { timing: _timing, hidden: _hidden, ...inherited } = root;
+  const { video: _video, pip: _pip, ...unframed } = inherited;
+  const base: Omit<SceneOverride, "timing" | "hidden"> = ownsFraming ? unframed : inherited;
   if (!own) return { ...base, props: { ...base.props }, elements: { ...base.elements } };
   return {
     ...base,
@@ -1187,9 +1409,23 @@ export function resolveSrcTimingPins(
 export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): AppliedOverrides {
   const ids = new Set(cues.map((c) => c.id));
   const orphans = Object.keys(doc.scenes).filter((id) => !ids.has(id));
+  // Once per call, for both merges below (take-framing-identity P1): the two
+  // must agree on which halves own their framing, or the speed retime would
+  // read a different entry from the one the merge applied.
+  const ownFraming = ownFramingSplitIds(doc.splits);
   const out = cues.map((cue) => {
-    const o = effectiveOverride(doc.scenes, cue.id);
-    if (!o) return cue;
+    const o = effectiveOverride(doc.scenes, cue.id, ownFraming);
+    // A flagged take half's `video`/`pip` come ONLY from its own entry — a
+    // copy the cue arrived carrying is dropped, not kept (take-framing-identity
+    // P1; final review I-1). The editor's post-carve pass (`finishOnClock`)
+    // splits src-only splits on cues this function already merged, so the
+    // new half arrives as a copy of its FRAMED root; keeping that copy when
+    // the half has no framing of its own previewed the root's framing on a
+    // piece produce renders unframed — produce splits the unmerged fill cues.
+    // Plain fill takes carry no `video`/`pip` of their own (`fill.ts`), so
+    // in produce this drops nothing and its output is unchanged.
+    const ownsFraming = ownsTakeFraming(cue.id, ownFraming);
+    if (!o) return ownsFraming ? withoutFraming(cue) : cue;
     // A refused swap (a non-planner component on either side) comes back as
     // the cue's own component: it is then no swap at all, and the entry's
     // other edits — a clip's `muted`, its framing — still apply below.
@@ -1219,8 +1455,9 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
     // pinned start from `entryAtSec`. Same guard as the pin itself below.
     const pins = o.timing !== undefined && !isSrcTiming(o.timing) && !cue.pinned;
     const { entryAtSec: _pinnedEntry, ...baseSansEntry } = base;
+    const spreadBase = pins ? baseSansEntry : base;
     const merged: SceneCue = {
-      ...(pins ? baseSansEntry : base),
+      ...(ownsFraming ? withoutFraming(spreadBase) : spreadBase),
       component,
       layout: o.layout ?? cue.layout,
       props,
@@ -1243,13 +1480,119 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
       // this branch with a src entry means no pre-pass ran, and doing nothing
       // is the only honest answer available (guessing an output window from a
       // source second is exactly the old-clock lie this arm removes).
+      // A clip's pin is read capped at its played length (`maxCueSec`, on the
+      // MERGED props so a speed edit in the same entry counts): a pin an older
+      // edge drag stored longer than the clip is the window the live retime
+      // already drew, so produce renders what the preview showed. The stored
+      // doc keeps the author's numbers; only the read is capped.
       ...(pins && o.timing && !isSrcTiming(o.timing)
-        ? { startSec: o.timing.startSec, endSec: o.timing.endSec, pinned: true }
+        ? {
+            startSec: o.timing.startSec,
+            endSec: cappedEndSec({ component, props }, o.timing.startSec, o.timing.endSec),
+            pinned: true,
+          }
         : {}),
     };
     return swapped ? withSwappedReveal(merged) : merged;
   });
-  return { cues: out, orphans };
+  // A clip's speed edit changes how long the clip plays, and the window has
+  // to follow it (a faster clip's slot shrinks, the speaker shows after it):
+  // the prop merge above runs AFTER assembly, so nothing else re-derives
+  // `endSec`. A second pass over `out` rather than inside the map, because
+  // the neighbour that limits a slowed clip is the neighbour as merged —
+  // a pin may just have moved it. Done here, once, so produce and the
+  // editor's memo get the same window.
+  const retimed = out.map((merged, i) => {
+    const cue = cues[i]!;
+    const o = effectiveOverride(doc.scenes, cue.id, ownFraming);
+    if (!o) return merged;
+    const nextStartSec = out
+      .filter((c) => c !== merged && c.startSec > merged.startSec)
+      .reduce<number | undefined>((lo, c) => (lo === undefined || c.startSec < lo ? c.startSec : lo), undefined);
+    const endSec = clipSpeedEndSec({
+      cue,
+      merged,
+      setsSpeed: "speed" in o.props,
+      // Any timing entry, a src one included: a pin is the author's own
+      // window and stays as dragged (read capped at the clip's length,
+      // above). `cue.pinned` too — an earlier pass already applied that
+      // window.
+      pinned: o.timing !== undefined || cue.pinned === true,
+      nextStartSec,
+    });
+    return endSec === merged.endSec ? merged : { ...merged, endSec };
+  });
+  return { cues: retimed, orphans };
+}
+
+/** `cue` minus its `video`/`pip` — the SAME object when it has neither, so
+ * produce's unframed fill halves pass through `applyOverrides` untouched. */
+function withoutFraming<T extends Pick<SceneCue, "video" | "pip">>(cue: T): T {
+  if (cue.video === undefined && cue.pip === undefined) return cue;
+  const { video: _video, pip: _pip, ...rest } = cue;
+  return rest as T;
+}
+
+/** `endSec`, held to `startSec` plus the cue's longest length (`maxCueSec`);
+ * unchanged for a cue with no fixed length. */
+function cappedEndSec(
+  cue: Pick<SceneCue, "component" | "props">,
+  startSec: number,
+  endSec: number,
+): number {
+  const max = maxCueSec(cue);
+  return max === undefined ? endSec : Math.min(endSec, startSec + max);
+}
+
+/**
+ * The window end a ClipScene's speed override gives it: `startSec` plus the
+ * clip's longest length (`maxCueSec`: `durationSec / speed`, capped as
+ * `assembleScenes` caps a clip at `MAX_SCENE_SEC` from the start) and cut
+ * at the next scene's start less the gap the timing clamps keep
+ * (`PINNED_GAP_SEC`, `reclampPinnedTiming`). `merged.endSec` unchanged when
+ * the rule does not apply.
+ *
+ * Applies only when every one of these holds:
+ * - the cue is a ClipScene before and after the merge (a stray `speed` on a
+ *   card means nothing; ClipScene never swaps, `resolveSwappedProps`);
+ * - the override itself sets `speed` (a `muted` edit must not re-time);
+ * - nothing pins the window (`pinned`);
+ * - it is not a split half: a half's window is a piece of the clip, never
+ *   the clip's whole length;
+ * - the merged speed differs from the cue's own pre-override speed. This is
+ *   what keeps a no-op edit from re-lengthening a clip assembly already cut
+ *   at 15s or at the video's end, and what makes the second override pass
+ *   (produce.ts and App.tsx both run one) leave the first pass's window be:
+ *   by then the cue's own props carry the merged speed.
+ *
+ * The output's end is not applied: `applyOverrides` has no clock, and
+ * `resolveSrcTimingPins` documents why it takes no map. A slowed LAST clip
+ * can therefore run past the video's end; `fillPlainCues` adds no take past
+ * a cue, and no frame past the composition's end is ever rendered.
+ *
+ * The neighbour cut only limits growth: a slowed clip whose neighbour
+ * already overlaps it keeps the window it had, rather than being cut below
+ * it — or below its own start, which no window may be.
+ */
+export function clipSpeedEndSec(input: {
+  /** The cue before this override. */
+  cue: SceneCue;
+  /** The cue after the merge: its props carry the override's speed. */
+  merged: SceneCue;
+  setsSpeed: boolean;
+  pinned: boolean;
+  nextStartSec: number | undefined;
+}): number {
+  const { cue, merged } = input;
+  if (cue.component !== "ClipScene" || merged.component !== "ClipScene") return merged.endSec;
+  if (!input.setsSpeed || input.pinned || splitRootId(cue.id) !== cue.id) return merged.endSec;
+  if (merged.props === undefined || clipSpeed(merged.props) === clipSpeed(cue.props)) return merged.endSec;
+  const max = maxCueSec(merged);
+  if (max === undefined) return merged.endSec;
+  const wanted = merged.startSec + max;
+  const hi =
+    input.nextStartSec === undefined ? Number.POSITIVE_INFINITY : input.nextStartSec - PINNED_GAP_SEC;
+  return Math.min(wanted, Math.max(hi, merged.endSec));
 }
 
 /**
@@ -1261,13 +1604,269 @@ export function applyOverrides(cues: readonly SceneCue[], doc: OverrideDoc): App
  * the same rule `assembleScenes` applies. A legacy cue (no `reveal`) stays
  * legacy. `entryAtSec` is kept: the swap does not move where the graphic
  * enters, and the start is still that word's.
+ *
+ * A swap TO BulletList drops `reveal` (graphic-editor-modal §1, AG1): before
+ * BulletList had reveal items this swap already came out without one, so
+ * the swapped list rendered on its 7-frame stagger, and an all-null reveal
+ * would now put it on the paced path instead.
  */
 function withSwappedReveal(cue: SceneCue): SceneCue {
   if (!cue.reveal || cue.component === undefined || cue.props === undefined) return cue;
   const { reveal: _stale, ...rest } = cue;
+  if (cue.component === "BulletList") return rest;
   const count = revealItemTexts(cue.component, cue.props)?.length ?? 0;
   if (count === 0) return rest;
   return { ...rest, reveal: { itemAtSec: Array.from({ length: count }, () => null) } };
+}
+
+/**
+ * The components whose items can land on words (graphic-editor-modal
+ * Terms, "Covered components"). Not TerminalMock: it reveals per window,
+ * and windows are not editable in the modal. Not PhoneDemo: its pills are
+ * not in the add form. Exported for the modal, which writes `itemPins`
+ * only for these (§6).
+ */
+export const ITEM_TIMING_COMPONENTS = [
+  "BulletList",
+  "FlowDiagram",
+  "StrikethroughReveal",
+  "ChatMock",
+  "CardRow",
+] as const satisfies readonly SceneComponentId[];
+type ItemTimingComponent = (typeof ITEM_TIMING_COMPONENTS)[number];
+
+function isItemTimingComponent(component: string): component is ItemTimingComponent {
+  return (ITEM_TIMING_COMPONENTS as readonly string[]).includes(component);
+}
+
+/**
+ * What `resolveItemTimings` needs to know about one root (§3, §4): its
+ * component and merged props as the UNSPLIT list has them, and its block
+ * window. `window` null is rule 4 of the window: the graphic is skipped
+ * with a note.
+ */
+export type ItemTimingRoot = {
+  component: string;
+  props: Record<string, unknown>;
+  window: { srcStart: number; srcEnd: number } | null;
+};
+
+/**
+ * A root's block window in SOURCE seconds (graphic-editor-modal Terms,
+ * "Block window"), from stored source data only, never from the cue's
+ * output times: `minScene`, the 15 s cap, gaps and seams put a cue's ends
+ * in different places on different clocks, and a window read off them would
+ * hand the editor and produce different words. In this order:
+ *
+ * 1. The root's timing pin, by form. A src pin is its stored span, but only
+ *    where `resolveTimingPin(pin, liveMap)` is non-null: an inert pin does
+ *    not move the graphic on that clock, so it must not narrow its words
+ *    either. A legacy pin's numbers are output seconds on the clock they
+ *    were written for (the editor's old clock; produce's run map once
+ *    `remapOverridesThroughRecut` has re-anchored them), so they convert
+ *    with THAT clock's `toSource`, passed as `pinMap`. Read from the raw
+ *    doc, never a `resolveSrcTimingPins` result: there a src pin has
+ *    already become output seconds and would read as a legacy one.
+ * 2. An added graphic: its entry's span, the one the add stored.
+ * 3. A plan cue: its first anchor word's source start to its last anchor
+ *    word's source end. Indices are into `words`, the run's transcript list
+ *    in both pipelines (Terms).
+ * 4. Otherwise none.
+ *
+ * Half-open `[srcStart, srcEnd)`, as `resolveItemWords` reads it.
+ */
+export function blockWindow(
+  rootCue: SceneCue,
+  doc: OverrideDoc,
+  words: readonly Word[],
+  pinMap: TimeMap,
+  liveMap: TimeMap,
+): { srcStart: number; srcEnd: number } | null {
+  const timing = doc.scenes[rootCue.id]?.timing;
+  if (timing !== undefined) {
+    if (!isSrcTiming(timing)) {
+      // Produce converts the re-anchored numbers through the run map, the
+      // editor the stored ones through its old clock: the same source second
+      // up to float noise, which matters only for a word starting exactly on
+      // a pin edge.
+      return { srcStart: pinMap.toSource(timing.startSec), srcEnd: pinMap.toSource(timing.endSec) };
+    }
+    if (resolveTimingPin(timing, liveMap) !== null) {
+      return { srcStart: timing.srcStart, srcEnd: timing.srcEnd };
+    }
+  }
+  // The first entry with the id, produce's rule for a repeated id (fix-wave M1).
+  const added = doc.addedScenes?.find((e) => e.id === rootCue.id);
+  if (added !== undefined) return { srcStart: added.srcStart, srcEnd: added.srcEnd };
+  const anchor = rootCue.anchor;
+  const first = anchor ? words[anchor.startWord] : undefined;
+  const last = anchor ? words[anchor.endWord] : undefined;
+  if (first === undefined || last === undefined) return null;
+  return { srcStart: first.start, srcEnd: last.end };
+}
+
+/** The root ids whose own entry carries the marker. A split half's own
+ * `itemPins` is not a root's (§3 works per root; the modal opens the root
+ * from a half, §5). */
+function itemTimingRootIds(doc: OverrideDoc): string[] {
+  return Object.keys(doc.scenes).filter(
+    (id) => doc.scenes[id]?.itemPins !== undefined && splitRootId(id) === id,
+  );
+}
+
+/**
+ * The `roots` argument of `resolveItemTimings`, taken from an UNSPLIT cue
+ * list (§4): one entry per marked root id present in `cues`, with that
+ * cue's component and merged props and its `blockWindow`. Produce's call
+ * (both maps the run's) and the editor's call at its first `applyOverrides`
+ * (`pinMap` the old clock, `liveMap` the live one) are this one function, so
+ * the two cannot build their roots differently.
+ */
+export function itemTimingRoots(
+  cues: readonly SceneCue[],
+  doc: OverrideDoc,
+  words: readonly Word[],
+  pinMap: TimeMap,
+  liveMap: TimeMap,
+): Map<string, ItemTimingRoot> {
+  const roots = new Map<string, ItemTimingRoot>();
+  for (const id of itemTimingRootIds(doc)) {
+    const cue = cues.find((c) => c.id === id);
+    if (cue === undefined || cue.component === undefined) continue;
+    roots.set(id, {
+      component: cue.component,
+      props: cue.props ?? {},
+      window: blockWindow(cue, doc, words, pinMap, liveMap),
+    });
+  }
+  return roots;
+}
+
+/** An item's text as a pin stores it (Terms, "Item"): CardRow's `[text,
+ * sub]` alternatives joined with " · ", the one line the modal shows.
+ * Exported for the modal, whose Save writes each pinned row's current text
+ * (§6): the stale-text check below compares against exactly this join, so
+ * a second copy that joined differently would turn every saved CardRow pin
+ * auto on the next resolve. */
+export function itemPinText(item: RevealItem): string {
+  return typeof item === "string" ? item : item.join(" · ");
+}
+
+/**
+ * Every item's time on the live clock for each root with word timing on
+ * (graphic-editor-modal §3). List-level because step 5 needs the override
+ * merge (`effectiveOverride`) per cue, which was private to this module
+ * when this was written (it is exported since take-framing-identity P1, for
+ * the editor's ⌘B framing copy). It reads only `props` there, so the
+ * split's `ownFraming` set is not needed.
+ *
+ * For each root id whose own entry has `itemPins` and whose root component
+ * is covered:
+ * 1. texts from the root's merged props (a split half's own text edit does
+ *    not re-time items, call 5);
+ * 2. stale pins become auto with a note: all of them when the component or
+ *    the count differs, one when its stored text differs. Only a pin that
+ *    was set is reported: an all-auto marker has nothing to lose;
+ * 3. `resolveItemWords` over the block words on `map`;
+ * 4. every cue with that root id AND the root's component gets
+ *    `reveal.itemAtSec`, the word time less `ITEM_LEAD_SEC` floored at 0
+ *    (assembly's rule, `plannedCue`). A half its own override swapped is
+ *    left as `withSwappedReveal` made it;
+ * 5. `props.reveal = "synced"` only with a bounding pin (pinned or cut) and
+ *    no `reveal` in that cue's own effective override, so the author's own
+ *    choice always wins and auto-only lists keep the renderer's decision;
+ * 6. nothing else: `startSec`, `endSec` and `entryAtSec` are the cue's.
+ *
+ * `roots`: built by `itemTimingRoots` from the UNSPLIT list at the first
+ * `applyOverrides`, and the resolve run after the LAST one, in produce and
+ * the editor alike (§4). Resolved before the split, a half's own swap met a
+ * resolved `reveal` in produce and none in the editor, so a reveal-less
+ * root's swapped half rendered paced in one and staggered in the other
+ * (item-timing-parity.test.ts). Required, with no derive-from-`cues`
+ * default: both real callers pass a list that is already split, where a
+ * default would read the root off its first half, and a hide on the root
+ * id (`splitThenDropHidden`) removes that half while the other still needs
+ * the root's times. `doc` is the RAW doc (see
+ * `blockWindow`); `map` is the live clock the cues are on.
+ *
+ * A doc with no marker, or nothing to write, returns the very same `cues`
+ * array: a project without `itemPins` costs nothing and renders byte-equal
+ * (AG1).
+ */
+export function resolveItemTimings(
+  cues: SceneCue[],
+  doc: OverrideDoc,
+  words: readonly Word[],
+  map: TimeMap,
+  roots: ReadonlyMap<string, ItemTimingRoot>,
+): { cues: SceneCue[]; notes: string[] } {
+  const ids = itemTimingRootIds(doc);
+  if (ids.length === 0) return { cues, notes: [] };
+  const notes: string[] = [];
+  const allWords = words.map((w) => ({ text: w.text, srcStart: w.start }));
+  // Once per call, not per root: `mapWord` walks the spans.
+  const wordTimes = words.map((w) => wordOutputStart(w, map));
+  const timed = new Map<string, { component: string; itemAtSec: (number | null)[]; bounded: boolean }>();
+
+  for (const id of ids) {
+    const root = roots.get(id);
+    if (root === undefined || !isItemTimingComponent(root.component)) continue;
+    if (root.window === null) {
+      notes.push(`scene "${id}": no block window to time its items in — item timing skipped`);
+      continue;
+    }
+    const texts = revealItemTexts(root.component, root.props) ?? [];
+    const stored = doc.scenes[id]!.itemPins!;
+    const anyPin = stored.pins.some((p) => p !== null);
+    let pins: ({ src: number; text: string } | null)[];
+    if (stored.component !== root.component) {
+      if (anyPin) {
+        notes.push(
+          `scene "${id}": its item pins were made for ${stored.component}, not ${root.component} — ` +
+            `every item is matched by its text`,
+        );
+      }
+      pins = texts.map(() => null);
+    } else if (stored.pins.length !== texts.length) {
+      if (anyPin) {
+        notes.push(
+          `scene "${id}": ${stored.pins.length} item pins for ${texts.length} items — ` +
+            `every item is matched by its text`,
+        );
+      }
+      pins = texts.map(() => null);
+    } else {
+      pins = stored.pins.map((p, k) => {
+        if (p === null || p.text === itemPinText(texts[k]!)) return p;
+        notes.push(`scene "${id}" item ${k + 1}: its text changed since it was pinned`);
+        return null;
+      });
+    }
+    const resolved = resolveItemWords(texts, allWords, root.window, (i) => wordTimes[i] !== null, pins);
+    notes.push(...resolved.notes.map((n) => `scene "${id}" ${n}`));
+    timed.set(id, {
+      component: root.component,
+      itemAtSec: resolved.items.map((item) => {
+        const at = item.word === null ? null : (wordTimes[item.word] ?? null);
+        return at === null ? null : Math.max(0, at - ITEM_LEAD_SEC);
+      }),
+      bounded: resolved.items.some((item) => item.state === "pinned" || item.state === "cut"),
+    });
+  }
+
+  if (timed.size === 0) return { cues, notes };
+  const out = cues.map((cue) => {
+    const t = timed.get(splitRootId(cue.id));
+    if (t === undefined || cue.component !== t.component) return cue;
+    const ownProps = effectiveOverride(doc.scenes, cue.id)?.props ?? {};
+    const synced = t.bounded && !("reveal" in ownProps);
+    return {
+      ...cue,
+      ...(synced ? { props: { ...cue.props, reveal: "synced" } } : {}),
+      reveal: { ...cue.reveal, itemAtSec: t.itemAtSec },
+    };
+  });
+  return { cues: out, notes };
 }
 
 /**
@@ -1276,6 +1875,10 @@ function withSwappedReveal(cue: SceneCue): SceneCue {
  * can refuse the keystroke up front instead of silently no-opping.
  */
 export const SPLIT_MIN_PIECE_SEC = 0.3;
+
+/** How far a split's would-be second cut must sit from its pass-1 cut before
+ * produce names it in a `cuts only … now` note (split-positions-by-source D5). */
+export const DOUBLE_CUT_NOTE_SEC = 0.3;
 
 /**
  * Cut cues at the stored split points (R16 §61).
@@ -1300,13 +1903,44 @@ export function splitCues(
   cues: readonly SceneCue[],
   splits: readonly ResolvedSplitPoint[],
 ): SceneCue[] {
+  return splitCuesWithLanding(cues, splits).cues;
+}
+
+/**
+ * `splitCues`, also reporting where each split LANDED (take-framing-identity
+ * P2): split id → the root id of the cue it actually cut. A take half's key
+ * follows its root's ordinal, so after a cut in front the half the render
+ * makes can sit under a different root than the one its edit was keyed to;
+ * `rekeyTakeHalves` reads this map to move the edit onto the piece the
+ * render really has. The root, never the host cue's own id — a second split
+ * inside `take-0@3000` still names its piece `take-0@<id>`. A split the
+ * margin test skips or that misses every cue is absent: it made no piece, so
+ * there is nothing to re-key it to.
+ *
+ * `landedHost` is the same map with the host cue's OWN id — the piece the
+ * split actually cut, which for a chained split is `root@other`
+ * (split-positions-by-source R9-1). A second map rather than a changed
+ * `landed`: `rekeyTakeHalves` builds `${root}@${sid}` from `landed` and
+ * would mint `take-3@5000@sid` from a host id. `survivingLandings` needs
+ * the host, because after fc1 cuts `shot-s1`, fc2's halves are
+ * `shot-s1@fc1` and `shot-s1@fc2` — testing the root `shot-s1` would count
+ * fc2 as landed with both of its halves hidden (R7 S4).
+ */
+export function splitCuesWithLanding(
+  cues: readonly SceneCue[],
+  splits: readonly ResolvedSplitPoint[],
+): { cues: SceneCue[]; landed: Map<string, string>; landedHost: Map<string, string> } {
   const out = [...cues];
+  const landed = new Map<string, string>();
+  const landedHost = new Map<string, string>();
   for (const s of [...splits].sort((a, b) => a.at - b.at)) {
     const i = out.findIndex(
       (c) => s.at >= c.startSec + SPLIT_MIN_PIECE_SEC && s.at <= c.endSec - SPLIT_MIN_PIECE_SEC,
     );
     if (i === -1) continue;
     const cue = out[i]!;
+    landed.set(s.id, splitRootId(cue.id));
+    landedHost.set(s.id, cue.id);
     // Derive from the ROOT id, not the (possibly already-split) cue id:
     // `take-0@6000`, never `take-0@3000@6000` — so a half's id depends only
     // on the original cue and the split that made it, and adding an EARLIER
@@ -1323,7 +1957,7 @@ export function splitCues(
       { ...secondHalfBase(cue), id: `${cue.id.split("@")[0]}@${s.id}`, startSec: s.at },
     );
   }
-  return out;
+  return { cues: out, landed, landedHost };
 }
 
 function secondHalfBase(cue: SceneCue): SceneCue {
@@ -1378,12 +2012,92 @@ export function dropHiddenCues(cues: readonly SceneCue[], doc: OverrideDoc): Dro
 export function splitThenDropHidden(
   cues: readonly SceneCue[],
   doc: OverrideDoc,
-  // Resolved points, when the caller holds a map (produce, the editor's
-  // post-carve pass). Default: the doc's old-clock `at` entries — src-only
-  // splits have no image on that clock and are correctly absent.
+  // The graphic pass's points: `pass1SplitPoints(doc.splits, map)` in
+  // produce and the editor (split-positions-by-source R8-2), so an inert
+  // split cuts nothing. Default: every `at` entry, unfiltered — src-only
+  // splits have no `at` and are correctly absent.
   points: readonly ResolvedSplitPoint[] = atSplitPoints(doc.splits),
-): DropHiddenResult {
-  return dropHiddenCues(splitCues(cues, points), doc);
+): SplitDropResult {
+  const split = splitCuesWithLanding(cues, points);
+  return { ...dropHiddenCues(split.cues, doc), landed: split.landed, landedHost: split.landedHost };
+}
+
+/** `splitThenDropHidden`'s result: the drop, plus where each split landed
+ * (split-positions-by-source R8-4, R9-1). Both maps are taken BEFORE the
+ * hidden drop — a landing whose pieces were all hidden still landed here,
+ * and `survivingLandings` is what decides whether it counts. */
+export type SplitDropResult = DropHiddenResult & {
+  /** Split id → the ROOT id of the cue it cut (`splitCuesWithLanding`). */
+  landed: Map<string, string>;
+  /** Split id → the id of the piece it actually cut. */
+  landedHost: Map<string, string>;
+};
+
+/**
+ * The graphic-pass landings that still count after the hidden drop and the
+ * overlap drop (split-positions-by-source R7-2, R8-4): a split stays
+ * "landed" only while its host piece (`landedHost`'s id) or the half it made
+ * (`${root}@${sid}`) is in `shown`. Every other split goes to pass 2 and
+ * cuts its take at `toOutput(src)` — the reason this exists: a split whose
+ * graphic halves are both hidden made nothing anyone sees, and treating it
+ * as landed would leave the take under them uncut (r6 B2). `shown` is the
+ * list after BOTH drops — produce's `visibleCues`, the editor's
+ * `covered.cues` — since an added graphic dropped for overlap is just as
+ * gone as a hidden one.
+ */
+export function survivingLandings(
+  landedHost: ReadonlyMap<string, string>,
+  shown: readonly SceneCue[],
+): Set<string> {
+  const ids = new Set(shown.map((c) => c.id));
+  const out = new Set<string>();
+  for (const [sid, host] of landedHost) {
+    if (ids.has(host) || ids.has(`${splitRootId(host)}@${sid}`)) out.add(sid);
+  }
+  return out;
+}
+
+/**
+ * The one-time change, said out loud (split-positions-by-source D5, R7-1):
+ * for each split that landed in the graphic pass and survived, dry-run
+ * where pass 2 WOULD have cut it — `toOutput(src)` on `pass2Input`, the
+ * filled and carved list pass 2 receives — and name it when that is a
+ * different cut. Before this design produce cut such a split twice, once at
+ * its stale `at` and again at `src`, minting two cues of one name; now it
+ * cuts only the graphic. `G` is the root of the piece pass 1 cut
+ * (`splitRootId(host)`, R9-1), `H` the root of the cue the dry run lands on,
+ * of any kind. Fires only for splits whose anchors had drifted apart, and
+ * once: `reconcileSplitAnchors` then writes `src` onto `at`, so the next
+ * run's dry-run point sits on the joint pass 1 made and lands nowhere.
+ *
+ * The 0.3 s test is the design's stated bar. The landing margin almost
+ * always implies it — a point within 0.3 s of the joint pass 1 made at `at`
+ * cannot clear the margin of the cue on either side of that joint — but it
+ * is stated, not assumed (r8 m5), for a list whose joint moved (a re-clamped
+ * pin).
+ */
+export function doubleCutNotes(
+  splits: readonly Split[],
+  pass1Surviving: ReadonlySet<string>,
+  landedHost: ReadonlyMap<string, string>,
+  pass2Input: readonly SceneCue[],
+  map: TimeMap,
+): string[] {
+  const landedInPass1 = splits.filter((s) => pass1Surviving.has(s.id));
+  const { points } = resolveSplitPoints(landedInPass1, map);
+  const dry = splitCuesWithLanding(pass2Input, points);
+  const notes: string[] = [];
+  for (const s of landedInPass1) {
+    const host = landedHost.get(s.id);
+    const wouldHave = dry.landed.get(s.id);
+    const point = points.find((p) => p.id === s.id);
+    if (host === undefined || wouldHave === undefined || point === undefined || s.at === undefined) continue;
+    // Same 0.3 s as the landing margin, but named on its own: the note's
+    // threshold must not move if the margin does (split-positions review M2).
+    if (Math.abs(point.at - s.at) <= DOUBLE_CUT_NOTE_SEC) continue;
+    notes.push(`split ${s.id} cuts only ${splitRootId(host)} now (it used to cut ${wouldHave} too)`);
+  }
+  return notes;
 }
 
 /**
@@ -1443,6 +2157,13 @@ export function parkedOverrideBaseKey(key: string): string {
   return isParkedOverrideKey(key) ? key.slice(0, -PARKED_SUFFIX.length) : key;
 }
 
+/** The key an entry parks under — the builder half of the same convention,
+ * for callers outside this file (`rekeyTakeHalves`), so the suffix has one
+ * spelling. `parkedOverrideBaseKey(parkedOverrideKey(k)) === k`. */
+export function parkedOverrideKey(base: string): string {
+  return `${base}${PARKED_SUFFIX}`;
+}
+
 export interface SceneRemapResult {
   doc: OverrideDoc;
   /** Human sentences for produce to print — one per re-keyed, parked, or blocked entry. */
@@ -1492,9 +2213,14 @@ export function remapSceneOverrides(
   // POST-split list — a half carries its root's anchor verbatim
   // (`splitCues` spreads the root cue), and matching a half's id here would
   // mint double-suffixed keys like `scene-1@2000@abc`.
+  //
+  // Added graphics are never a TARGET (editor-added-graphics §3): an added
+  // cue sits on words the plan also spoke over, so a planned id's orphaned
+  // edits would otherwise re-key onto the author's graphic — another scene's
+  // props and timing dressing a block it never was.
   const anchored = cues.filter(
     (c): c is SceneCue & { anchor: SceneAnchor } =>
-      c.anchor !== undefined && !c.id.includes("@"),
+      c.anchor !== undefined && !c.id.includes("@") && !isAddedKey(c.id),
   );
   const notes: string[] = [];
   const scenes: Record<string, SceneOverride> = {};
@@ -1511,6 +2237,17 @@ export function remapSceneOverrides(
   const rekeys = new Map<string, Claim[]>();
 
   for (const [key, entry] of Object.entries(doc.scenes)) {
+    if (isAddedKey(key)) {
+      // Never MOVED either (editor-added-graphics §3). The anchor logic below
+      // exists because planned ids are positional and a re-plan renumbers
+      // them; an added id is minted once by the editor and never reused, so
+      // the key itself is the identity. A missing cue means the entry was
+      // skipped or dropped this run and its edits wait for it; a cue whose
+      // words moved is still the same graphic, re-anchored from its source
+      // span — parking it would strand every edit the author made to it.
+      scenes[key] = entry;
+      continue;
+    }
     const stored = entry.anchor;
     if (!stored) {
       // Pre-migration entry: exactly today's id-only behaviour, silently.
@@ -2926,11 +3663,18 @@ export function reclampPinnedTiming(cues: readonly SceneCue[]): ReclampResult {
     const hi = next
       ? next.startSec - (nextIsSibling ? 0 : PINNED_GAP_SEC)
       : Number.POSITIVE_INFINITY;
-    let s = Math.min(Math.max(cue.startSec, lo), Math.max(lo, hi - MIN_PINNED_SCENE_SEC));
-    let e = Math.max(Math.min(cue.endSec, hi), s + MIN_PINNED_SCENE_SEC);
+    // The floor never makes a clip longer than it plays (`maxCueSec`): 4 s at
+    // 4x is 1 s, and flooring it to 1.2 s was a held last frame the editor
+    // does not draw. The clip wins, as it does in assembly. No cap is needed
+    // here beyond that — `applyOverrides` already read the pin capped, and
+    // nothing below lengthens a window except the floor.
+    const max = maxCueSec(cue);
+    const floor = max === undefined ? MIN_PINNED_SCENE_SEC : Math.min(MIN_PINNED_SCENE_SEC, max);
+    let s = Math.min(Math.max(cue.startSec, lo), Math.max(lo, hi - floor));
+    let e = Math.max(Math.min(cue.endSec, hi), s + floor);
     if (e > hi) {
       e = hi;
-      s = Math.max(lo, e - MIN_PINNED_SCENE_SEC);
+      s = Math.max(lo, e - floor);
     }
     if (s !== cue.startSec || e !== cue.endSec) {
       out[i] = { ...cue, startSec: s, endSec: e };

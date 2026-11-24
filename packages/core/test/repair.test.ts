@@ -611,9 +611,38 @@ describe("replayStoredRepairs (the editor's view of what produce rendered)", () 
 
 describe("captionWordsDiffer", () => {
   it("is false only for the same texts in the same order", () => {
-    const w = (...t: string[]) => t.map((text) => ({ text }));
+    const w = (...t: string[]) => t.map((text, i) => ({ text, start: i, end: i + 0.5 }));
     expect(captionWordsDiffer(w("a", "b"), w("a", "b"))).toBe(false);
     expect(captionWordsDiffer(w("a", "b"), w("a", "B"))).toBe(true);
     expect(captionWordsDiffer(w("a", "b"), w("ab"))).toBe(true);
+  });
+
+  it("is true for the same texts on different stamps: a split repair a --clip window starts inside", () => {
+    // Raw "agents" 3.9-4.3 sliced by time; the caption list starts on the
+    // second half of "AI agents", mid raw word (the 2026-11-22 finding).
+    const raw = [{ text: "agents", start: 3.9, end: 4.3 }, { text: "today", start: 4.5, end: 4.9 }];
+    const caption = [{ text: "agents", start: 4.02, end: 4.3 }, { text: "today", start: 4.5, end: 4.9 }];
+    expect(captionWordsDiffer(raw, caption)).toBe(true);
+    expect(captionWordsDiffer(raw, [raw[0]!, { ...raw[1]!, end: 5 }])).toBe(true);
+  });
+
+  it("gives the text-only answer for every ordinary repair shape, so production.json is unchanged", () => {
+    // The rule before the timing check, verbatim.
+    const textOnly = (a: readonly { text: string }[], b: readonly { text: string }[]) =>
+      a.length !== b.length || a.some((w, i) => w.text !== b[i]!.text);
+    const take = mk(["we", "use", "Versal", "and", "coach", "and", "today"]);
+    const shapes = [
+      [], // nothing repaired
+      [{ startWord: 2, endWord: 2, heard: "Versal", correction: "Vercel" }], // 1 → 1
+      [{ startWord: 4, endWord: 5, heard: "coach and", correction: "code churn" }], // 2 → 2
+      [{ startWord: 4, endWord: 5, heard: "coach and", correction: "codechurn" }], // 2 → 1
+      [{ startWord: 2, endWord: 2, heard: "Versal", correction: "Ver cell" }], // 1 → 2
+    ];
+    for (const repairs of shapes) {
+      const caption = applyRepairs(take, repairs, { confirmed: () => true }).transcript.words;
+      // Each repair really applied: the shapes are not vacuous.
+      expect(textOnly(take.words, caption)).toBe(repairs.length > 0);
+      expect(captionWordsDiffer(take.words, caption)).toBe(textOnly(take.words, caption));
+    }
   });
 });

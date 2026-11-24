@@ -1,4 +1,4 @@
-import type { Transcript } from "./schema";
+import type { Transcript, Word } from "./schema";
 import type { Scene, SceneCue } from "./scene-schema";
 import { revealItemTexts } from "./reveal-match";
 import { SCENE_REGISTRY, resolveSceneProps } from "./scene-registry";
@@ -31,6 +31,32 @@ export const MAX_SCENE_SEC = 15;
 /** R20 §95's lower-third ceiling — now the universal one; kept as an alias
  * so published consumers of the old name keep compiling. */
 export const MAX_OVERLAY_SCENE_SEC = MAX_SCENE_SEC;
+
+/**
+ * The longest a cue may be on screen, or undefined for a cue with no fixed
+ * length (every component but ClipScene). For a clip that is its played
+ * length, `durationSec / speed` (`fixedDurationSec`), under the same 15 s
+ * ceiling assembly cuts a clip to.
+ *
+ * One rule for every place a clip's window is decided after assembly (which
+ * computes the same length inline, below): a pin read in `applyOverrides`,
+ * the floor in `reclampPinnedTiming`, the live retime (`retimeForPreview`),
+ * the editor's edge drag (`clampTiming`) and both speed resizes
+ * (`clipSpeedEndSec`, `clipSpeedTiming`). An edge drag
+ * once wrote a pin longer than the clip while the live retime drew the clip
+ * at its own length: the block snapped back on release, and the plain take
+ * after it, filled against the stored pin, moved away from it. A block can
+ * be trimmed shorter than this, never made longer.
+ *
+ * A split half is bounded by the WHOLE clip's length: loose for a half, but
+ * never wrong, and the speed resizes already keep halves out of their rule.
+ */
+export function maxCueSec(cue: Pick<SceneCue, "component" | "props">): number | undefined {
+  if (cue.component === undefined || cue.props === undefined) return undefined;
+  const fixed = SCENE_REGISTRY[cue.component].fixedDurationSec?.(cue.props);
+  return fixed === undefined ? undefined : Math.min(fixed, MAX_SCENE_SEC);
+}
+
 /**
  * Breathing room enforced between consecutive scenes. Exported so the script
  * minimum (`scriptSceneEndWords`, §161) pushes a scene past the one before it
@@ -258,6 +284,19 @@ export function entryWordTime<T extends { start: number }>(
   return at;
 }
 
+/**
+ * A word's output start on `map`, or null when the word is cut there
+ * (graphic-editor-modal Terms, "Word time"). The planner's own conversion,
+ * extracted from `plannedCue` so the item-timing resolve and the editor's
+ * modal time a word exactly as assembly does: `mapWord`, which keeps a word
+ * whose start a cut clips (its start clamps to the kept edge) and drops only
+ * a word cut entirely. A second rule (say, `toOutput(w.start)`) would call
+ * that clipped word cut in one place and timed in the other.
+ */
+export function wordOutputStart(w: Word, map: TimeMap): number | null {
+  return map.mapWord(w)?.start ?? null;
+}
+
 /** A cued scene's plan-time answers, resolved into output time. */
 interface PlannedCue {
   /** Output second of the entry word (or its fallback), lead-free; null → legacy start. */
@@ -282,12 +321,15 @@ function plannedCue(
   const { entryWord, itemWords } = cue;
   // Plan-time indices, so a missing word (a stale cue past the transcript)
   // and a cut word are the same answer: no time to land on.
-  const mapAt = (i: number) => {
+  const startAt = (i: number): number | null => {
     const w = transcript.words[i];
-    return w ? map.mapWord(w) : null;
+    return w ? wordOutputStart(w, map) : null;
   };
 
-  const entryAt = entryWordTime(entryWord, startWord, endWord, mapAt);
+  const entryAt = entryWordTime(entryWord, startWord, endWord, (i) => {
+    const at = startAt(i);
+    return at === null ? null : { start: at };
+  });
   const entryAtSec = entryAt === null ? null : entryAt.start;
 
   // Index i of `itemWords` must BE rendered item i. A prop edit since
@@ -301,6 +343,12 @@ function plannedCue(
   // stagger (null / no items) carries no reveal at all.
   const rendered = revealItemTexts(scene.component, props)?.length ?? 0;
   if (rendered === 0) return { entryAtSec };
+  // A BulletList without `itemWords` stays legacy (graphic-editor-modal §1,
+  // AG1). It joined the reveal system after plans had stored its cues, and
+  // every one of those holds `entryWord` only: the all-null reveal below
+  // would move each of them from the 7-frame stagger onto the paced path.
+  // Only a re-plan, which writes `itemWords`, opts a list in.
+  if (scene.component === "BulletList" && itemWords === undefined) return { entryAtSec };
   if (itemWords === undefined || itemWords.length !== rendered) {
     return { entryAtSec, reveal: { itemAtSec: Array.from({ length: rendered }, () => null) } };
   }
@@ -311,10 +359,10 @@ function plannedCue(
         // Outside the scene's words is a stale index (same reasoning as
         // the entry clamp); cut is unspoken. Both pace rather than guess.
         if (w === null || w < startWord || w > endWord) return null;
-        const at = mapAt(w);
+        const at = startAt(w);
         // Floored at 0: a word at the very top of the output cannot enter
         // before the video does (the schema's nonnegative).
-        return at === null ? null : Math.max(0, at.start - ITEM_LEAD_SEC);
+        return at === null ? null : Math.max(0, at - ITEM_LEAD_SEC);
       }),
     },
   };

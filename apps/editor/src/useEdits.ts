@@ -6,10 +6,22 @@ import {
   isLegacyCaptionKey,
   keepsBoxAcross,
   clearElementTransform,
+  nextAddedId,
+  sceneKeyRoot,
+  withAddedScenes,
   clearGraphicRect,
   clearTiming,
+  effectiveOverride,
   emptyOverrideDoc,
+  isEmptyEntry,
+  isLookPieceKey,
+  isPlainTakeKey,
   mintSplitId,
+  normalizeTakeLooks,
+  setTakeLook,
+  clearTakeLookFields,
+  ownFramingSplitIds,
+  splitRootId,
   rekeyCaptionRecords,
   restoreElement,
   setElementTransform,
@@ -24,10 +36,14 @@ import {
   type RemovalReason,
   type SceneComponentId,
   type SceneCue,
+  type SceneOverride,
   type SceneTiming,
   type SfxAddedPlacement,
   type SfxPlacementEdit,
+  type SrcRange,
   type StampMove,
+  type TakeLook,
+  type TakeLookEntry,
 } from "@ossclip/core/browser";
 
 /** A hand-set graphic slot, frame fractions (R11 Task 2). */
@@ -51,6 +67,23 @@ export interface EditState {
   savedAt: number;
   /** The last commit's coalesce key + time — see COALESCE_MS. */
   lastCoalesce: { key: string; at: number } | null;
+  /**
+   * The last write the reducer REFUSED (take-looks-by-source R4-S4, R6-5):
+   * an id-keyed look action on a take piece of a migrated doc — a drag that
+   * started before a reload, say — has nowhere honest to land, because look
+   * fields on takes now come only from `takeLooks`. Hook state, never the
+   * doc: a refusal is not an edit, so it must not dirty, save or undo. `seq`
+   * grows on every refusal so App shows each one once, even two in a row
+   * with the same message.
+   */
+  lastRefusal: { message: string; seq: number } | null;
+  /**
+   * How many `load`s this state has seen (take-looks-by-source R4-S3). Drag
+   * starts capture their ranges up front, so App and Overlay clear their
+   * previews and drag refs when this moves — a gesture begun on the old doc
+   * must not commit onto the one that replaced it.
+   */
+  loadCount: number;
 }
 
 /**
@@ -64,7 +97,28 @@ export const COALESCE_MS = 600;
 
 export type EditAction =
   | { type: "load"; doc: OverrideDoc }
-  | { type: "patchProps"; sceneId: string; patch: Record<string, unknown>; coalesce?: string }
+  | {
+      type: "patchProps";
+      sceneId: string;
+      patch: Record<string, unknown>;
+      coalesce?: string;
+      /** A pinned window written in the SAME commit as the props, stored
+       * verbatim like `patchTiming`'s. A speed edit on a pinned clip resizes
+       * its block (`clipSpeedTiming`), and two dispatches would be two undo
+       * steps — one undo has to take back the speed and the window together,
+       * or it leaves a clip at its old speed in a block sized for the new one. */
+      timing?: SceneTiming;
+      /** The graphic editor's Save (graphic-editor-modal §6): the item pins
+       * and the props the author cleared, in the SAME commit as the props,
+       * so one undo takes back the whole Save. Absent `itemPins` leaves the
+       * stored marker as it was, never removes it: a Save that changed no
+       * item must not turn word timing off (or on). */
+      itemPins?: ItemPins;
+      /** Props to take out of the override, applied after the merge, so a
+       * key named here ends absent whatever `patch` says — the `clearProp`
+       * rule (absent is its own state) without a second undo step. */
+      clearKeys?: readonly string[];
+    }
   /** Take ONE prop out of the scene's override, back to absent. Not a
    * `patchProps` with `undefined`: an optional reveal prop's absence is a
    * state of its own — unset `pacing` keeps a legacy scene on its legacy
@@ -110,8 +164,33 @@ export type EditAction =
   /** §56b's cheap bulk: ONE commit (one undo step) writing the same caption
    * style to every listed scene — "the captions are too low for this whole
    * video". R16 §64 rides along: scale fans out with position. */
-  | { type: "patchCaptionStyleAll"; sceneIds: string[]; y?: number; scale?: number }
-  | { type: "addSplit"; at?: number; src?: number }
+  /** In look mode (take-looks-by-source N6, S3, R6-6) the takes' part
+   * travels as `takeRanges` — one source-range list per plain cue — and any
+   * take id still in `sceneIds` is dropped, so the bulk never writes an
+   * id-keyed look onto a take. A legacy doc writes `sceneIds` as before. */
+  | {
+      type: "patchCaptionStyleAll";
+      sceneIds: string[];
+      takeRanges: SrcRange[][];
+      y?: number;
+      scale?: number;
+    }
+  /**
+   * A take piece's look, written onto the SOURCE range it plays
+   * (take-looks-by-source L4, look mode only). `ranges` are the piece's
+   * `pieceSourceRanges` on the preview clock; `setTakeLook` writes over
+   * their hull (R6-3) and expands the write units (R7-3). `coalesce` is
+   * `lookCoalesceKey`'s `look:${srcIn}:${unit}` (S17, R7-3).
+   */
+  | { type: "patchTakeLook"; ranges: SrcRange[]; patch: TakeLook; coalesce?: string }
+  /** The look-mode Reset: DELETES `fields` over the piece's hull — a real
+   * reset, never a write of the defaults (the clearVideo rule). */
+  | { type: "clearTakeLookFields"; ranges: SrcRange[]; fields: (keyof TakeLook)[] }
+  /** `targetId` is the cue the playhead split (take-framing-identity P1):
+   * on a plain take of a LEGACY doc its framing is copied onto the new half
+   * and the split flagged `ownFraming`. Absent, any other target, or a
+   * migrated doc (take-looks-by-source L3 "One-time"), splits as before. */
+  | { type: "addSplit"; at?: number; src?: number; targetId?: string }
   | { type: "clearTiming"; sceneId: string }
   /** The global Captions switch (doc-global `captionsHidden`) — one action
    * for both directions rather than a hide/restore pair, because the UI is
@@ -408,10 +487,38 @@ export type EditAction =
    * A re-pick of the same entry still upserts, because staging re-copied its
    * art and the snapshot's `ext` may have changed with it. */
   | { type: "swapOverlay"; id: string; entry: OverlayEntrySnapshot }
+  /** An added template graphic (editor-added-graphics §6): the reducer mints
+   * the id (`mintAddedSceneId`) and appends the entry. One undo step.
+   * `baseIds` are the base cues' ids — the one id source the doc cannot see,
+   * passed in so a graphic a past run baked is never re-minted (§1). */
+  | AddScene
+  /** Delete an added graphic (§6): its entry AND every `scenes` key rooted at
+   * it, in one undo step. Splits stay — a split is a time point, not tied to
+   * an id, exactly as Delete on a plan graphic leaves them. */
+  | { type: "removeAddedScene"; id: string }
   | { type: "patchTheme"; patch: Record<string, unknown> }
   | { type: "undo" }
   | { type: "redo" }
   | { type: "saved" };
+
+export type AddScene = {
+  type: "addScene";
+  component: string;
+  props: Record<string, unknown>;
+  srcStart: number;
+  srcEnd: number;
+  baseIds: readonly string[];
+  /** `scenes[newId]`, written in the SAME commit as the entry
+   * (graphic-editor-modal §6): an add of a covered list carries its
+   * `itemPins` marker so its auto items are timed from the first preview
+   * (G2), and the modal's When row its timing pin. The entry itself stays
+   * write-once (§1); these live where every later edit of the block does. */
+  scenePatch?: { itemPins?: ItemPins; timing?: SceneTiming };
+};
+
+/** A graphic's word-timing marker (graphic-editor-modal §2), as the doc
+ * stores it. */
+export type ItemPins = NonNullable<SceneOverride["itemPins"]>;
 
 export const initialEditState = (): EditState => ({
   doc: emptyOverrideDoc(),
@@ -420,6 +527,8 @@ export const initialEditState = (): EditState => ({
   dirty: false,
   savedAt: 0,
   lastCoalesce: null,
+  lastRefusal: null,
+  loadCount: 0,
 });
 
 const withScene = (doc: OverrideDoc, id: string) =>
@@ -559,6 +668,23 @@ export function mintOverlayAddedId(
 }
 
 /**
+ * The id the next `addScene` gets (editor-added-graphics §1): one past the
+ * highest `added-<n>` among the doc's entries, the ROOTS of its `scenes` keys
+ * and the base cues. All three, because each can still name a block: a
+ * leftover `added-4@s1` edit would land on a new `added-4`, and a base cue a
+ * past run baked would preview its old look under the new id. Exported, and
+ * shared by the reducer and the hook's `addScene`, so the id the hook hands
+ * back is by construction the one the reducer stores.
+ */
+export function mintAddedSceneId(doc: OverrideDoc, baseIds: readonly string[]): string {
+  return nextAddedId([
+    ...(doc.addedScenes ?? []).map((e) => e.id),
+    ...Object.keys(doc.scenes).map(sceneKeyRoot),
+    ...baseIds,
+  ]);
+}
+
+/**
  * Drop one stored overlay field so its default applies again — the shared
  * body of "default" duration and "Reset position". An added record loses the
  * key; a match's edit loses it and goes entirely once empty (clearVideo rule).
@@ -588,7 +714,68 @@ function clearOverlayField(
   return commit(withOverlays(state.doc, { ...slot, edits }));
 }
 
+/**
+ * The scene an id-keyed LOOK action writes to, or null for every other
+ * action — the actions take-looks-by-source R4-S4 refuses on a take piece of
+ * a migrated doc. One switch, so the refusal list cannot drift from the
+ * action list.
+ */
+function idKeyedLookTarget(action: EditAction): string | null {
+  switch (action.type) {
+    case "patchVideo":
+    case "clearVideo":
+    case "patchPip":
+    case "clearPip":
+    case "patchLayout":
+    case "patchCaptionY":
+    case "patchCaptionScale":
+    case "clearCaptionStyle":
+      return action.sceneId;
+    default:
+      return null;
+  }
+}
+
+/** The refusal notice's sentences (R6-5). Said in the clock-refused
+ * notice's voice: what failed, and the one thing that fixes it.
+ * `REFUSED_LOOK_WRITE` names no cause: a reload under a gesture is the path
+ * it was written for, but any id-keyed look write on a take reaches it, and
+ * a "was reloaded" that is false for the others sent the author looking for
+ * a reload that never happened (take-looks-by-source final review T3-M2). */
+export const REFUSED_LOOK_WRITE = "Can't save that look on this take — select the take again and retry.";
+export const REFUSED_LEGACY_LOOK =
+  "Can't save that look: this project's take looks are not on source time yet — render once and try again.";
+
+/** The refusal App has not shown yet, or null (R6-5): one notice per
+ * `seq`, so a re-render never re-raises a refusal the author dismissed and
+ * a second refusal with the same words still shows. */
+export const unseenRefusal = (last: EditState["lastRefusal"], shownSeq: number): string | null =>
+  last !== null && last.seq !== shownSeq ? last.message : null;
+
+/** Same looks, as stored: both sides normalized, then compared by their
+ * serialization — `normalizeTakeLooks` fixes order and key order, so equal
+ * looks serialize one way (take-looks.ts). The no-op guard every look write
+ * runs (take-looks-by-source S1): a result equal to the current looks mints
+ * no undo step. */
+const sameLooks = (a: readonly TakeLookEntry[], b: readonly TakeLookEntry[]): boolean =>
+  JSON.stringify(normalizeTakeLooks([...a])) === JSON.stringify(normalizeTakeLooks([...b]));
+
 export function editReducer(state: EditState, action: EditAction): EditState {
+  // A refused write (take-looks-by-source R4-S4, R6-5): the doc, history and
+  // dirty flag untouched, only the notice moves.
+  const refuse = (message: string): EditState => ({
+    ...state,
+    lastRefusal: { message, seq: (state.lastRefusal?.seq ?? 0) + 1 },
+  });
+  // In look mode a take's look lives only on source time (L2), so an
+  // id-keyed look write on a take key would be stored and never read — the
+  // silent-overwrite class. Every look-mode site dispatches the range
+  // actions instead; what still arrives here is a gesture that began before
+  // a `load` swapped the doc under it.
+  const lookTarget = idKeyedLookTarget(action);
+  if (lookTarget !== null && state.doc.takeLooks !== undefined && isLookPieceKey(lookTarget)) {
+    return refuse(REFUSED_LOOK_WRITE);
+  }
   const commit = (doc: OverrideDoc, coalesce?: string): EditState => {
     const now = Date.now();
     // Same key, still inside the window → REPLACE the top of history rather
@@ -607,6 +794,8 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       dirty: true,
       savedAt: state.savedAt,
       lastCoalesce: coalesce !== undefined ? { key: coalesce, at: now } : null,
+      lastRefusal: state.lastRefusal,
+      loadCount: state.loadCount,
     };
   };
 
@@ -619,15 +808,24 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         dirty: false,
         savedAt: 0,
         lastCoalesce: null,
+        lastRefusal: state.lastRefusal,
+        loadCount: state.loadCount + 1,
       };
     case "patchProps": {
       const scene = withScene(state.doc, action.sceneId);
+      const props = { ...scene.props, ...action.patch };
+      for (const key of action.clearKeys ?? []) delete props[key];
       return commit(
         {
           ...state.doc,
           scenes: {
             ...state.doc.scenes,
-            [action.sceneId]: { ...scene, props: { ...scene.props, ...action.patch } },
+            [action.sceneId]: {
+              ...scene,
+              props,
+              ...(action.timing !== undefined ? { timing: action.timing } : {}),
+              ...(action.itemPins !== undefined ? { itemPins: action.itemPins } : {}),
+            },
           },
         },
         action.coalesce,
@@ -765,8 +963,13 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       });
     }
     case "patchCaptionStyleAll": {
+      const looks = state.doc.takeLooks;
+      // Look mode (R6-6): a take id in `sceneIds` is dropped HERE as well as
+      // at the call site, so no caller can write an id-keyed caption style
+      // onto a take whose look lives on source time.
+      const ids = looks !== undefined ? action.sceneIds.filter((id) => !isLookPieceKey(id)) : action.sceneIds;
       const scenes = { ...state.doc.scenes };
-      for (const id of action.sceneIds) {
+      for (const id of ids) {
         const scene = scenes[id] ?? { props: {}, elements: {} };
         scenes[id] = {
           ...scene,
@@ -774,7 +977,39 @@ export function editReducer(state: EditState, action: EditAction): EditState {
           ...(action.scale !== undefined ? { captionScale: action.scale } : {}),
         };
       }
-      return commit({ ...state.doc, scenes });
+      if (looks === undefined) return commit({ ...state.doc, scenes });
+      // The takes' half: every listed piece's footage, in the SAME commit —
+      // one gesture, one undo step (§56b). Footage on no current piece is
+      // untouched (a declared limit, L4).
+      const patch: TakeLook = {
+        ...(action.y !== undefined ? { captionY: action.y } : {}),
+        ...(action.scale !== undefined ? { captionScale: action.scale } : {}),
+      };
+      let takeLooks: TakeLookEntry[] = [...looks];
+      for (const ranges of action.takeRanges) takeLooks = setTakeLook(takeLooks, ranges, patch);
+      const lookChanged = !sameLooks(takeLooks, looks);
+      if (ids.length === 0 && !lookChanged) return state;
+      return commit({ ...state.doc, scenes, ...(lookChanged ? { takeLooks } : {}) });
+    }
+    case "patchTakeLook": {
+      const looks = state.doc.takeLooks;
+      // A legacy doc has no look store; its sites dispatch the id-keyed
+      // actions. Arriving here means a `load` swapped a migrated doc for a
+      // legacy one under the gesture — refused out loud, never invented.
+      if (looks === undefined) return refuse(REFUSED_LEGACY_LOOK);
+      const takeLooks = setTakeLook(looks, action.ranges, action.patch);
+      if (sameLooks(takeLooks, looks)) return state;
+      return commit({ ...state.doc, takeLooks }, action.coalesce);
+    }
+    case "clearTakeLookFields": {
+      const looks = state.doc.takeLooks;
+      if (looks === undefined) return refuse(REFUSED_LEGACY_LOOK);
+      const takeLooks = clearTakeLookFields(looks, action.ranges, action.fields);
+      // A Reset on a piece with nothing stored is a no-op (S1, S4): the
+      // result-equality test covers a mixed piece too, where the dominant
+      // look `lookAt` reports could lack a field a minority part still has.
+      if (sameLooks(takeLooks, looks)) return state;
+      return commit({ ...state.doc, takeLooks });
     }
     case "addSplit": {
       // A split needs at least one anchor (SplitSchema's refine) — a
@@ -796,14 +1031,56 @@ export function editReducer(state: EditState, action: EditAction): EditState {
       // The id is minted HERE, once, and never recomputed (§137). Minted
       // from the SOURCE ms when available — the stable anchor — else the
       // old-clock at; `mintSplitId` checks the ids themselves either way.
+      const id = mintSplitId(action.src ?? action.at!, state.doc.splits);
+      // A take split makes a piece that OWNS its framing
+      // (take-framing-identity P1): the new half gets the framing the piece
+      // was showing, and the flag stops it inheriting the root's from here
+      // on — so reframing either piece never moves the other, and nothing
+      // moves on screen at the moment of the split. Graphic and kept-block
+      // targets split as they always did.
+      // Legacy docs only (take-looks-by-source L3 "One-time", L4 ⌘B): in look
+      // mode a piece's look is its footage's, so both halves already show
+      // it — the split alone is the whole edit, and nothing is flagged.
+      const ownsFraming =
+        state.doc.takeLooks === undefined && action.targetId !== undefined && isPlainTakeKey(action.targetId);
+      let scenes = state.doc.scenes;
+      if (ownsFraming) {
+        // `splitCues`' name for the piece after the point: root, never the
+        // target's own `@` suffix, so a split of a half is a sibling.
+        const halfKey = `${splitRootId(action.targetId!)}@${id}`;
+        // The override LAYER, never the cue's resolved `video`
+        // (take-framing-identity P1): the live cue also carries App's
+        // uncommitted framing preview, and only the doc is what the
+        // render will resolve — the copy must be exactly that.
+        const from = effectiveOverride(scenes, action.targetId!, ownFramingSplitIds(state.doc.splits));
+        // A reused id can find a stale entry here; only its framing is
+        // replaced (field for field: what `from` lacks is deleted), its
+        // other edits stay.
+        const { video: _staleVideo, pip: _stalePip, ...kept } = scenes[halfKey] ?? {
+          props: {},
+          elements: {},
+        };
+        const half: SceneOverride = {
+          ...kept,
+          ...(from?.video ? { video: { ...from.video } } : {}),
+          ...(from?.pip ? { pip: { ...from.pip } } : {}),
+        };
+        const { [halfKey]: _old, ...others } = scenes;
+        // An empty entry is not stored (take-framing-identity: no keys but
+        // an empty `props` and `elements`) — an unframed root's half needs
+        // nothing, the flag alone keeps it unframed.
+        scenes = isEmptyEntry(half) ? others : { ...scenes, [halfKey]: half };
+      }
       return commit({
         ...state.doc,
+        scenes,
         splits: [
           ...state.doc.splits,
           {
             ...(action.at !== undefined ? { at: action.at } : {}),
             ...(action.src !== undefined ? { src: action.src } : {}),
-            id: mintSplitId(action.src ?? action.at!, state.doc.splits),
+            id,
+            ...(ownsFraming ? { ownFraming: true } : {}),
           },
         ].sort((a, b) => (a.at ?? a.src ?? 0) - (b.at ?? b.src ?? 0)),
       });
@@ -1689,6 +1966,51 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         }),
       );
     }
+    case "addScene": {
+      // The `addOverlay` shape: the entry is written once here and never
+      // changed — every later edit (props, swap, timing, hide) lives in
+      // `scenes[id]` like any block's (§1).
+      const entry = {
+        id: mintAddedSceneId(state.doc, action.baseIds),
+        component: action.component,
+        props: action.props,
+        srcStart: action.srcStart,
+        srcEnd: action.srcEnd,
+      };
+      const withEntry = withAddedScenes(state.doc, [...(state.doc.addedScenes ?? []), entry]);
+      const { itemPins, timing } = action.scenePatch ?? {};
+      // Nothing to say → no `scenes` key: an empty override is not written
+      // for an add any more than for anything else. No merge with an
+      // existing `scenes[newId]`: the mint skips every root a key names.
+      if (itemPins === undefined && timing === undefined) return commit(withEntry);
+      return commit({
+        ...withEntry,
+        scenes: {
+          ...withEntry.scenes,
+          [entry.id]: {
+            props: {},
+            elements: {},
+            ...(itemPins !== undefined ? { itemPins } : {}),
+            ...(timing !== undefined ? { timing } : {}),
+          },
+        },
+      });
+    }
+    case "removeAddedScene": {
+      const list = state.doc.addedScenes ?? [];
+      const kept = list.filter((e) => e.id !== action.id);
+      // By ROOT, not prefix: `added-1@3` and `added-1#orphaned` (a pre-guard
+      // park, §3) go with `added-1`, while `added-10` is another graphic.
+      // Left behind, the edits would wait for a block that cannot return —
+      // and the mint skips their root, so nothing would ever reuse it.
+      const scenes = Object.fromEntries(
+        Object.entries(state.doc.scenes).filter(([key]) => sceneKeyRoot(key) !== action.id),
+      );
+      const keysGone = Object.keys(scenes).length !== Object.keys(state.doc.scenes).length;
+      // Nothing to remove is not an undo step (the `removeSfxAdded` rule).
+      if (kept.length === list.length && !keysGone) return state;
+      return commit(withAddedScenes({ ...state.doc, scenes }, kept));
+    }
     case "patchTheme":
       return commit({ ...state.doc, theme: { ...state.doc.theme, ...action.patch } });
     case "undo": {
@@ -1703,6 +2025,8 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         savedAt: state.savedAt,
         dirty: past.length !== state.savedAt,
         lastCoalesce: null,
+        lastRefusal: state.lastRefusal,
+        loadCount: state.loadCount,
       };
     }
     case "redo": {
@@ -1716,6 +2040,8 @@ export function editReducer(state: EditState, action: EditAction): EditState {
         savedAt: state.savedAt,
         dirty: past.length !== state.savedAt,
         lastCoalesce: null,
+        lastRefusal: state.lastRefusal,
+        loadCount: state.loadCount,
       };
     }
     case "saved":
@@ -1759,6 +2085,11 @@ export function useEdits() {
     dirty: state.dirty,
     canUndo: state.past.length > 0,
     canRedo: state.future.length > 0,
+    /** The last refused write (R6-5) — App shows it once per `seq`. */
+    lastRefusal: state.lastRefusal,
+    /** Bumped by every `load` (R4-S3) — App and Overlay key their preview
+     * and drag-ref clearing on it. */
+    loadCount: state.loadCount,
     load: (doc: OverrideDoc) => dispatch({ type: "load", doc }),
     undo: () => dispatch({ type: "undo" }),
     redo: () => dispatch({ type: "redo" }),
@@ -1769,8 +2100,18 @@ export function useEdits() {
     syncCues: (cues: readonly SceneCue[]) => {
       cuesRef.current = cues;
     },
-    patchProps: (sceneId: string, patch: Record<string, unknown>, coalesce?: string) =>
-      dispatch({ type: "patchProps", sceneId, patch, coalesce }),
+    /** Options, not positions: the graphic editor's Save adds `itemPins`
+     * and `clearKeys` beside the speed edit's `timing`, all one undo step. */
+    patchProps: (
+      sceneId: string,
+      patch: Record<string, unknown>,
+      opts: {
+        coalesce?: string;
+        timing?: SceneTiming;
+        itemPins?: ItemPins;
+        clearKeys?: readonly string[];
+      } = {},
+    ) => dispatch({ type: "patchProps", sceneId, patch, ...opts }),
     clearProp: (sceneId: string, key: string) => dispatch({ type: "clearProp", sceneId, key }),
     patchElement: (sceneId: string, elementId: string, patch: ElementTransform, coalesce?: string) =>
       dispatch({ type: "patchElement", sceneId, elementId, patch, coalesce }),
@@ -1800,10 +2141,19 @@ export function useEdits() {
     patchCaptionScale: (sceneId: string, scale: number, coalesce?: string) =>
       dispatch({ type: "patchCaptionScale", sceneId, scale, coalesce }),
     clearCaptionStyle: (sceneId: string) => dispatch({ type: "clearCaptionStyle", sceneId }),
-    patchCaptionStyleAll: (sceneIds: string[], style: { y?: number; scale?: number }) =>
-      dispatch({ type: "patchCaptionStyleAll", sceneIds, ...style }),
-    addSplit: (split: { at?: number; src?: number }) =>
-      dispatch({ type: "addSplit", at: split.at, src: split.src }),
+    /** `takeRanges` is look mode's half (R6-6): one range list per plain
+     * cue. A legacy call site has none. */
+    patchCaptionStyleAll: (
+      sceneIds: string[],
+      style: { y?: number; scale?: number },
+      takeRanges: SrcRange[][] = [],
+    ) => dispatch({ type: "patchCaptionStyleAll", sceneIds, takeRanges, ...style }),
+    patchTakeLook: (ranges: SrcRange[], patch: TakeLook, coalesce?: string) =>
+      dispatch({ type: "patchTakeLook", ranges, patch, coalesce }),
+    clearTakeLookFields: (ranges: SrcRange[], fields: (keyof TakeLook)[]) =>
+      dispatch({ type: "clearTakeLookFields", ranges, fields }),
+    addSplit: (split: { at?: number; src?: number; targetId?: string }) =>
+      dispatch({ type: "addSplit", at: split.at, src: split.src, targetId: split.targetId }),
     setCaptionsHidden: (hidden: boolean) => dispatch({ type: "setCaptionsHidden", hidden }),
     setCaptionTheme: (value: CaptionThemeId | undefined) =>
       dispatch({ type: "setCaptionTheme", value }),
@@ -1900,6 +2250,17 @@ export function useEdits() {
     addOverlayMatches: (placements: OverlayPlacement[], entries: OverlayEntrySnapshot[]) =>
       dispatch({ type: "addOverlayMatches", placements, entries }),
     swapOverlay: (id: string, entry: OverlayEntrySnapshot) => dispatch({ type: "swapOverlay", id, entry }),
+    /** Returns the minted id so App can select the new block — the reducer
+     * holds no selection (§5). Computed here from the RENDERED doc with the
+     * reducer's own `mintAddedSceneId`, so the two agree as long as no other
+     * edit is queued in the same tick; one add per gesture, with a render
+     * between, is the only caller shape. */
+    addScene: (input: Omit<AddScene, "type">): string => {
+      const id = mintAddedSceneId(state.doc, input.baseIds);
+      dispatch({ type: "addScene", ...input });
+      return id;
+    },
+    removeAddedScene: (id: string) => dispatch({ type: "removeAddedScene", id }),
     patchTheme: (patch: Record<string, unknown>) => dispatch({ type: "patchTheme", patch }),
   };
 }

@@ -7,7 +7,16 @@
 export * from "./scene-schema";
 export * from "./scene-registry";
 export * from "./scene-props-controls";
+// Carries `resolveItemTimings`, `itemTimingRoots`, `blockWindow` and
+// `ITEM_TIMING_COMPONENTS` to the editor (graphic-editor-modal §4): its
+// preview resolves items with the very pass produce runs, and their runtime
+// imports (./assemble, ./reveal-match) are already on this surface.
 export * from "./overrides";
+// Take looks (take-looks-by-source L2, S12): the editor's memo resolves a
+// take's look with the SAME `applyTakeLooks` produce renders with, and its
+// writes go through the same `setTakeLook`/`clearTakeLookFields`. Browser-
+// safe: take-looks.ts has no runtime imports at all (types only, R6-8).
+export * from "./take-looks";
 // The editor derives its plain takes with the SAME function the pipeline
 // uses — a copy would drift and the two timelines would disagree.
 export * from "./fill";
@@ -15,9 +24,35 @@ export * from "./fill";
 // resolves their cues from (`resolveSfxCues`) — a second "where does scene-3
 // start" is how the editor's diamond and the render's cue would disagree.
 // `assemble.ts` is browser-safe (type imports plus `scene-registry`, already
-// on this surface), but only this one function is exposed: the rest of the
-// module is the pipeline's, not the bundle's.
-export { sceneStartSeconds } from "./assemble";
+// on this surface), but only what the editor must share is exposed: the rest
+// of the module is the pipeline's, not the bundle's. `MAX_SCENE_SEC` is a
+// constant the editor must share rather than restate: a speed
+// edit on a pinned clip caps its window in the editor (`clipSpeedTiming`)
+// where an unpinned one is capped in `clipSpeedEndSec`, and two copies of
+// the ceiling are how the two paths would give one clip two lengths.
+// `maxCueSec` for the same reason: the editor's edge drag stops where the
+// pin read, the live retime and the render stop a clip block, and a second
+// copy of that limit is how a released drag snapped back.
+// `wordOutputStart` for the same reason (graphic-editor-modal Terms, "Word
+// time"): the modal shows an item's time from the planner's own conversion,
+// and a second rule is how a clipped word would be timed in the render and
+// "cut" in the modal. `ITEM_LEAD_SEC` with it: the modal shows an item's time
+// as its word time minus the lead (graphic-editor-modal Terms), and a
+// restated 0.15 is how the modal and the render would disagree by a frame.
+// `ENTRY_LEAD_SEC` and `SCENE_GAP_SEC` for the modal's When row
+// (graphic-editor-modal §5): its timing pin starts the entry lead ahead of
+// the word and never before the previous graphic's end plus the gap, the
+// numbers assembly places a block with; restated, a pin the modal wrote
+// would start a block assembly then shifts.
+export {
+  ENTRY_LEAD_SEC,
+  ITEM_LEAD_SEC,
+  MAX_SCENE_SEC,
+  SCENE_GAP_SEC,
+  maxCueSec,
+  sceneStartSeconds,
+  wordOutputStart,
+} from "./assemble";
 // The editor's live grade preview computes the SVG filter spec with the SAME
 // math produce bakes into render-props (`gradeToSvgFilterSpec`) — a browser
 // copy of the curve sampler is how the preview and the render would drift.
@@ -161,9 +196,13 @@ export { rekeyCaptionRecords, type RekeyResult, type StampMove } from "./restamp
 // paced" for an author-chosen reveal with the SAME `syncDecision` /
 // `SYNC_MIN_SHARE` plan time used — a restated 2/3 threshold is how the plan
 // and the render would disagree about which scenes are synced.
+// `resolveItemWords` (graphic-editor-modal §3) rides along: the modal's rows
+// and the preview resolve pins with the SAME function produce does.
 export {
   entryTexts,
+  type ItemWordState,
   locateSpoken,
+  resolveItemWords,
   revealItemTexts,
   type RevealItem,
   SYNC_MIN_SHARE,
@@ -248,3 +287,31 @@ export { rebaseCue } from "./kit-rebase";
 // import is ./content-rect (above) — the rest are type imports. Only these
 // names are exposed: the planning half of framing is the pipeline's.
 export { BACKDROP_LAYOUTS, isBackdropLayout, keepsBoxAcross } from "./framing";
+// The 16:9 remap produce runs on every scene before assembly (R15, §163):
+// the editor lays a fresh added graphic out with it, so a 16:9 add previews
+// in the layout it will render in (editor-added-graphics fix-wave I2).
+export { landscapeLayoutFor } from "./framing";
+
+// The storyboard's plan table (§168). The editor's table reads and edits
+// `storyboard.json` with the SAME schema the run writes it with, so a row the
+// editor accepts is one the next load accepts. Browser-safe: record.ts
+// imports zod and the draw record's two name schemas (shot-record.ts imports
+// zod only, not the static check or its compiler); limits.ts and merge.ts
+// import only record.ts. The planner call (./storyboard/plan) is the CLI's
+// and stays off this surface.
+export * from "./storyboard/record";
+export * from "./storyboard/limits";
+export * from "./storyboard/merge";
+// The approval rules (§169), beside the record they read. approval.ts's
+// runtime imports are record.ts, ./scene-registry and ./assemble (type
+// imports plus ./scene-registry, both on this surface already); `clipKey`
+// takes its hash as an argument so node:crypto stays off this surface.
+export * from "./storyboard/approval";
+
+// Editor-added template graphics (editor-added-graphics §2, §4). The editor
+// previews an add with the SAME conversion produce renders with, and its
+// reducer mints ids and its panel measures spans with the same helpers —
+// a browser copy is how the preview and the next run would disagree.
+// Browser-safe: added-scenes.ts's runtime imports are zod, ./scene-schema,
+// ./scene-registry and ./assemble, all already in this surface's graph.
+export * from "./added-scenes";

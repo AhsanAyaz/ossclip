@@ -1,0 +1,477 @@
+import { describe, expect, it } from "vitest";
+import {
+  OverrideDocSchema,
+  SCENE_REGISTRY,
+  applyOverrides,
+  emptyOverrideDoc,
+  mapFromKeptSpans,
+  splitThenDropHidden,
+  type Layout,
+  type OverrideDoc,
+  type SceneCue,
+} from "@ossclip/core/browser";
+import {
+  addBaseIds,
+  addGraphicCheck,
+  addOverlapRefusal,
+  addPreviewCue,
+  addSpan,
+  addedSkippedHeading,
+  addedSkippedRows,
+  previewBaseCues,
+  previewDropCovered,
+  type AddGraphicWord,
+} from "../src/addedGraphics";
+import { editReducer, initialEditState } from "../src/useEdits";
+
+/** 20 words, 0.5 s apart, 0.4 s long — source-timed, the repaired list's shape. */
+const words = Array.from({ length: 20 }, (_, i) => ({ text: `w${i}`, start: i * 0.5, end: i * 0.5 + 0.4 }));
+const identity = mapFromKeptSpans([{ srcIn: 0, srcOut: 10, outIn: 0, outOut: 10 }]);
+
+const cue = (id: string, startSec: number, endSec: number, extra: Partial<SceneCue> = {}): SceneCue => ({
+  id,
+  layout: "video-top",
+  component: "StatCard",
+  props: { label: "L", value: "V" },
+  startSec,
+  endSec,
+  ...extra,
+});
+
+/** What a past run baked for `added-1` over words 2-4. */
+const baked = cue("added-1", 1, 2.5, { component: "TitleCard", props: { title: "BAKED" } });
+
+const add = { component: "TitleCard", props: { title: "HELLO" }, srcStart: 1, srcEnd: 2.4 };
+
+describe("previewBaseCues (editor-added-graphics §4)", () => {
+  it("undo of an add a run already baked: the baked cue is gone from the preview", () => {
+    let s = editReducer(initialEditState(), { type: "addScene", ...add, baseIds: [] });
+    // The run happened: base cues now hold `added-1`. Then the author undoes.
+    s = editReducer(s, { type: "undo" });
+    const { cues } = previewBaseCues({
+      baseCues: [baked, cue("scene-0", 6, 8)],
+      added: s.doc.addedScenes ?? [],
+      issueIds: new Set(),
+      words,
+      map: identity,
+      landscape: false,
+      scriptProject: false,
+    });
+    expect(cues.map((c) => c.id)).toEqual(["scene-0"]);
+  });
+
+  it("remove then re-add on the same words before a run: a NEW id with a fresh cue, the old one gone", () => {
+    const baseCues = [baked, cue("scene-0", 6, 8)];
+    let s = {
+      ...initialEditState(),
+      doc: editReducer(initialEditState(), { type: "addScene", ...add, baseIds: [] }).doc,
+    };
+    s = editReducer(s, { type: "removeAddedScene", id: "added-1" });
+    s = editReducer(s, { type: "addScene", ...add, baseIds: baseCues.map((c) => c.id) });
+    expect(s.doc.addedScenes!.map((e) => e.id)).toEqual(["added-2"]);
+    const { cues } = previewBaseCues({
+      baseCues,
+      added: s.doc.addedScenes!,
+      issueIds: new Set(),
+      words,
+      map: identity,
+      landscape: false,
+      scriptProject: false,
+    });
+    expect(cues.map((c) => c.id)).toEqual(["added-2", "scene-0"]);
+    // The new add's own props, never the old baked look.
+    expect(cues[0]!.props).toEqual({ title: "HELLO" });
+  });
+
+  it("with no clock the drop rule still runs, but nothing new is added", () => {
+    const { cues, skipped } = previewBaseCues({
+      baseCues: [baked, cue("scene-0", 6, 8)],
+      added: [{ id: "added-2", ...add }],
+      issueIds: new Set(),
+      words,
+      map: null,
+      landscape: false,
+      scriptProject: false,
+    });
+    expect(cues.map((c) => c.id)).toEqual(["scene-0"]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("with no word list it behaves as with no clock", () => {
+    const { cues } = previewBaseCues({
+      baseCues: [baked],
+      added: [{ id: "added-1", ...add }, { id: "added-2", ...add, srcStart: 6, srcEnd: 7 }],
+      issueIds: new Set(),
+      words: null,
+      map: identity,
+      landscape: false,
+      scriptProject: false,
+    });
+    expect(cues.map((c) => c.id)).toEqual(["added-1"]);
+  });
+});
+
+describe("addedSkippedRows (§7)", () => {
+  const doc = [
+    { id: "added-1", ...add },
+    { id: "added-2", ...add, component: "OldCard" },
+    { id: "added-3", ...add, component: "StatCard" },
+  ];
+
+  it("joins produce's issues with the preview's skips, once per id, in doc order", () => {
+    const rows = addedSkippedRows(
+      doc,
+      [
+        { id: "added-2", reason: "graphic type OldCard no longer exists" },
+        { id: "added-3", reason: "all words cut" },
+      ],
+      [
+        { id: "added-3", reason: "a second opinion" },
+        { id: "added-1", reason: "its words are no longer in the transcript" },
+      ],
+    );
+    expect(rows).toEqual([
+      { id: "added-1", component: "TitleCard", reason: "its words are no longer in the transcript" },
+      { id: "added-2", component: "OldCard", reason: "graphic type OldCard no longer exists" },
+      // Produce's reason wins: it is what the next run will say again.
+      { id: "added-3", component: "StatCard", reason: "all words cut" },
+    ]);
+  });
+
+  it("drops a reported row once the live preview shows that graphic (fixed live), and keeps one it does not show", () => {
+    const issues = [
+      { id: "added-1", reason: "overlaps the graphic \u2018StatCard\u2019 at 0:01: move or remove it" },
+      { id: "added-2", reason: "graphic type OldCard no longer exists" },
+    ];
+    // added-1 shows as a split half: the root counts.
+    const rows = addedSkippedRows(doc, issues, [], ["scene-0", "added-1@s1", "take-1"]);
+    expect(rows.map((r) => r.id)).toEqual(["added-2"]);
+    // Not shown live: the run's reason stays.
+    expect(addedSkippedRows(doc, issues, [], ["scene-0"]).map((r) => r.id)).toEqual(["added-1", "added-2"]);
+  });
+
+  it("lists only ids still in the doc — a removed entry leaves the list at once", () => {
+    const rows = addedSkippedRows(doc.slice(0, 1), [{ id: "added-2", reason: "x" }], []);
+    expect(rows).toEqual([]);
+  });
+});
+
+describe("addedSkippedHeading (§7)", () => {
+  it("says 'graphic is' for one and 'graphics are' for more", () => {
+    expect(addedSkippedHeading(1)).toBe("1 added graphic is not shown");
+    expect(addedSkippedHeading(2)).toBe("2 added graphics are not shown");
+  });
+});
+
+/** A selected panel word whose output time IS its source time (identity clock). */
+const sw = (srcStart: number, len = 0.4, text = "w"): AddGraphicWord => ({
+  srcStart,
+  start: srcStart,
+  end: srcStart + len,
+  text,
+});
+const same = (sec: number): number => sec;
+
+describe("addSpan (editor-added-graphics §1)", () => {
+  it("runs from the first word's source start to the LAST word's source end", () => {
+    // The last word's end is its source start plus its spoken length — not
+    // the max of anything, and not an output second.
+    const span = addSpan([sw(2), { srcStart: 2.5, start: 7.5, end: 7.9, text: "b" }]);
+    expect(span.srcStart).toBe(2);
+    expect(span.srcEnd).toBeCloseTo(2.9, 9);
+  });
+});
+
+describe("addGraphicCheck (editor-added-graphics §5)", () => {
+  // `identity` runs 10 s, so a one-scene assembly floors a cue at 1.5 s
+  // (`minSceneSec`): one 0.4 s word at 2.0 gets the window [2.0, 3.5].
+  it("refuses with the cue's type and time when the FLOORED window meets a graphic", () => {
+    const check = addGraphicCheck({
+      words: [sw(2)],
+      // 3.52 is clear of the word's own end (2.4 + gap) but not of the floor.
+      cues: [cue("scene-1", 3.52, 5)],
+      clock: identity,
+      toPlayerSec: same,
+      deferred: false,
+    });
+    expect(check.refusal).toBe(
+      "These words overlap the graphic \u2018StatCard\u2019 at 0:03. Trim that block or pick other words.",
+    );
+  });
+
+  it("lets the add through one gap past the floored window, and ignores plain takes", () => {
+    const check = addGraphicCheck({
+      words: [sw(2)],
+      cues: [cue("scene-1", 3.6, 5), cue("take-1", 0, 10, { kind: "plain" })],
+      clock: identity,
+      toPlayerSec: same,
+      deferred: false,
+    });
+    expect(check.refusal).toBeNull();
+    expect(check.span).toEqual({ srcStart: 2, srcEnd: 2.4 });
+    expect(check.notes).toEqual([]);
+    // The window it measured: the floored one-scene assembly, which the
+    // graphic editor's header shows (graphic-editor-modal §5).
+    expect(check.at).toEqual({ startSec: 2, endSec: 3.5 });
+  });
+
+  it("carries the words' own window with a refusal for cut words, or with no clock", () => {
+    const keptTo3 = mapFromKeptSpans([{ srcIn: 0, srcOut: 3, outIn: 0, outOut: 3 }]);
+    const cut = addGraphicCheck({ words: [sw(4), sw(5)], cues: [], clock: keptTo3, toPlayerSec: same, deferred: false });
+    expect(cut.at).toEqual({ startSec: 4, endSec: 5.4 });
+    const noClock = addGraphicCheck({ words: [sw(2)], cues: [], clock: null, toPlayerSec: (t) => t + 1, deferred: true });
+    expect(noClock.at).toEqual({ startSec: 3, endSec: 3.4 });
+  });
+
+  it("refuses when EVERY word is cut, but not when one still plays", () => {
+    const keptTo3 = mapFromKeptSpans([{ srcIn: 0, srcOut: 3, outIn: 0, outOut: 3 }]);
+    const cut = addGraphicCheck({ words: [sw(4), sw(5)], cues: [], clock: keptTo3, toPlayerSec: same, deferred: false });
+    expect(cut.refusal).toBe("These words are cut from the video. Pick words that are still in it.");
+    const partly = addGraphicCheck({ words: [sw(2), sw(5)], cues: [], clock: keptTo3, toPlayerSec: same, deferred: false });
+    expect(partly.refusal).toBeNull();
+  });
+
+  it("with no clock, checks the words' own times on the player's clock", () => {
+    // +1 s stands in for a live re-cut's mapping: the window is [3.0, 3.4],
+    // with no floor (nothing to assemble on).
+    const shifted = (sec: number): number => sec + 1;
+    const hit = addGraphicCheck({
+      words: [sw(2)],
+      cues: [cue("scene-1", 3.42, 5)],
+      clock: null,
+      toPlayerSec: shifted,
+      deferred: true,
+    });
+    expect(hit.refusal).toMatch(/^These words overlap the graphic/);
+    const clear = addGraphicCheck({
+      words: [sw(2)],
+      cues: [cue("scene-1", 3.5, 5)],
+      clock: null,
+      toPlayerSec: shifted,
+      deferred: true,
+    });
+    expect(clear.refusal).toBeNull();
+  });
+
+  it("notes a preview that must wait for the next Render", () => {
+    const check = addGraphicCheck({ words: [sw(2)], cues: [], clock: null, toPlayerSec: same, deferred: true });
+    expect(check.notes).toEqual(["This graphic will show after the next Render."]);
+  });
+
+  it("notes a span longer than the 15 s ceiling, and not one exactly at it", () => {
+    const long = addGraphicCheck({
+      words: [sw(0), sw(15.5)],
+      cues: [],
+      clock: null,
+      toPlayerSec: same,
+      deferred: false,
+    });
+    expect(long.notes).toEqual(["Shown for the first 15 s of these words."]);
+    const atCap = addGraphicCheck({
+      words: [sw(0), sw(14.6)],
+      cues: [],
+      clock: null,
+      toPlayerSec: same,
+      deferred: false,
+    });
+    expect(atCap.notes).toEqual([]);
+  });
+});
+
+describe("addOverlapRefusal", () => {
+  it("writes the time as m:ss, rounded down like the timeline's", () => {
+    expect(addOverlapRefusal(cue("scene-9", 72.9, 80, { component: "BulletList" }))).toBe(
+      "These words overlap the graphic \u2018BulletList\u2019 at 1:12. Trim that block or pick other words.",
+    );
+  });
+});
+
+describe("previewBaseCues in a 16:9 frame (fix-wave I2)", () => {
+  // One component per default layout the add menu can produce. Produce
+  // remaps every scene through `landscapeLayoutFor` before assembly, so a
+  // fresh add must preview in that layout, not its portrait default.
+  const byLayout: [string, Layout][] = [
+    ["TitleCard", "pip-bubble"],
+    ["StatCard", "video-top"],
+    ["FlowDiagram", "graphic-only"],
+    ["BulletList", "blurred-behind"],
+    ["CardRow", "full-bleed"],
+  ];
+  // What `landscapeLayoutFor` answers: a script project keeps its three
+  // backdrops (§163); every other run takes R15's remap.
+  const want: Record<Layout, { script: Layout; plain: Layout }> = {
+    "pip-bubble": { script: "pip-bubble", plain: "split-left" },
+    "video-top": { script: "split-left", plain: "split-left" },
+    "graphic-only": { script: "graphic-only", plain: "blurred-behind" },
+    "blurred-behind": { script: "blurred-behind", plain: "blurred-behind" },
+    "full-bleed": { script: "full-bleed", plain: "full-bleed" },
+  } as Record<Layout, { script: Layout; plain: Layout }>;
+
+  for (const [component, layout] of byLayout) {
+    for (const scriptProject of [false, true]) {
+      it(`${component} (${layout}) previews as ${want[layout]![scriptProject ? "script" : "plain"]} in a ${scriptProject ? "script" : "non-script"} project`, () => {
+        const meta = SCENE_REGISTRY[component as keyof typeof SCENE_REGISTRY];
+        expect(meta.defaultLayout).toBe(layout);
+        const { cues } = previewBaseCues({
+          baseCues: [],
+          added: [{ id: "added-1", component, props: meta.defaultProps, srcStart: 1, srcEnd: 2.4 }],
+          issueIds: new Set(),
+          words,
+          map: identity,
+          landscape: true,
+          scriptProject,
+        });
+        expect(cues.map((c) => c.layout)).toEqual([want[layout]![scriptProject ? "script" : "plain"]]);
+      });
+    }
+  }
+
+  it("leaves a portrait frame's add, and every base cue, as they are", () => {
+    const base = [cue("scene-0", 6, 8, { layout: "video-top" }), { ...baked, layout: "pip-bubble" as Layout }];
+    const added = [
+      { id: "added-1", ...add },
+      { id: "added-2", ...add, srcStart: 4, srcEnd: 4.4 },
+    ];
+    const portrait = previewBaseCues({ baseCues: base, added, issueIds: new Set(), words, map: identity, landscape: false, scriptProject: false });
+    expect(portrait.cues.map((c) => [c.id, c.layout])).toEqual([
+      ["added-1", "pip-bubble"],
+      ["added-2", "pip-bubble"],
+      ["scene-0", "video-top"],
+    ]);
+    // Landscape: only the FRESH add is remapped — a base cue is what produce
+    // already laid out (and remapped), baked added ones included.
+    const wide = previewBaseCues({ baseCues: base, added, issueIds: new Set(), words, map: identity, landscape: true, scriptProject: false });
+    expect(wide.cues.map((c) => [c.id, c.layout])).toEqual([
+      ["added-1", "pip-bubble"],
+      ["added-2", "split-left"],
+      ["scene-0", "video-top"],
+    ]);
+  });
+});
+
+describe("previewDropCovered (fix-wave I1)", () => {
+  /** The live memo's steps up to the hidden drop: reconcile, overrides, hide. */
+  const visible = (baseCues: SceneCue[], doc: OverrideDoc) => {
+    const preview = previewBaseCues({
+      baseCues,
+      added: doc.addedScenes ?? [],
+      issueIds: new Set(),
+      words,
+      map: identity,
+      landscape: false,
+      scriptProject: false,
+    });
+    const { cues } = splitThenDropHidden(applyOverrides(preview.cues, doc).cues, doc);
+    return { preview, cues };
+  };
+  // A StatCard on 1.0-3.0 s and an add over words 2-4 (1.0-2.4 s): the
+  // drift case, a plan block that arrived over the added one's words.
+  const plan = cue("scene-2", 1, 3);
+  const doc: OverrideDoc = { ...emptyOverrideDoc(), addedScenes: [{ id: "added-1", ...add }] };
+
+  it("drops an added graphic a visible plan graphic covers, and the not-shown list carries the reason", () => {
+    const { preview, cues } = visible([plan], doc);
+    expect(cues.map((c) => c.id)).toEqual(["scene-2", "added-1"]);
+    const covered = previewDropCovered(cues);
+    expect(covered.cues.map((c) => c.id)).toEqual(["scene-2"]);
+    const rows = addedSkippedRows(doc.addedScenes!, [], [...preview.skipped, ...covered.skipped]);
+    expect(rows).toEqual([
+      {
+        id: "added-1",
+        component: "TitleCard",
+        reason: "overlaps the graphic \u2018StatCard\u2019 at 0:01: move or remove it",
+      },
+    ]);
+  });
+
+  it("keeps it when the plan graphic over its words is hidden", () => {
+    // Parsed, so the scene entry carries the schema's defaults as a loaded doc does.
+    const hidden = OverrideDocSchema.parse({ ...doc, scenes: { "scene-2": { hidden: true } } });
+    const { cues } = visible([plan], hidden);
+    const covered = previewDropCovered(cues);
+    expect(covered.cues.map((c) => c.id)).toEqual(["added-1"]);
+    expect(covered.skipped).toEqual([]);
+  });
+
+  it("reports a covered split half under its entry's id, once", () => {
+    const halves = [
+      cue("added-1@s1", 1, 2, { component: "TitleCard" }),
+      cue("added-1@s2", 2, 3, { component: "TitleCard" }),
+      cue("scene-2", 1.5, 2.5),
+    ];
+    const covered = previewDropCovered(halves);
+    expect(covered.cues.map((c) => c.id)).toEqual(["scene-2"]);
+    expect(covered.skipped.map((r) => r.id)).toEqual(["added-1"]);
+  });
+});
+
+describe("addBaseIds (fix-wave I3)", () => {
+  it("Remove an entry the run reported, then add: the new id is one past the reported one", () => {
+    const renderProps = {
+      baseSceneCues: [cue("scene-0", 6, 8), baked],
+      addedSceneIssues: [{ id: "added-2", reason: "graphic type OldCard no longer exists" }],
+    };
+    let s = {
+      ...initialEditState(),
+      doc: {
+        ...emptyOverrideDoc(),
+        addedScenes: [
+          { id: "added-1", ...add },
+          { id: "added-2", ...add, component: "OldCard" },
+        ],
+      },
+    };
+    s = editReducer(s, { type: "removeAddedScene", id: "added-2" });
+    s = editReducer(s, { type: "addScene", ...add, srcStart: 4, srcEnd: 4.4, baseIds: addBaseIds(renderProps) });
+    expect(s.doc.addedScenes!.map((e) => e.id)).toEqual(["added-1", "added-3"]);
+  });
+
+  it("falls back to the old sceneCues when there are no base cues", () => {
+    expect(addBaseIds({ sceneCues: [cue("scene-0", 0, 1)] })).toEqual(["scene-0"]);
+    expect(addBaseIds(null)).toEqual([]);
+  });
+});
+
+describe("addPreviewCue (graphic-editor-modal §5, the modal's preview)", () => {
+  const words = [
+    { text: "agents", start: 2, end: 2.4 },
+    { text: "in", start: 2.5, end: 2.7 },
+    { text: "loops", start: 2.8, end: 3.2 },
+  ];
+  const args = {
+    component: "TitleCard",
+    props: { title: "Agents" },
+    span: { srcStart: 2, srcEnd: 3.2 },
+    words,
+    map: identity,
+    landscape: false,
+    scriptProject: false,
+  };
+
+  it("is the cue the stage gives the add: its window, layout and resolved props", () => {
+    const cue = addPreviewCue(args)!;
+    const stage = previewBaseCues({
+      baseCues: [],
+      added: [{ id: "added-0", component: "TitleCard", props: { title: "Agents" }, srcStart: 2, srcEnd: 3.2 }],
+      issueIds: new Set(),
+      words,
+      map: identity,
+      landscape: false,
+      scriptProject: false,
+    }).cues[0]!;
+    expect(cue).toEqual(stage);
+    expect(cue.startSec).toBe(2);
+  });
+
+  it("lays a 16:9 add out as produce will", () => {
+    const portrait = addPreviewCue(args)!;
+    const wide = addPreviewCue({ ...args, landscape: true })!;
+    expect(wide.layout).not.toBe(portrait.layout);
+  });
+
+  it("is null for props the raw schema refuses, and with no clock or words", () => {
+    expect(addPreviewCue({ ...args, props: { title: "" } })).toBeNull();
+    expect(addPreviewCue({ ...args, map: null })).toBeNull();
+    expect(addPreviewCue({ ...args, words: null })).toBeNull();
+  });
+});

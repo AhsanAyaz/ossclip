@@ -204,3 +204,42 @@ export function countAt(parsed: ParsedCount, t: number, durSec = 1.0): string {
   }
   return `${prefix}${formatCount(n, decimals, grouped)}${suffix}`;
 }
+
+// ---------------------------------------------------------------------------
+// Entrances for drawn scenes (§167). A drawn scene gets seconds from the
+// kit's `useSceneTime()` and places each element's entrance at its own
+// `startSec`; anim.ts's `fade`/`rise` take a spring progress the scene has
+// no frame-based spring to produce, so these restate them in seconds. Both
+// ride the layer's shared `easeOutQuad` (the header's one-curve rule) and
+// clamp, so the last state holds to the end of the scene at any length.
+// ---------------------------------------------------------------------------
+
+/**
+ * Progress 0→1 over `durSec` from `startSec`, with both ends returned as
+ * literals (popScale's reason: a settled element must be exactly settled).
+ * A zero duration is "already arrived" at `startSec`, easeInOut's posture.
+ */
+const entranceAt = (t: number, startSec: number, durSec: number): number => {
+  const local = t - startSec;
+  if (durSec <= 0) return local >= 0 ? 1 : 0;
+  if (local <= 0) return 0;
+  if (local >= durSec) return 1;
+  return easeOutQuad(local / durSec);
+};
+
+/** Opacity 0 → 1 from `startSec` over `durSec` seconds; by default the
+ * layer's own ENTER_SEC, so a drawn fade arrives as fast as a graphic does. */
+export function fadeIn(t: number, startSec: number, durSec = ENTER_SEC): number {
+  return entranceAt(t, startSec, durSec);
+}
+
+/**
+ * A y offset in px, from `px` below its place to exactly 0, from `startSec`
+ * over `durSec` seconds. 26 px is anim.ts's `rise` default, so a drawn
+ * scene's rise travels as far as a pattern scene's. Returned as a number,
+ * not anim.ts's style object: the scene composes it into its own transform.
+ */
+export function riseIn(t: number, startSec: number, durSec = 0.35, px = 26): number {
+  const p = entranceAt(t, startSec, durSec);
+  return p === 1 ? 0 : px * (1 - p);
+}

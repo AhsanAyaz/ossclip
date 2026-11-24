@@ -37,12 +37,13 @@ vi.mock("remotion", () => ({
   staticFile: (path: string) => path,
   // ClipScene's video (explainer plan Task 7). Its props surface as data
   // attributes so the test can read what the component asked Remotion for.
-  OffthreadVideo: ({ src, transparent, volume, style }: any) =>
+  OffthreadVideo: ({ src, transparent, volume, playbackRate, style }: any) =>
     React.createElement("video", {
       src,
       style,
       "data-transparent": String(transparent),
       "data-volume": String(volume),
+      "data-playback-rate": String(playbackRate),
     }),
 }));
 
@@ -189,6 +190,12 @@ describe("SceneLayer — ClipScene (explainer plan Task 7)", () => {
     // inset exists for the scrim's edge, so no scrim, no inset.
     expect(Number.parseFloat(video.style.width)).toBeCloseTo(1080, 1);
     expect(Number.parseFloat(video.style.height)).toBeCloseTo(1920, 1);
+  });
+
+  it("plays the clip at its speed", () => {
+    render({ ...clipCue, props: { ...clipCue.props, speed: 1.5 } });
+    const video = document.querySelector<HTMLVideoElement>("video")!;
+    expect(Number(video.dataset.playbackRate)).toBe(1.5);
   });
 
   it("draws no scrim over the speaker, though full-bleed is an over-video layout", () => {

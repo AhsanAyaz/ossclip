@@ -41,6 +41,7 @@ import { accountsFlag, atFlag, deliveryFlag, platformsFlag, youtubePrivacyFlag }
 import { inputSourceUsed, resetInputSource } from "./interactive/ask-input";
 import { setReplayArgv } from "./replay-argv";
 import { ScriptFlagSchema } from "./script-mode";
+import { AssetsFlagSchema, storyboardFlag } from "./storyboard/storyboard-run";
 import {
   bootstrapTelemetry,
   durationBucket,
@@ -453,6 +454,24 @@ export function buildProgram(): Command {
       },
     )
     .option(
+      "--storyboard",
+      "experimental: plan drawn shots over the speaker in one LLM call, store them in " +
+        "storyboard.json, and open the editor on the table instead of rendering. Implies " +
+        "--produce; cannot be combined with --script, --scenes or --clip",
+    )
+    .option(
+      "--assets <dir>",
+      "experimental: a folder of images (.png .jpg .svg .webp) a storyboard shot may use, " +
+        "with optional notes in assets.md. Only with --storyboard",
+      (v: string) => {
+        // Parse, never coerce (CLAUDE.md), the --script rule: an empty value
+        // must die here naming the flag, not resolve to the current folder.
+        const parsed = AssetsFlagSchema.safeParse(v);
+        if (!parsed.success) throw new InvalidArgumentError(parsed.error.issues[0]!.message);
+        return parsed.data;
+      },
+    )
+    .option(
       "--no-repair",
       "skip the ASR mishearing repair pass (captions then show the raw transcription)",
     )
@@ -771,10 +790,11 @@ export function buildProgram(): Command {
       // alongside is agreement) and forces the end-of-run editor open, so the
       // one render happens from the editor's Render button. reviewFlag throws
       // on --no-open-editor, the jumpCutsFlag contradiction posture.
-      const { render, openEditor } = reviewFlag(
-        opts.review === true,
-        opts.render,
-        opts.openEditor,
+      // --storyboard after it (storyboardFlag): no render either, and the
+      // editor opens, but a typed --no-open-editor is honoured.
+      const { render, openEditor } = storyboardFlag(
+        opts.storyboard === true,
+        reviewFlag(opts.review === true, opts.render, opts.openEditor),
       );
       // Wall clock around produce() only — the editor offer below can sit at
       // an interactive prompt for as long as the user thinks, and think-time
@@ -801,8 +821,18 @@ export function buildProgram(): Command {
           // a script IS the request for a plan — typing it is the consent the
           // `--produce` gate exists for, and the playbook's explainer command
           // (`--script … --aspect 16:9 --no-captions`) does not repeat it.
-          produce: opts.produce || opts.script !== undefined,
+          produce: opts.produce || opts.script !== undefined || opts.storyboard === true,
           script: opts.script,
+          // `--storyboard` implies `--produce` for the script's reason: it is
+          // the request for a plan (§168).
+          storyboard: opts.storyboard === true,
+          // Absolute here, against the folder the user typed in (INIT_CWD
+          // under `pnpm ossclip`, produce's own rule for --script): the
+          // storyboard stores it and command.json replays it from elsewhere.
+          assets:
+            opts.assets !== undefined
+              ? resolve(process.env.INIT_CWD ?? process.cwd(), expandHome(opts.assets))
+              : undefined,
           intent: opts.intent,
           // `--sfx-level` implies `--sfx` (sfxFlag), resolved HERE so the
           // implication is one pure function rather than a condition produce
@@ -1327,6 +1357,37 @@ export function buildProgram(): Command {
       } finally {
         await telemetry.flush();
       }
+    });
+
+  program
+    .command("draw")
+    // Experimental (storyboard Phase A, §167): the gate decides whether drawn
+    // shots become a `produce --storyboard` feature, so this stays its own
+    // command, records no telemetry and leaves the project's video alone.
+    .description(
+      "experimental: draw one shot as LLM-written animation code, check it and render three " +
+        "stills; redraw it from a note, or render a small preview of the draft",
+    )
+    // The `kit` ladder, so `ossclip draw <video folder>` finds the same run.
+    .argument("[workdir]", "a work directory, or the folder you produced in")
+    .option("--shot <id>", "the shot's name (lower-case letters, digits and dashes); its files go in storyboard/<id>/")
+    .option("--idea <text>", "draw a new shot from this one-sentence idea")
+    .option("--note <text>", "redraw the shot's draft with this change")
+    .option("--preview", "render the draft at a quarter of the frame size to v<n>/preview.webm (no LLM call)")
+    .option("--line <text>", "with --idea: what the speaker says while the shot is on screen")
+    .option("--duration <sec>", "with --idea: the shot's length in seconds, 2 to 15 (default 4)")
+    .option("--assets <dir>", "with --idea: a folder of images (png, jpg, svg, webp) the shot may show; assets.md describes them")
+    .option("--llm <provider>", "antigravity | claude | claude-cli | gemini | mock. Default: as for produce")
+    .option("--llm-model <id>", "override the provider's default model")
+    .action(async (workdir: string | undefined, opts) => {
+      const { liveDrawDeps, parseDrawFlags, runDraw } = await import("./draw/draw-command");
+      // Parsed before anything touches disk, the `cover` rule.
+      const flags = parseDrawFlags(opts);
+      const target = await resolveWorkdirArgument(workdir ?? ".", "draw");
+      const result = await runDraw({ ...flags, workdir: target }, liveDrawDeps());
+      // A shot that failed its checks is a finished run, not a crash: the
+      // version and its errors are recorded, and the exit code says so.
+      if (!result.ok) process.exitCode = 1;
     });
 
   program

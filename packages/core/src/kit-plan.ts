@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod/v4";
 import { frameWindow } from "./frames";
 import { rebaseCue } from "./kit-rebase";
-import { SCENE_REGISTRY } from "./scene-registry";
+import { SCENE_REGISTRY, clipSpeed } from "./scene-registry";
 import {
   SceneComponentIdSchema,
   type Layout,
@@ -180,6 +180,33 @@ export function kitClipPlans(input: {
     });
   }
   return plans;
+}
+
+/**
+ * How long a "source" plan's original sits on the timeline, and what the
+ * kit must say about it. The kit places the author's ORIGINAL file at 1x —
+ * the FCPXML it writes has no retime, and one could not be checked against
+ * Resolve here — so a clip the render plays at another speed is NOT what
+ * the timeline shows. The original stays trimmed to the slot at every speed
+ * (a whole 4 s original in a 2 s slot would overlap the next kit clip on
+ * the same lane), and the author is told to set the speed in the finishing
+ * app, where the retime fills the slot with the whole clip. The trim also
+ * keeps a frame-rounded slot from running past the file's end.
+ */
+export function sourceClipPlacement(
+  plan: Pick<KitClipPlan, "sceneId" | "cue">,
+  planLengthSec: number,
+  originalSec: number,
+): { lengthSec: number; warning: string | null } {
+  const speed = clipSpeed(plan.cue.props);
+  const lengthSec = Math.min(planLengthSec, originalSec);
+  if (speed === 1) return { lengthSec, warning: null };
+  return {
+    lengthSec,
+    warning:
+      `${plan.sceneId} plays at ${speed}x in the render, but the kit places its original clip at ` +
+      `normal speed: set the speed to ${speed}x in your finishing app`,
+  };
 }
 
 /**

@@ -1,4 +1,10 @@
-import type { KeptSpan, SceneCue, SceneTiming } from "@ossclip/core/browser";
+import {
+  maxCueSec,
+  splitRootId,
+  type KeptSpan,
+  type SceneCue,
+  type SceneTiming,
+} from "@ossclip/core/browser";
 
 /** Same floor assembly uses, so a hand nudge cannot make an unrenderable cue. */
 const MIN_SCENE_SEC = 1.2;
@@ -90,6 +96,14 @@ export function moveTiming(
  * reason: float noise from the clock arithmetic is not user intent. */
 const round3 = (v: number): number => Math.round(v * 1000) / 1000;
 
+/** `src` to the millisecond on the kept side (`pinTiming`'s `keptSrc`). */
+function keptMs(src: number, keptSrc: ((src: number) => boolean) | undefined): number {
+  const near = round3(src);
+  if (keptSrc === undefined || keptSrc(near)) return near;
+  const other = near > src ? Math.floor(src * 1000) / 1000 : Math.ceil(src * 1000) / 1000;
+  return keptSrc(other) ? other : src;
+}
+
 /**
  * The `timing` entry a completed drag stores (source-anchoring audit,
  * 2026-08-26). `startSec`/`endSec` are the PREVIEW's numbers, which speak
@@ -104,16 +118,30 @@ const round3 = (v: number): number => Math.round(v * 1000) / 1000;
  * is worse than a source-anchored one but far better than a fabricated
  * source second, and `remapOverridesThroughRecut` still looks after it.
  *
+ * `keptSrc` is the same clock's "is this source second played" test
+ * (`toOutput(src) !== null` on the map `toSourceSec` inverts). The ms
+ * rounding must never carry an edge out of the kept span it sits in: a block
+ * at output 0 whose first span starts at source 1.69919 s converted to
+ * 1.69919, rounded to 1.699 — inside the removed head — and the pin resolved
+ * to nothing ("not in this cut — pin inert"), so a right-edge drag on it
+ * silently did nothing (EGM short, 2026-11-22). A seam does the same from
+ * the other side: `toSource` answers the earlier span's `srcOut` there, and
+ * rounding up leaves it. With `keptSrc`, an edge the nearest millisecond
+ * would cut takes the other millisecond (the kept side), and keeps its exact
+ * source second when neither is kept (a span under a millisecond). Absent,
+ * the plain nearest-ms rounding stands.
+ *
  * Pure (and exported) so the clock decision is testable without a DOM.
  */
 export function pinTiming(
   startSec: number,
   endSec: number,
   toSourceSec: ((sec: number) => number) | null | undefined,
+  keptSrc?: (src: number) => boolean,
 ): SceneTiming {
   if (!toSourceSec) return { startSec, endSec };
-  const srcStart = round3(toSourceSec(startSec));
-  const srcEnd = round3(toSourceSec(endSec));
+  const srcStart = keptMs(toSourceSec(startSec), keptSrc);
+  const srcEnd = keptMs(toSourceSec(endSec), keptSrc);
   // An ordered pair is the src arm's schema refinement: a clock that answered
   // the same source second for both edges (a window entirely inside removed
   // material, or a rounding tie on a sub-millisecond block) would write a doc
@@ -122,6 +150,20 @@ export function pinTiming(
   return { srcStart, srcEnd };
 }
 
+/**
+ * The window an edge drag (or a speed resize) may give `sceneId`: inside the
+ * video, clear of its graphic neighbours by `GAP`, at least the floor long,
+ * and — for a clip — never longer than the clip plays (`maxCueSec`, core's
+ * one rule). A drag past that stops there rather than writing a longer pin:
+ * the live retime and the render cap a clip block at its length, so a longer
+ * pin snapped back on release, and the plain take after it moved.
+ *
+ * Which edge gives way to the clip's length is read from which edge the
+ * caller kept where the block already is: the END edge's drag (start held)
+ * stops at start + length; the START edge's (end held) stops where the
+ * block would outgrow the clip, the end staying put. The floor gives way to
+ * the clip too: 4 s at 4x is 1 s, and 1.2 s would be frames it does not have.
+ */
 export function clampTiming(
   allCues: readonly SceneCue[],
   sceneId: string,
@@ -131,14 +173,81 @@ export function clampTiming(
 ): { startSec: number; endSec: number } {
   const cues = stored(allCues);
   const i = cues.findIndex((c) => c.id === sceneId);
+  const cue = cues[i];
   const prev = i > 0 ? cues[i - 1] : undefined;
   const next = i >= 0 && i < cues.length - 1 ? cues[i + 1] : undefined;
   const lo = prev ? prev.endSec + GAP : 0;
   const hi = next ? next.startSec - GAP : duration;
-  let s = Math.min(Math.max(startSec, lo), Math.max(lo, hi - MIN_SCENE_SEC));
-  let e = Math.max(Math.min(endSec, hi), s + MIN_SCENE_SEC);
-  if (e > hi) { e = hi; s = Math.max(lo, e - MIN_SCENE_SEC); }
+  const max = cue ? maxCueSec(cue) : undefined;
+  const floor = max === undefined ? MIN_SCENE_SEC : Math.min(MIN_SCENE_SEC, max);
+  let s = Math.min(Math.max(startSec, lo), Math.max(lo, hi - floor));
+  let e = Math.max(Math.min(endSec, hi), s + floor);
+  if (e > hi) { e = hi; s = Math.max(lo, e - floor); }
+  if (max !== undefined && e - s > max) {
+    const startEdge = cue !== undefined && endSec === cue.endSec && startSec !== cue.startSec;
+    if (startEdge) s = e - max;
+    else e = s + max;
+  }
   return { startSec: s, endSec: e };
+}
+
+/**
+ * The window a speed change gives a PINNED ClipScene, or null when the
+ * editor must not rewrite the pin. The rule (decided after 493597a, once it
+ * was tried on a pinned storyboard shot): changing speed always sets the
+ * block to the clip's played length, and the edges afterwards are the
+ * author's — a shorter block trims the clip, no block is longer than it
+ * (`clampTiming`), and the NEXT speed change resizes again. Leaving a
+ * dragged block its old length was what made a sped-up shot end in a
+ * freeze and a slowed one cut off.
+ *
+ * Window: the current start to start + the clip's longest length at the new
+ * speed (`maxCueSec`: `durationSec / speed` under `MAX_SCENE_SEC`, the length
+ * assembly and the render mean), then limited exactly as an edge drag is
+ * (`clampTiming`: neighbours less the gap, the video's end) — a slowed clip
+ * that reaches its neighbour is cut there.
+ *
+ * Null, and why each one:
+ * - not pinned: `applyOverrides` re-derives an unpinned clip's window from
+ *   the speed prop itself (`clipSpeedEndSec`); writing a pin here would take
+ *   the window away from that path for good. Core's pinned rule is left as
+ *   it is on purpose: at produce time the pin is the source of truth, and
+ *   the editor is what rewrites it.
+ * - not a ClipScene: speed means nothing elsewhere.
+ * - not in `allCues`, or no video length (`duration` 0): there is no
+ *   timeline to limit the block against, and a guessed one could cut it to
+ *   nothing; the speed still lands, the window stays as dragged.
+ * - a split half: its window is a piece of the clip, never the whole clip's
+ *   length — `clipSpeedEndSec` skips halves for the same reason.
+ *
+ * Where both paths could apply they give the same window: one length rule
+ * (`maxCueSec`), the same neighbour gap (`PINNED_GAP_SEC` and `GAP` are both
+ * 0.05), and a 1.2 s floor that gives way to the clip on both sides
+ * (`clampTiming` here, `reclampPinnedTiming` at produce time), so a 4 s clip
+ * at 4x is 1 s pinned or not.
+ */
+export function clipSpeedTiming(
+  allCues: readonly SceneCue[],
+  sceneId: string,
+  speed: number,
+  duration: number,
+  pinned: boolean,
+): { startSec: number; endSec: number } | null {
+  if (!pinned || !(duration > 0)) return null;
+  const cue = allCues.find((c) => c.id === sceneId);
+  if (!cue || cue.component !== "ClipScene" || splitRootId(cue.id) !== cue.id) return null;
+  // The cue at its NEW speed, so `clampTiming`'s own limit is the new
+  // length and not the old one (a slowed clip would stop at its old end).
+  const resped: SceneCue = { ...cue, props: { ...cue.props, speed } };
+  const max = maxCueSec(resped);
+  if (max === undefined) return null;
+  return clampTiming(
+    allCues.map((c) => (c.id === sceneId ? resped : c)),
+    sceneId,
+    cue.startSec,
+    cue.startSec + max,
+    duration,
+  );
 }
 
 /**

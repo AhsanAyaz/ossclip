@@ -1,0 +1,663 @@
+{
+  "videoFileName": "take.mp4",
+  "spans": [
+    {
+      "srcIn": 0,
+      "srcOut": 4.5994,
+      "outIn": 0,
+      "outOut": 4.5994
+    },
+    {
+      "srcIn": 5.0127,
+      "srcOut": 10.7559,
+      "outIn": 4.5994,
+      "outOut": 10.342600000000001
+    },
+    {
+      "srcIn": 11.0711,
+      "srcOut": 18,
+      "outIn": 10.342600000000001,
+      "outOut": 17.271500000000003
+    }
+  ],
+  "takeClipStarts": [
+    0,
+    4.5994,
+    10.342600000000001
+  ],
+  "captionLines": [
+    {
+      "words": [
+        {
+          "text": "Hello",
+          "start": 2,
+          "end": 2.4483,
+          "srcStart": 2
+        },
+        {
+          "text": "everyone",
+          "start": 2.5283,
+          "end": 3.1405,
+          "srcStart": 2.5283
+        }
+      ],
+      "start": 2,
+      "end": 3.2205
+    },
+    {
+      "words": [
+        {
+          "text": "welcome",
+          "start": 3.2205,
+          "end": 3.7728,
+          "srcStart": 3.2205
+        },
+        {
+          "text": "back",
+          "start": 3.8528,
+          "end": 4.1894,
+          "srcStart": 3.8528
+        }
+      ],
+      "start": 3.2205,
+      "end": 4.5394
+    },
+    {
+      "words": [
+        {
+          "text": "today",
+          "start": 4.859400000000001,
+          "end": 5.329700000000001,
+          "srcStart": 5.2727
+        },
+        {
+          "text": "I",
+          "start": 5.409700000000001,
+          "end": 5.7095,
+          "srcStart": 5.823
+        }
+      ],
+      "start": 4.859400000000001,
+      "end": 5.7895
+    },
+    {
+      "words": [
+        {
+          "text": "want",
+          "start": 5.7895,
+          "end": 6.234500000000001,
+          "srcStart": 6.2028
+        }
+      ],
+      "start": 5.7895,
+      "end": 6.314500000000001
+    },
+    {
+      "words": [
+        {
+          "text": "to",
+          "start": 6.314500000000001,
+          "end": 6.5987,
+          "srcStart": 6.7278
+        },
+        {
+          "text": "show",
+          "start": 6.6787,
+          "end": 7.076700000000001,
+          "srcStart": 7.092
+        },
+        {
+          "text": "you",
+          "start": 7.156700000000001,
+          "end": 7.482100000000001,
+          "srcStart": 7.57
+        }
+      ],
+      "start": 6.314500000000001,
+      "end": 7.5621
+    },
+    {
+      "words": [
+        {
+          "text": "something",
+          "start": 7.5621,
+          "end": 8.1548,
+          "srcStart": 7.9754
+        },
+        {
+          "text": "cool",
+          "start": 8.2348,
+          "end": 8.582600000000001,
+          "srcStart": 8.6481
+        }
+      ],
+      "start": 7.5621,
+      "end": 8.905225000000002
+    },
+    {
+      "words": [
+        {
+          "text": "this",
+          "start": 10.552600000000002,
+          "end": 10.916100000000002,
+          "srcStart": 11.2811
+        },
+        {
+          "text": "raw",
+          "start": 10.996100000000002,
+          "end": 11.3595,
+          "srcStart": 11.7246
+        }
+      ],
+      "start": 10.552600000000002,
+      "end": 11.4395
+    },
+    {
+      "words": [
+        {
+          "text": "take",
+          "start": 11.4395,
+          "end": 11.773800000000001,
+          "srcStart": 12.168
+        },
+        {
+          "text": "becomes",
+          "start": 11.853800000000001,
+          "end": 12.474300000000001,
+          "srcStart": 12.5823
+        }
+      ],
+      "start": 11.4395,
+      "end": 12.554300000000001
+    },
+    {
+      "words": [
+        {
+          "text": "a",
+          "start": 12.554300000000001,
+          "end": 12.8434,
+          "srcStart": 13.2828
+        },
+        {
+          "text": "clean",
+          "start": 12.9234,
+          "end": 13.361,
+          "srcStart": 13.6519
+        }
+      ],
+      "start": 12.554300000000001,
+      "end": 13.441
+    },
+    {
+      "words": [
+        {
+          "text": "edit",
+          "start": 13.441,
+          "end": 13.834800000000001,
+          "srcStart": 14.1695
+        }
+      ],
+      "start": 13.441,
+      "end": 13.914800000000001
+    },
+    {
+      "words": [
+        {
+          "text": "automatically",
+          "start": 13.914800000000001,
+          "end": 14.667200000000001,
+          "srcStart": 14.6433
+        }
+      ],
+      "start": 13.914800000000001,
+      "end": 14.667200000000001
+    }
+  ],
+  "sceneCues": [
+    {
+      "id": "take-0",
+      "kind": "plain",
+      "layout": "full-bleed",
+      "startSec": 0,
+      "endSec": 2
+    },
+    {
+      "id": "scene-0",
+      "anchor": {
+        "startWord": 0,
+        "endWord": 3
+      },
+      "layout": "pip-bubble",
+      "component": "BulletList",
+      "props": {
+        "items": [
+          "Hello",
+          "welcome back"
+        ]
+      },
+      "startSec": 2,
+      "endSec": 4.590725000000001
+    },
+    {
+      "id": "take-1",
+      "kind": "plain",
+      "layout": "full-bleed",
+      "startSec": 4.5994,
+      "endSec": 6.314500000000001
+    },
+    {
+      "id": "added-1",
+      "anchor": {
+        "startWord": 8,
+        "endWord": 11
+      },
+      "layout": "blurred-behind",
+      "component": "BulletList",
+      "props": {
+        "items": [
+          "show you",
+          "something"
+        ]
+      },
+      "startSec": 6.314500000000001,
+      "endSec": 8.905225000000002
+    },
+    {
+      "id": "take-1-1",
+      "kind": "plain",
+      "layout": "full-bleed",
+      "startSec": 8.905225000000002,
+      "endSec": 10.342600000000001
+    },
+    {
+      "id": "take-2",
+      "kind": "plain",
+      "layout": "full-bleed",
+      "startSec": 10.342600000000001,
+      "endSec": 11.4395
+    },
+    {
+      "id": "scene-4",
+      "anchor": {
+        "startWord": 16,
+        "endWord": 19
+      },
+      "layout": "graphic-only",
+      "component": "FlowDiagram",
+      "props": {
+        "nodes": [
+          "RAW TAKE",
+          "CUT",
+          "PRODUCED",
+          "SHIPPED"
+        ],
+        "emphasizeLast": true
+      },
+      "startSec": 11.4395,
+      "endSec": 12.554300000000001,
+      "reveal": {
+        "itemAtSec": [
+          null,
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "id": "scene-4@s1",
+      "anchor": {
+        "startWord": 16,
+        "endWord": 19
+      },
+      "layout": "graphic-only",
+      "component": "FlowDiagram",
+      "props": {
+        "nodes": [
+          "RAW TAKE",
+          "CUT",
+          "PRODUCED",
+          "SHIPPED"
+        ],
+        "emphasizeLast": true
+      },
+      "startSec": 12.554300000000001,
+      "endSec": 14.030225000000002,
+      "reveal": {
+        "itemAtSec": [
+          null,
+          null,
+          null
+        ]
+      }
+    },
+    {
+      "id": "take-2-1",
+      "kind": "plain",
+      "layout": "full-bleed",
+      "startSec": 14.030225000000002,
+      "endSec": 17.271500000000003
+    }
+  ],
+  "theme": {
+    "bg": "#0B0B0E",
+    "fg": "#FFFFFF",
+    "accent": "#FFE14D",
+    "muted": "#9A9AA3",
+    "success": "#5FBF77",
+    "cardBg": "#15151B",
+    "cardBorder": "#2A2A33",
+    "danger": "#FF5C5C",
+    "radiusPx": 24,
+    "fontDisplay": "'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif",
+    "fontMono": "'SF Mono', 'Cascadia Code', Consolas, monospace",
+    "accent2": "#FFE14D",
+    "highlight": "#FFE14D",
+    "info": "#9A9AA3",
+    "ink": "#0B0B0E",
+    "fonts": "system",
+    "motion": "classic"
+  },
+  "baseSceneCues": [
+    {
+      "id": "scene-0",
+      "anchor": {
+        "startWord": 0,
+        "endWord": 3
+      },
+      "layout": "pip-bubble",
+      "component": "TitleCard",
+      "props": {
+        "eyebrow": "MOCK",
+        "title": "THE RAW TAKE",
+        "emphasis": "861%",
+        "sub": "becomes a clean edit"
+      },
+      "startSec": 2,
+      "endSec": 4.590725000000001
+    },
+    {
+      "id": "scene-2",
+      "anchor": {
+        "startWord": 8,
+        "endWord": 11
+      },
+      "layout": "video-top",
+      "component": "StatCard",
+      "props": {
+        "label": "FILLERS REMOVED",
+        "value": "+100%",
+        "caption": "MORE SIGNAL. LESS UM.",
+        "inverted": true
+      },
+      "startSec": 6.314500000000001,
+      "endSec": 8.905225000000002
+    },
+    {
+      "id": "added-1",
+      "anchor": {
+        "startWord": 8,
+        "endWord": 11
+      },
+      "layout": "blurred-behind",
+      "component": "BulletList",
+      "props": {
+        "items": [
+          "show you",
+          "something"
+        ]
+      },
+      "startSec": 6.314500000000001,
+      "endSec": 8.905225000000002
+    },
+    {
+      "id": "scene-4",
+      "anchor": {
+        "startWord": 16,
+        "endWord": 19
+      },
+      "layout": "graphic-only",
+      "component": "FlowDiagram",
+      "props": {
+        "nodes": [
+          "RAW TAKE",
+          "CUT",
+          "PRODUCED"
+        ],
+        "emphasizeLast": true
+      },
+      "startSec": 11.4395,
+      "endSec": 14.030225000000002,
+      "reveal": {
+        "itemAtSec": [
+          null,
+          null,
+          null
+        ]
+      }
+    }
+  ],
+  "baseTheme": {
+    "bg": "#0B0B0E",
+    "fg": "#FFFFFF",
+    "accent": "#FFE14D",
+    "muted": "#9A9AA3",
+    "success": "#5FBF77",
+    "cardBg": "#15151B",
+    "cardBorder": "#2A2A33",
+    "danger": "#FF5C5C",
+    "radiusPx": 24,
+    "fontDisplay": "'Inter', 'Helvetica Neue', 'Arial Black', Arial, sans-serif",
+    "fontMono": "'SF Mono', 'Cascadia Code', Consolas, monospace",
+    "accent2": "#FFE14D",
+    "highlight": "#FFE14D",
+    "info": "#9A9AA3",
+    "ink": "#0B0B0E",
+    "fonts": "system",
+    "motion": "classic"
+  },
+  "baseCaptionLines": [
+    {
+      "words": [
+        {
+          "text": "Hello",
+          "start": 2,
+          "end": 2.4483,
+          "srcStart": 2
+        },
+        {
+          "text": "everyone",
+          "start": 2.5283,
+          "end": 3.1405,
+          "srcStart": 2.5283
+        }
+      ],
+      "start": 2,
+      "end": 3.2205
+    },
+    {
+      "words": [
+        {
+          "text": "welcome",
+          "start": 3.2205,
+          "end": 3.7728,
+          "srcStart": 3.2205
+        },
+        {
+          "text": "back",
+          "start": 3.8528,
+          "end": 4.1894,
+          "srcStart": 3.8528
+        }
+      ],
+      "start": 3.2205,
+      "end": 4.5394
+    },
+    {
+      "words": [
+        {
+          "text": "today",
+          "start": 4.859400000000001,
+          "end": 5.329700000000001,
+          "srcStart": 5.2727
+        },
+        {
+          "text": "I",
+          "start": 5.409700000000001,
+          "end": 5.7095,
+          "srcStart": 5.823
+        }
+      ],
+      "start": 4.859400000000001,
+      "end": 5.7895
+    },
+    {
+      "words": [
+        {
+          "text": "want",
+          "start": 5.7895,
+          "end": 6.234500000000001,
+          "srcStart": 6.2028
+        }
+      ],
+      "start": 5.7895,
+      "end": 6.314500000000001
+    },
+    {
+      "words": [
+        {
+          "text": "to",
+          "start": 6.314500000000001,
+          "end": 6.5987,
+          "srcStart": 6.7278
+        },
+        {
+          "text": "show",
+          "start": 6.6787,
+          "end": 7.076700000000001,
+          "srcStart": 7.092
+        },
+        {
+          "text": "you",
+          "start": 7.156700000000001,
+          "end": 7.482100000000001,
+          "srcStart": 7.57
+        }
+      ],
+      "start": 6.314500000000001,
+      "end": 7.5621
+    },
+    {
+      "words": [
+        {
+          "text": "something",
+          "start": 7.5621,
+          "end": 8.1548,
+          "srcStart": 7.9754
+        },
+        {
+          "text": "cool",
+          "start": 8.2348,
+          "end": 8.582600000000001,
+          "srcStart": 8.6481
+        }
+      ],
+      "start": 7.5621,
+      "end": 8.905225000000002
+    },
+    {
+      "words": [
+        {
+          "text": "this",
+          "start": 10.552600000000002,
+          "end": 10.916100000000002,
+          "srcStart": 11.2811
+        },
+        {
+          "text": "raw",
+          "start": 10.996100000000002,
+          "end": 11.3595,
+          "srcStart": 11.7246
+        }
+      ],
+      "start": 10.552600000000002,
+      "end": 11.4395
+    },
+    {
+      "words": [
+        {
+          "text": "take",
+          "start": 11.4395,
+          "end": 11.773800000000001,
+          "srcStart": 12.168
+        },
+        {
+          "text": "becomes",
+          "start": 11.853800000000001,
+          "end": 12.474300000000001,
+          "srcStart": 12.5823
+        }
+      ],
+      "start": 11.4395,
+      "end": 12.554300000000001
+    },
+    {
+      "words": [
+        {
+          "text": "a",
+          "start": 12.554300000000001,
+          "end": 12.8434,
+          "srcStart": 13.2828
+        },
+        {
+          "text": "clean",
+          "start": 12.9234,
+          "end": 13.361,
+          "srcStart": 13.6519
+        }
+      ],
+      "start": 12.554300000000001,
+      "end": 13.441
+    },
+    {
+      "words": [
+        {
+          "text": "edit",
+          "start": 13.441,
+          "end": 13.834800000000001,
+          "srcStart": 14.1695
+        }
+      ],
+      "start": 13.441,
+      "end": 13.914800000000001
+    },
+    {
+      "words": [
+        {
+          "text": "automatically",
+          "start": 13.914800000000001,
+          "end": 14.667200000000001,
+          "srcStart": 14.6433
+        }
+      ],
+      "start": 13.914800000000001,
+      "end": 14.667200000000001
+    }
+  ],
+  "settings": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30
+  },
+  "outputDurationSec": 17.271500000000003,
+  "face": null,
+  "zoomPlan": [],
+  "sourceTextRegions": [],
+  "punch": {
+    "scale": 1.015,
+    "allowed": [
+      false,
+      false,
+      false
+    ]
+  }
+}

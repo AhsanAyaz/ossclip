@@ -1281,6 +1281,70 @@ test("pip bubble: roundness and placement are per-scene edits (R14 §52)", async
   await expect(page.getByTestId("dirty")).toHaveCount(0);
 });
 
+test("pip bubble: drag moves the bubble, Shift-drag pans the picture inside it (2026-11-20, §107)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await selectBlockAt(page, page.getByTestId("timeline-block-scene-5"));
+  await page.getByTestId("layout-select").selectOption("pip-bubble");
+  await expect(page.getByTestId("video-pan-hint")).toHaveText(
+    "Drag moves the bubble. Shift-drag pans the picture inside it. Zoom in to pan sideways.",
+  );
+
+  const video = page.locator("[data-edit-video]");
+  const content = video.locator(":scope > div").first();
+  const objY = () => content.evaluate((el) => (el as HTMLElement).style.getPropertyValue("--ossclip-obj-y"));
+  const pipX = page.getByTestId("field-pip-x");
+  const pipY = page.getByTestId("field-pip-y");
+  const dx = page.getByTestId("field-dx");
+  const dy = page.getByTestId("field-dy");
+  await expect(dx).toHaveValue("0");
+  await expect(dy).toHaveValue("0");
+  const centre = async () => {
+    const b = (await video.boundingBox())!;
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
+
+  // Plain drag: the bubble moves, the framing does not.
+  const x0 = await pipX.inputValue();
+  const y0 = await pipY.inputValue();
+  let c = await centre();
+  await page.mouse.move(c.x, c.y);
+  await page.mouse.down();
+  await page.mouse.move(c.x - 40, c.y - 40, { steps: 6 });
+  await page.mouse.up();
+  await expect(pipX).not.toHaveValue(x0);
+  await expect(pipY).not.toHaveValue(y0);
+  await expect(dx).toHaveValue("0");
+  await expect(dy).toHaveValue("0");
+
+  // Shift-drag: the picture pans inside the bubble, the bubble stays put,
+  // and the pan lands in the crop window (object-position), not a slide.
+  const x1 = await pipX.inputValue();
+  const y1 = await pipY.inputValue();
+  const objBefore = await objY();
+  c = await centre();
+  await page.keyboard.down("Shift");
+  await page.mouse.move(c.x, c.y);
+  await page.mouse.down();
+  await page.mouse.move(c.x, c.y + 30, { steps: 6 });
+  await page.mouse.up();
+  await page.keyboard.up("Shift");
+  await expect.poll(async () => Number(await dy.inputValue())).toBeGreaterThan(0);
+  await expect(pipX).toHaveValue(x1);
+  await expect(pipY).toHaveValue(y1);
+  await expect.poll(objY).not.toBe(objBefore);
+
+  // Leave no residue: framing and bubble reset, layout restored, saved clean.
+  await page.getByText("Reset framing").click();
+  await page.getByTestId("reset-pip").click();
+  await page.getByTestId("layout-select").selectOption("blurred-behind");
+  await expect(page.getByTestId("video-pan-hint")).toHaveText("Pan: drag the picture on the stage.");
+  await page.keyboard.press("Meta+s");
+  await expect(page.getByTestId("dirty")).toHaveCount(0);
+});
+
 test("undo/redo: toolbar buttons and ⌘⇧Z walk the history both ways (R17 §80)", async ({
   page,
 }) => {
@@ -1583,6 +1647,61 @@ test("click-away also clears the transcript selection and its menu (field report
   const area = (await page.getByTestId("stage").locator("..").locator("..").boundingBox())!;
   await page.mouse.click(area.x + 8, area.y + area.height * 0.5);
   await expect(page.getByTestId("transcript-selection-menu")).toHaveCount(0);
+});
+
+test("a transcript selection clears from inside the panel: ✕, the selected word again, empty space, Escape (2026-11-21)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByTestId("transcript-toggle").click();
+  await expect(page.getByTestId("transcript-panel")).toBeVisible();
+  const bar = page.getByTestId("transcript-selection-menu");
+
+  // ✕ on the bar.
+  await page.getByTestId("transcript-word-3").click();
+  await expect(bar).toBeVisible();
+  const clear = page.getByTestId("transcript-selection-clear");
+  await expect(clear).toHaveAttribute("aria-label", "Clear selection");
+  await expect(clear).toHaveAttribute("title", "Clear selection (Esc)");
+  const hit = (await clear.boundingBox())!;
+  expect(Math.min(hit.width, hit.height)).toBeGreaterThanOrEqual(24);
+  await clear.click();
+  await expect(bar).toHaveCount(0);
+
+  // The one selected word again: cleared, and the click still seeks. The
+  // arrows walk the playhead off the word first, so the second click's seek
+  // is visible as the playhead coming back.
+  const target = page.getByTestId("transcript-word-40");
+  await target.click();
+  await expect(bar).toBeVisible();
+  await expect.poll(() => playheadFrac(page)).toBeGreaterThan(0.05);
+  const atWord = await playheadFrac(page);
+  for (let i = 0; i < 30; i++) await page.keyboard.press("ArrowRight");
+  await expect.poll(() => playheadFrac(page)).toBeGreaterThan(atWord + 0.015);
+  await target.click();
+  await expect(bar).toHaveCount(0);
+  await expect.poll(async () => Math.abs((await playheadFrac(page)) - atWord)).toBeLessThan(0.005);
+
+  // A click on the body's empty space — its padding, which is no word.
+  await page.getByTestId("transcript-word-3").click();
+  await expect(bar).toBeVisible();
+  const body = (await page.getByTestId("transcript-body").boundingBox())!;
+  await page.mouse.click(body.x + 5, body.y + 5);
+  await expect(bar).toHaveCount(0);
+
+  // A drag-select still selects (the click that ends it lands on the body).
+  const from = (await page.getByTestId("transcript-word-3").boundingBox())!;
+  const to = (await page.getByTestId("transcript-word-5").boundingBox())!;
+  await page.mouse.move(from.x + 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width - 2, to.y + to.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect(bar).toContainText("3 words");
+
+  // Escape.
+  await page.keyboard.press("Escape");
+  await expect(bar).toHaveCount(0);
 });
 
 test("per-take volume: the Audio slider writes video.volume and badges the block (2026-08-31)", async ({

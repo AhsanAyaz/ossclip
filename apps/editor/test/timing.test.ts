@@ -2,13 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
   clampTiming,
   clampZoom,
+  clipSpeedTiming,
   moveTiming,
   pinTiming,
   sourceToOutputClamped,
   timeAtX,
   zoomedScrollLeft,
 } from "../src/timing";
-import type { KeptSpan, SceneCue } from "@ossclip/core/browser";
+import {
+  OverrideDocSchema,
+  applyOverrides,
+  mapFromKeptSpans,
+  resolveTimingPin,
+  type KeptSpan,
+  type SceneCue,
+} from "@ossclip/core/browser";
 
 const cues = [
   { id: "a", startSec: 0, endSec: 5 },
@@ -203,5 +211,200 @@ describe("pinTiming (source-anchored scene timing, 2026-08-26)", () => {
     // window inside removed material) would otherwise mint `srcEnd ===
     // srcStart`, which `SceneTimingSchema` rejects on the next load.
     expect(pinTiming(5, 9, () => 4)).toEqual({ startSec: 5, endSec: 9 });
+  });
+});
+
+describe("pinTiming never rounds an edge into removed material (EGM short, 2026-11-22)", () => {
+  // The author's project: the first kept span starts at source 1.69919 s,
+  // so output 0 IS source 1.69919, and 1.699 (its nearest ms) was cut.
+  const egm = mapFromKeptSpans([
+    { srcIn: 1.69919, srcOut: 5.999, outIn: 0, outOut: 4.29981 },
+    { srcIn: 8.14719, srcOut: 19.6976, outIn: 4.29981, outOut: 15.85022 },
+  ]);
+  const kept = (src: number): boolean => egm.toOutput(src) !== null;
+  const toSource = (sec: number): number => egm.toSource(sec);
+
+  it("a block at output 0: the start rounds onto the kept side, and the pin resolves", () => {
+    // What a right-edge drag from 0–3 to 0–5.77 wrote: 1.699, inert.
+    const plain = pinTiming(0, 5.77, toSource) as { srcStart: number; srcEnd: number };
+    expect(plain.srcStart).toBe(1.699);
+    expect(resolveTimingPin(plain, egm)).toBeNull();
+    const pin = pinTiming(0, 5.77, toSource, kept) as { srcStart: number; srcEnd: number };
+    expect(pin.srcStart).toBe(1.7);
+    const at = resolveTimingPin(pin, egm)!;
+    // Within a millisecond of the drag, on the kept side.
+    expect(at.startSec).toBeGreaterThanOrEqual(0);
+    expect(at.startSec).toBeLessThan(0.001);
+    expect(Math.abs(at.endSec - 5.77)).toBeLessThan(0.001);
+  });
+
+  it("an edge on a seam: toSource's earlier preimage rounds back into its span", () => {
+    // Output 4.29981 is the seam; toSource answers 5.999 (the earlier
+    // span's end, an exact ms) — kept. Its neighbour seam on the other
+    // span starts at 8.14719, which rounds DOWN into the cut.
+    const pin = pinTiming(4.29981, 6, toSource, kept) as { srcStart: number; srcEnd: number };
+    expect(resolveTimingPin(pin, egm)).not.toBeNull();
+    const second = mapFromKeptSpans([
+      { srcIn: 0, srcOut: 2.0004, outIn: 0, outOut: 2.0004 },
+      { srcIn: 3, srcOut: 9, outIn: 2.0004, outOut: 8.0004 },
+    ]);
+    const end = pinTiming(1, 2.0004, (t) => second.toSource(t), (src) => second.toOutput(src) !== null) as {
+      srcStart: number;
+      srcEnd: number;
+    };
+    // 2.0004 rounds to 2.0 (kept); 2.0006 would round up past the span.
+    expect(resolveTimingPin(end, second)).not.toBeNull();
+    const up = mapFromKeptSpans([
+      { srcIn: 0, srcOut: 2.0006, outIn: 0, outOut: 2.0006 },
+      { srcIn: 3, srcOut: 9, outIn: 2.0006, outOut: 8.0006 },
+    ]);
+    const upPin = pinTiming(1, 2.0006, (t) => up.toSource(t), (src) => up.toOutput(src) !== null) as {
+      srcStart: number;
+      srcEnd: number;
+    };
+    expect(upPin.srcEnd).toBe(2);
+    expect(resolveTimingPin(upPin, up)).not.toBeNull();
+  });
+
+  it("keeps the exact source second when neither millisecond is kept (a span under 1 ms)", () => {
+    const sliver = mapFromKeptSpans([{ srcIn: 4.0002, srcOut: 4.0008, outIn: 0, outOut: 0.0006 }]);
+    const keptSliver = (src: number): boolean => sliver.toOutput(src) !== null;
+    const pin = pinTiming(0, 0.0006, (t) => sliver.toSource(t), keptSliver) as { srcStart: number; srcEnd: number };
+    expect(pin.srcStart).toBeCloseTo(4.0002, 9);
+    expect(pin.srcEnd).toBeCloseTo(4.0008, 9);
+    expect(resolveTimingPin(pin, sliver)).not.toBeNull();
+  });
+
+  it("an interior edge rounds to the nearest ms as before", () => {
+    expect(pinTiming(1.00004, 3.00051, toSource, kept)).toEqual({
+      srcStart: Math.round((1.69919 + 1.00004) * 1000) / 1000,
+      srcEnd: Math.round((1.69919 + 3.00051) * 1000) / 1000,
+    });
+  });
+});
+
+describe("clipSpeedTiming (a clip's speed resizes its pinned block)", () => {
+  // A dragged (pinned) 4 s clip at 10..14, a card well after it at 30.
+  const clip = (over: Partial<SceneCue> = {}): SceneCue => ({
+    id: "clip-1",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4, speed: 1 },
+    startSec: 10,
+    endSec: 14,
+    ...over,
+  });
+  const card = (startSec: number): SceneCue =>
+    ({ id: "card", kind: "graphic", layout: "video-top", component: "TitleCard", startSec, endSec: startSec + 3 }) as SceneCue;
+
+  it("speed 2 on a pinned 4 s clip: the block runs start..start+2", () => {
+    expect(clipSpeedTiming([clip(), card(30)], "clip-1", 2, 60, true)).toEqual({ startSec: 10, endSec: 12 });
+  });
+
+  it("speed 0.5 that reaches the neighbour is cut at the neighbour less the gap", () => {
+    // 8 s wanted, the card starts 5 s after the clip.
+    const t = clipSpeedTiming([clip(), card(15)], "clip-1", 0.5, 60, true)!;
+    expect(t.startSec).toBe(10);
+    expect(t.endSec).toBeCloseTo(14.95, 9);
+  });
+
+  it("caps at MAX_SCENE_SEC (15 s) from the start", () => {
+    // 10 s at 0.5x is 20 s played.
+    const long = clip({ props: { src: "clips/a.webm", durationSec: 10, speed: 1 }, endSec: 20 });
+    expect(clipSpeedTiming([long], "clip-1", 0.5, 60, true)).toEqual({ startSec: 10, endSec: 25 });
+  });
+
+  it("stops at the video's end, like an edge drag", () => {
+    expect(clipSpeedTiming([clip()], "clip-1", 0.5, 16, true)).toEqual({ startSec: 10, endSec: 16 });
+  });
+
+  it("a plain take after the clip is not a neighbour — takes re-derive around it", () => {
+    const take = { id: "take-1", kind: "plain", layout: "full-bleed", startSec: 14, endSec: 30 } as SceneCue;
+    expect(clipSpeedTiming([clip(), take], "clip-1", 0.5, 60, true)).toEqual({ startSec: 10, endSec: 18 });
+  });
+
+  it("4 s at 4x plays 1 s: the clip's length wins over the 1.2 s floor, pinned or not", () => {
+    // The floor used to stretch a pinned one to 1.2 s (a held last frame)
+    // while an unpinned one played 1 s; a block is never longer than its clip.
+    const pinned = clipSpeedTiming([clip(), card(30)], "clip-1", 4, 60, true)!;
+    const doc = OverrideDocSchema.parse({ scenes: { "clip-1": { props: { speed: 4 } } } });
+    const unpinned = applyOverrides([clip(), card(30)], doc).cues[0]!;
+    expect(pinned).toEqual({ startSec: 10, endSec: 11 });
+    expect(unpinned.startSec).toBe(10);
+    expect(unpinned.endSec).toBeCloseTo(11, 9);
+  });
+
+  it("unpinned is null: applyOverrides re-derives that window from the speed prop", () => {
+    expect(clipSpeedTiming([clip()], "clip-1", 2, 60, false)).toBeNull();
+  });
+
+  it("is null for a card, a split half, a scene it cannot find, and no video length", () => {
+    const tc = { ...card(10), id: "clip-1" } as SceneCue;
+    expect(clipSpeedTiming([tc], "clip-1", 2, 60, true)).toBeNull();
+    expect(clipSpeedTiming([clip({ id: "clip-1@s1" })], "clip-1@s1", 2, 60, true)).toBeNull();
+    expect(clipSpeedTiming([clip()], "nope", 2, 60, true)).toBeNull();
+    expect(clipSpeedTiming([clip()], "clip-1", 2, 0, true)).toBeNull();
+  });
+
+  it("gives the window applyOverrides gives the same clip unpinned (cap and neighbour gap)", () => {
+    // The two paths a speed edit can take must not give one clip two
+    // lengths where both apply: the neighbour cut and the 15 s cap.
+    for (const [durationSec, speed, next] of [
+      [4, 0.5, 15],
+      [10, 0.5, 60],
+      [4, 2, 60],
+    ] as const) {
+      const base = clip({ props: { src: "clips/a.webm", durationSec, speed: 1 }, endSec: 10 + durationSec });
+      const cues = [base, card(next)];
+      const doc = OverrideDocSchema.parse({ scenes: { "clip-1": { props: { speed } } } });
+      const unpinned = applyOverrides(cues, doc).cues[0]!;
+      const pinned = clipSpeedTiming(cues, "clip-1", speed, 120, true)!;
+      expect(pinned.startSec).toBe(unpinned.startSec);
+      expect(pinned.endSec).toBeCloseTo(unpinned.endSec, 9);
+    }
+  });
+});
+
+describe("clampTiming: a clip block is never longer than its clip", () => {
+  // A 4 s clip at 2x (2 s played) at 10..12, a card at 20, a 60 s video.
+  const clip: SceneCue = {
+    id: "clip-1",
+    kind: "graphic",
+    layout: "full-bleed",
+    component: "ClipScene",
+    props: { src: "clips/a.webm", durationSec: 4, speed: 2 },
+    startSec: 10,
+    endSec: 12,
+  };
+  const before = { id: "card-0", kind: "graphic", layout: "video-top", component: "TitleCard", startSec: 2, endSec: 5 } as SceneCue;
+  const after = { id: "card-1", kind: "graphic", layout: "video-top", component: "TitleCard", startSec: 20, endSec: 23 } as SceneCue;
+  const cues = [before, clip, after];
+
+  it("an end-edge drag past the played length stops there", () => {
+    expect(clampTiming(cues, "clip-1", 10, 18, 60)).toEqual({ startSec: 10, endSec: 12 });
+  });
+
+  it("a start-edge drag earlier stops where the block would outgrow the clip; the end stays", () => {
+    // Trimmed to 10.5..12 first, then the start dragged to 7.
+    const trimmed = [before, { ...clip, startSec: 10.5 }, after];
+    expect(clampTiming(trimmed, "clip-1", 7, 12, 60)).toEqual({ startSec: 10, endSec: 12 });
+  });
+
+  it("a drag shorter than the played length is allowed", () => {
+    expect(clampTiming(cues, "clip-1", 10, 11.5, 60)).toEqual({ startSec: 10, endSec: 11.5 });
+    expect(clampTiming(cues, "clip-1", 10.4, 12, 60)).toEqual({ startSec: 10.4, endSec: 12 });
+  });
+
+  it("a card is unaffected", () => {
+    const card = { ...clip, component: "TitleCard", props: { title: "HI" } } as SceneCue;
+    expect(clampTiming([before, card, after], "clip-1", 10, 18, 60)).toEqual({ startSec: 10, endSec: 18 });
+  });
+
+  it("the floor never pushes a clip past its played length", () => {
+    // 4 s at 4x plays 1 s: a drag to 0.6 s is floored at 1 s, not 1.2.
+    const fast = { ...clip, props: { ...clip.props, speed: 4 }, endSec: 11 } as SceneCue;
+    expect(clampTiming([before, fast, after], "clip-1", 10, 10.6, 60)).toEqual({ startSec: 10, endSec: 11 });
+    expect(clampTiming([before, fast, after], "clip-1", 10, 14, 60)).toEqual({ startSec: 10, endSec: 11 });
   });
 });

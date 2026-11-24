@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { OverrideDocSchema, type SceneCue } from "@ossclip/core/browser";
-import { deletePlanFor } from "../src/deleteScene";
+import { deletePlanFor, graphicDeleteFor } from "../src/deleteScene";
 
 /** Same minimal graphic cue shape `ghosts.test.ts` uses. */
 const cue = (id: string, startSec = 0, endSec = 5): SceneCue => ({
@@ -103,5 +103,20 @@ describe("deletePlanFor (§139)", () => {
       );
       expect(plan?.targets).toEqual(["take"]);
     });
+  });
+});
+
+describe("graphicDeleteFor — an added graphic's Delete (editor-added-graphics §6)", () => {
+  it("removes the entry when the ROOT of an added graphic is deleted", () => {
+    expect(graphicDeleteFor("added-1")).toEqual({ kind: "removeAdded", id: "added-1" });
+  });
+
+  it("hides a split HALF of an added graphic, as for a plan graphic", () => {
+    expect(graphicDeleteFor("added-1@k3")).toEqual({ kind: "hide", sceneId: "added-1@k3" });
+  });
+
+  it("hides every plan graphic, root or half", () => {
+    expect(graphicDeleteFor("scene-2")).toEqual({ kind: "hide", sceneId: "scene-2" });
+    expect(graphicDeleteFor("scene-2@added-1")).toEqual({ kind: "hide", sceneId: "scene-2@added-1" });
   });
 });

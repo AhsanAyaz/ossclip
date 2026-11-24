@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { CaptionRangeEdit, CaptionWord } from "@ossclip/core/browser";
-import { findOccurrences, type FlatWord } from "../src/transcriptSelection";
+import {
+  emptyBodyClickClears,
+  findOccurrences,
+  plainWordClick,
+  type FlatWord,
+} from "../src/transcriptSelection";
 
 /**
  * The "Apply to all (n)" window sweep (2026-08-18). Pure on purpose — the
@@ -181,5 +186,76 @@ describe("findOccurrences — exclusions", () => {
     ]);
     expect(findOccurrences(words, 0, 1, none)).toEqual([]);
     expect(findOccurrences(words, 0, 0, none)).toEqual([]);
+  });
+});
+
+/**
+ * Clearing a transcript selection by clicking (2026-11-21): every
+ * click-to-seek also selects, so without these a selection could never be
+ * dropped from inside the panel except by Escape. Pure so the double-click
+ * and drag-select exclusions are pinned without a DOM.
+ */
+describe("plainWordClick", () => {
+  it("selects the clicked word when nothing is selected", () => {
+    expect(plainWordClick(null, 3, 1)).toEqual({ anchor: 3, focus: 3 });
+  });
+
+  it("toggles off a selection that is exactly the clicked word", () => {
+    expect(plainWordClick({ anchor: 3, focus: 3 }, 3, 1)).toBeNull();
+    // A synthetic click (jsdom, keyboard activation) carries detail 0.
+    expect(plainWordClick({ anchor: 3, focus: 3 }, 3, 0)).toBeNull();
+  });
+
+  it("keeps the word selected on a double-click's second click, so the retype box opens over a selection", () => {
+    expect(plainWordClick({ anchor: 3, focus: 3 }, 3, 2)).toEqual({ anchor: 3, focus: 3 });
+    expect(plainWordClick({ anchor: 3, focus: 3 }, 3, 3)).toEqual({ anchor: 3, focus: 3 });
+  });
+
+  it("moves to the clicked word from a different word", () => {
+    expect(plainWordClick({ anchor: 1, focus: 1 }, 3, 1)).toEqual({ anchor: 3, focus: 3 });
+  });
+
+  it("narrows a multi-word selection to the clicked word inside it, as before", () => {
+    expect(plainWordClick({ anchor: 2, focus: 5 }, 3, 1)).toEqual({ anchor: 3, focus: 3 });
+    expect(plainWordClick({ anchor: 5, focus: 2 }, 2, 1)).toEqual({ anchor: 2, focus: 2 });
+  });
+});
+
+describe("emptyBodyClickClears", () => {
+  const plain = {
+    hasSelection: true,
+    pressedOnBody: true,
+    releasedOnBody: true,
+    modified: false,
+    nativeCollapsed: true,
+    dragJustSelected: false,
+  };
+
+  it("clears on a plain click that pressed and released on the body itself", () => {
+    expect(emptyBodyClickClears(plain)).toBe(true);
+  });
+
+  it("does nothing with no selection to clear", () => {
+    expect(emptyBodyClickClears({ ...plain, hasSelection: false })).toBe(false);
+  });
+
+  it("leaves a press that started on a word alone: the click lands on the body when the release drifts off it", () => {
+    expect(emptyBodyClickClears({ ...plain, pressedOnBody: false })).toBe(false);
+  });
+
+  it("leaves a click on a word, the bar, a popover or an input alone", () => {
+    expect(emptyBodyClickClears({ ...plain, releasedOnBody: false })).toBe(false);
+  });
+
+  it("leaves a modified click alone (a shift-click extends, it never clears)", () => {
+    expect(emptyBodyClickClears({ ...plain, modified: true })).toBe(false);
+  });
+
+  it("leaves a native text selection alone", () => {
+    expect(emptyBodyClickClears({ ...plain, nativeCollapsed: false })).toBe(false);
+  });
+
+  it("leaves the click that ends a drag-select alone: the release just made the selection", () => {
+    expect(emptyBodyClickClears({ ...plain, dragJustSelected: true })).toBe(false);
   });
 });

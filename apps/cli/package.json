@@ -40,8 +40,10 @@
     "@ossclip/core": "workspace:*",
     "@ossclip/renderer": "workspace:*",
     "@ossclip/scenes": "workspace:*",
+    "@types/react": "^18.3.0",
     "commander": "^12.1.0",
     "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
     "zod": "^3.25.76"
   },
   "homepage": "https://github.com/AhsanAyaz/ossclip#readme",

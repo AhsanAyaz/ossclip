@@ -2,6 +2,15 @@ export * from "./schema";
 export * from "./scene-schema";
 export * from "./look";
 export * from "./overrides";
+// Produce's take-half re-keying (take-framing-identity P2).
+export * from "./take-halves";
+// Take looks attached to source time (take-looks-by-source L1, L2, S12):
+// produce resolves them with the same pass the editor previews with.
+export * from "./take-looks";
+// Produce's one-time move of id-keyed take looks onto source time
+// (take-looks-by-source L3, R6-8). Not on browser.ts: the editor never
+// migrates (N7).
+export * from "./take-looks-migrate";
 export * from "./scene-registry";
 export * from "./assemble";
 export * from "./fill";
@@ -62,4 +71,32 @@ export * from "./resolution";
 export * from "./script/cues";
 export * from "./script/align";
 export * from "./script/retakes";
+// The drawn-scene static check (§167) pulls in the `typescript` compiler, so
+// it is exported here only and never from ./browser — the editor bundle must
+// not carry the compiler.
+export * from "./draw/static-check";
+// The draw call (§167) imports the static check's constants, so it stays on
+// this side of the line too.
+export * from "./draw/prompt";
+export * from "./draw/draw-shot";
+export * from "./draw/examples";
+// The shot record (§167) is the draw command's alone; the editor does not
+// read it in Phase A, so it sits with the rest of the draw modules.
+export * from "./draw/shot-record";
+// The storyboard's plan table (§168): the record, the plan limits and the
+// "Plan again" merge. All three are pure and browser-safe, so ./browser
+// carries them too; the planner call (./storyboard/plan) is this side only.
+export * from "./storyboard/record";
+export * from "./storyboard/limits";
+export * from "./storyboard/merge";
+// The approval rules (§169): which approved shots become clip scenes, their
+// production.json record, the render length and the clip key. Pure and
+// browser-safe (the hash is passed in), so ./browser carries them too.
+export * from "./storyboard/approval";
+// Editor-added graphics (editor-added-graphics §2): produce converts the
+// doc's entries with the same pure rules the editor previews them with.
+export * from "./added-scenes";
+// The planner call (§168) is the run's and the editor server's, never the
+// editor page's, so it is exported here only.
+export * from "./storyboard/plan";
 export { run } from "./exec";

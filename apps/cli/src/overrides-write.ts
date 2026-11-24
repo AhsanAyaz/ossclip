@@ -64,14 +64,58 @@ export async function writeOverrideDoc(
 }
 
 /**
+ * Why produce wrote `overrides.json` — the operands of its write gate, one
+ * flag each (`produce.ts`, the `writeOverrideDoc` call). Only `cutChanged`
+ * spends the `.bak`; the rest name what else moved.
+ */
+export interface OverridesWriteReasons {
+  cutChanged: boolean;
+  captionKeysReanchored: boolean;
+  hidesPruned: boolean;
+  sceneKeysRemapped: boolean;
+  splitSrcResolved: boolean;
+  splitHalvesChanged: boolean;
+  takeLooksMigrated: boolean;
+  /** `reconcileSplitAnchors` wrote a split's idle anchor onto where it cut
+   * (split-positions-by-source R7-4, R8-3). */
+  splitsReconciled: boolean;
+}
+
+/** What each non-cut reason did, in the order the gate lists them. */
+const REASON_PHRASES: ReadonlyArray<[Exclude<keyof OverridesWriteReasons, "cutChanged">, string]> = [
+  ["captionKeysReanchored", "caption edits re-anchored to source-time caption keys"],
+  ["hidesPruned", "caption hides the cut already removed retired"],
+  ["sceneKeysRemapped", "scene edits re-keyed to their anchors' new ids"],
+  ["splitSrcResolved", "split source anchors recorded"],
+  ["splitHalvesChanged", "take halves re-keyed to their splits"],
+  ["takeLooksMigrated", "take looks moved onto source time"],
+  // Last, as the gate lists it last.
+  ["splitsReconciled", "split anchors reconciled to where they cut"],
+];
+
+/**
  * What the run says about that write. Pure, and separate from the write for
  * the house reason — but also because the two halves of this sentence are the
  * two halves of the decision above, and a line that claims a backup nobody
  * took is how a user finds out too late (final review round 2).
+ *
+ * It names every reason the gate fired on, not just the cut-or-caption pair
+ * it started with: once five more flags joined the gate, a run whose only
+ * write was the one-time take-look migration printed "re-anchored to
+ * source-time caption keys" over a doc whose caption keys had not moved
+ * (take-looks-by-source final review, Minor 1; `looks1.log`). The one line
+ * telling the author their file changed has to say why it did.
  */
-export function overridesWriteLine(cutChanged: boolean): string {
-  return cutChanged
-    ? "▸ overrides.json re-anchored to the new cut and saved (previous copy kept as .bak)"
-    : "▸ overrides.json re-anchored to source-time caption keys and saved " +
-        "(overrides.json.bak left alone — it may be an older, pre-cut copy worth more than this one)";
+export function overridesWriteLine(reasons: OverridesWriteReasons): string {
+  const others = REASON_PHRASES.filter(([flag]) => reasons[flag]).map(([, phrase]) => phrase);
+  if (reasons.cutChanged) {
+    return (
+      "▸ overrides.json re-anchored to the new cut and saved (previous copy kept as .bak)" +
+      (others.length > 0 ? `; also ${others.join("; ")}` : "")
+    );
+  }
+  return (
+    `▸ overrides.json saved${others.length > 0 ? ` — ${others.join("; ")}` : ""} ` +
+    "(overrides.json.bak left alone — it may be an older, pre-cut copy worth more than this one)"
+  );
 }

@@ -1,0 +1,772 @@
+import { describe, expect, it } from "vitest";
+// Core through its package entry, not its source paths: this harness lives
+// with the editor (its claim is "the editor's item step equals produce's"),
+// and core must never reach into apps, tests included. The full entry, not
+// `./browser`, because produce's half needs pipeline-only functions
+// (`assembleScenes`, `applyUserCuts`) the bundle surface does not carry.
+import {
+  OverrideDocSchema,
+  addedSceneToScene,
+  applyCleanupChoices,
+  applyOverrides,
+  applyTakeLooks,
+  applyUserCuts,
+  assembleScenes,
+  carveKeptTakes,
+  dismissedRemovals,
+  dropHiddenCues,
+  dropOverlappingAdded,
+  fillPlainCues,
+  isAddedKey,
+  itemTimingRoots,
+  livePreviewMap,
+  mapFromKeptSpans,
+  pass1SplitPoints,
+  previewAddedScenes,
+  reclampPinnedTiming,
+  resolveItemTimings,
+  resolveSplitPoints,
+  resolveSrcTimingPins,
+  retimeForPreview,
+  splitCues,
+  splitThenDropHidden,
+  survivingLandings,
+  TimeMap,
+  vetoedRemovals,
+  type CaptionLine,
+  type OverrideDoc,
+  type Scene,
+  type SceneCue,
+  type Segment,
+  type Transcript,
+  type Word,
+} from "@ossclip/core";
+// The editor's own item step (graphic-editor-modal §4), for the one case
+// below that runs the editor path through it rather than through core's
+// calls written out here.
+import { previewItemRoots, previewItemTimings } from "../src/itemTimingPreview";
+import { editorTakeClipStarts } from "../src/takeClipStarts";
+
+/**
+ * Preview equals render (graphic-editor-modal G7, Test plan "Parity"): for
+ * one doc, one transcript and one set of cleanup choices, item times come
+ * out the same from produce's ordering and from the editor preview's.
+ *
+ * Both pipelines below are the real call sequences, step for step, with the
+ * real core functions — `produce.ts` ~5100-5580 and App.tsx's live memo
+ * ~1393-1677 with `finishOnClock` — and `resolveItemTimings` placed where
+ * §4 puts it:
+ *   produce: roots taken from the unsplit list at the FIRST
+ *     `applyOverrides` (both maps the run's), the resolve after the SECOND,
+ *     on the run's map (coordinator ruling on Task 3, option (a));
+ *   editor:  roots taken from the unsplit list at the memo's first
+ *     `applyOverrides` (legacy pins on the old clock), the resolve on the
+ *     live clock after `finishOnClock`'s `applyOverrides` — or on its early
+ *     exit, when nothing live changed.
+ * Left out, each because it cannot touch `reveal`: source-text routing (no
+ * regions here, so it hands the cues back), caption building and the
+ * caption edit layers, the stage previews, and the editor's landscape
+ * layout remap (portrait here). `previewBaseCues` and `previewDropCovered`
+ * are App's thin wrappers over `previewAddedScenes` and
+ * `dropOverlappingAdded`, called directly. Produce's one-time `splits[].src`
+ * backfill (produce.ts, after `applyUserCuts`) is not modelled either: it
+ * only fills a src-less legacy split, and every fixture here dual-writes
+ * `{at, src}`, as the editor's split gesture does.
+ *
+ * The LAST render is part of the input: the editor's base cues are what it
+ * baked (`baseSceneCues` = produce's `routed.cues` on its clock), and its
+ * spans are both the editor's old clock and the next run's `priorMap`.
+ */
+interface Run {
+  words: Word[];
+  /** The automatic cutlist, as `cutlistProposed` stores it. */
+  proposal: Segment[];
+  /** The plan scenes (added graphics come from `doc.addedScenes`). */
+  scenes: Scene[];
+  /** overrides.json now: what the editor holds, and what the next run reads. */
+  doc: OverrideDoc;
+  /** The cleanup choices the last render was made with (default: none). */
+  rendered?: OverrideDoc["cleanup"];
+}
+
+const transcriptOf = (run: Run): Transcript => ({ language: "en", words: run.words });
+
+/** The last render's clock: the proposal with the choices it was made with. */
+const lastRenderMap = (run: Run): TimeMap => new TimeMap(applyCleanupChoices(run.proposal, run.rendered));
+
+/** `produce.ts`'s two assemblies (fix-wave I1): the plan, and the added
+ * graphics on their own, merged in time order. */
+function assembleRun(run: Run, map: TimeMap): SceneCue[] {
+  const starts = run.words.map((w) => ({ srcStart: w.start }));
+  const added = (run.doc.addedScenes ?? []).flatMap((e) => {
+    const c = addedSceneToScene(e, starts);
+    return "scene" in c ? [c.scene] : [];
+  });
+  const plan = assembleScenes(run.scenes.filter((s) => !isAddedKey(s.id)), transcriptOf(run), map).cues;
+  const own = assembleScenes(added, transcriptOf(run), map).cues;
+  return [...plan, ...own].sort((a, b) => a.startSec - b.startSec);
+}
+
+/** `vetoedRemovals`/`dismissedRemovals` as the ranges both pipelines carve. */
+function keptRangesOf(proposal: Segment[], cleanup: OverrideDoc["cleanup"]) {
+  return [
+    ...vetoedRemovals(proposal, cleanup).map((s) => ({ srcIn: s.srcIn, srcOut: s.srcOut })),
+    ...dismissedRemovals(proposal, cleanup).map((s) => ({ srcIn: s.srcIn, srcOut: s.srcOut, dismissed: true })),
+  ];
+}
+
+/** Produce's `takeClipStarts` formula (`produce.ts`): span starts, then each
+ * kept range's mapped edges. */
+function takeClipStartsOf(map: TimeMap, ranges: readonly { srcIn: number; srcOut: number }[]): number[] {
+  const edges = ranges.flatMap((r) => {
+    const a = map.toOutput(r.srcIn);
+    const b = map.toOutput(r.srcOut);
+    return [...(a !== null ? [a] : []), ...(b !== null ? [b] : [])];
+  });
+  return [...map.spans.map((s) => s.outIn), ...edges];
+}
+
+interface Outcome {
+  cues: SceneCue[];
+  notes: string[];
+}
+
+function producePipeline(run: Run): Outcome {
+  // The run's clock: the proposal, the cleanup choices, then the user cuts
+  // with the last render as `priorMap`, which re-anchors legacy pins and
+  // splits onto this clock (`applyUserCuts`).
+  let cutlist: Segment[] = run.proposal;
+  let map = new TimeMap(cutlist);
+  const cleanupVetoed = vetoedRemovals(cutlist, run.doc.cleanup);
+  const cleanupDismissed = dismissedRemovals(cutlist, run.doc.cleanup);
+  if (cleanupVetoed.length > 0 || cleanupDismissed.length > 0) {
+    cutlist = applyCleanupChoices(cutlist, run.doc.cleanup);
+    map = new TimeMap(cutlist);
+  }
+  const cut = applyUserCuts(run.doc, cutlist, map, lastRenderMap(run));
+  map = cut.map;
+  const doc = cut.doc;
+
+  const routed = assembleRun(run, map);
+  const pinnedDoc = resolveSrcTimingPins(doc, map);
+  const { cues: editedCues } = applyOverrides(routed, pinnedDoc.doc);
+  // §4: the roots from this unsplit list, on the run's map, against the raw
+  // (re-anchored) doc — not `pinnedDoc.doc`, whose src pins have become
+  // output seconds. The resolve itself waits for the second pass below.
+  const roots = itemTimingRoots(editedCues, doc, run.words, map, map);
+  // Pass 1, the graphic pass (split-positions-by-source D2, R8-2), and the
+  // landings that survive both drops (R7-2, R8-4).
+  const pass1 = splitThenDropHidden(editedCues, doc, pass1SplitPoints(doc.splits, map));
+  const visibleCues = dropOverlappingAdded(pass1.cues).cues;
+  const pass1Surviving = survivingLandings(pass1.landedHost, visibleCues);
+  const { cues: reclamped } = reclampPinnedTiming(visibleCues);
+  const keptRangesForCarve = keptRangesOf(run.proposal, doc.cleanup);
+  const filled0 = fillPlainCues(reclamped, {
+    outputDurationSec: map.outputDuration,
+    clipStarts: takeClipStartsOf(map, keptRangesForCarve),
+  });
+  const { cues: filled } = carveKeptTakes(filled0, keptRangesForCarve, map);
+  // Pass 2: only the splits that did not land in pass 1.
+  const notLandedInPass1 = doc.splits.filter((s) => !pass1Surviving.has(s.id));
+  const split = splitCues(filled, resolveSplitPoints(notLandedInPass1, map).points);
+  const { cues: overriddenCues } = applyOverrides(split, pinnedDoc.doc);
+  // Take looks from source time (take-looks-by-source L2), produce's step 9:
+  // after the second pass, on the run's map, migrated docs only (N1). Every
+  // fixture here that predates looks is legacy, so for them this is a no-op.
+  const mergedCues =
+    doc.takeLooks !== undefined ? applyTakeLooks(overriddenCues, doc.takeLooks, map) : overriddenCues;
+  // After the second pass, as the editor resolves after its last one: a
+  // half's own swap has already happened, so `withSwappedReveal` sees the
+  // same cue in both pipelines (resolved before the split, a reveal-less
+  // root's swapped half came out all-null here and reveal-less there).
+  const timed = resolveItemTimings(mergedCues, doc, run.words, map, roots);
+  return { cues: dropHiddenCues(timed.cues, doc).cues, notes: timed.notes };
+}
+
+/** `viaPreview`: the item step through the editor's extracted helpers
+ * (`../src/itemTimingPreview.ts`), the calls App makes, instead of
+ * the core calls written out. Everything else is the same path. */
+function editorPipeline(run: Run, viaPreview = false): Outcome & { exit: "early" | "main" } {
+  const oldMap = lastRenderMap(run);
+  const doc = run.doc;
+  const producedCues = assembleRun(run, oldMap).filter((c) => c.kind !== "plain");
+  const oldClockMap = mapFromKeptSpans(oldMap.spans);
+  const baseCues = previewAddedScenes({
+    baseCues: producedCues,
+    added: doc.addedScenes ?? [],
+    issueIds: new Set(),
+    transcript: transcriptOf(run),
+    map: oldClockMap,
+  }).cues;
+  const liveRecut = livePreviewMap(run.proposal, doc.cleanup, doc.cuts, oldMap.spans);
+  const liveMap = liveRecut?.newMap ?? oldClockMap;
+
+  const oldClockDoc = resolveSrcTimingPins(doc, oldClockMap).doc;
+  const { cues: graphicCues } = applyOverrides(baseCues, oldClockDoc);
+  // §4: the roots, from this unsplit list; windows from stored source data,
+  // a legacy pin through the old clock it was written on.
+  const roots = viaPreview
+    ? previewItemRoots(graphicCues, doc, run.words, oldClockMap, liveMap)
+    : itemTimingRoots(graphicCues, doc, run.words, oldClockMap, liveMap);
+  // The graphic pass on the old clock, and its surviving landings (D3, R8-2).
+  const pass1 = splitThenDropHidden(graphicCues, doc, pass1SplitPoints(doc.splits, oldClockMap));
+  const visibleCues = dropOverlappingAdded(pass1.cues).cues;
+  const graphicLanded = survivingLandings(pass1.landedHost, visibleCues);
+  // The carved ranges, hoisted above the take pass as in the memo.
+  const ranges = keptRangesOf(run.proposal, doc.cleanup);
+  const inCarvedRange = (src: number) => ranges.some((r) => src >= r.srcIn && src <= r.srcOut);
+  const takePassSplits = doc.splits.filter(
+    (s) => s.at !== undefined && !graphicLanded.has(s.id) && (s.src === undefined || !inCarvedRange(s.src)),
+  );
+  const postCarveSplits = doc.splits.filter(
+    (s) => s.src !== undefined && !graphicLanded.has(s.id) && (s.at === undefined || inCarvedRange(s.src)),
+  );
+  const filled = fillPlainCues(visibleCues, {
+    outputDurationSec: oldMap.outputDuration,
+    // The memo's call (take-framing-identity P0) on what the last render
+    // wrote: produce's own `takeClipStarts` for that render — its clock and
+    // the cleanup choices it was made with (split-positions-by-source R9-3),
+    // so the take ids are produce's.
+    clipStarts: editorTakeClipStarts({
+      spans: oldMap.spans,
+      takeClipStarts: takeClipStartsOf(oldMap, keptRangesOf(run.proposal, run.rendered)),
+    }),
+  });
+  const splitted = splitCues(filled, resolveSplitPoints(takePassSplits, oldClockMap).points);
+  const { cues: mergedCues } = applyOverrides(splitted, oldClockDoc);
+  const { cues: shownTakes } = dropHiddenCues(mergedCues, doc);
+  // The memo's old-clock look pass (take-looks-by-source L2, B8).
+  const cues = doc.takeLooks !== undefined ? applyTakeLooks(shownTakes, doc.takeLooks, oldClockMap) : shownTakes;
+
+  const captionLines: CaptionLine[] = [];
+  let props = { outputDurationSec: oldMap.outputDuration, captionLines, sceneCues: cues };
+  let clockMap = oldClockMap;
+  if (liveRecut) {
+    const { fields } = retimeForPreview(props, liveRecut.oldMap, liveRecut.newMap);
+    props = { ...props, ...fields };
+    clockMap = liveRecut.newMap;
+  }
+
+  // finishOnClock. `transcriptDoc` is taken as loaded, so the caption
+  // rebuild's trigger is `ranges.length > 0 || liveRecut !== null`.
+  const rebuildCaptions = ranges.length > 0 || liveRecut !== null;
+  if (ranges.length === 0 && postCarveSplits.length === 0 && !rebuildCaptions) {
+    if (viaPreview) {
+      const timed = previewItemTimings(props, doc, roots, run.words, clockMap);
+      return { cues: timed.props.sceneCues, notes: timed.notes, exit: "early" };
+    }
+    const timed = resolveItemTimings(props.sceneCues, doc, run.words, clockMap, roots!);
+    return { ...timed, exit: "early" };
+  }
+  const carved = carveKeptTakes(props.sceneCues, ranges, clockMap);
+  const resolved = resolveSplitPoints(postCarveSplits, clockMap);
+  const splitted2 = splitCues(carved.cues, resolved.points);
+  const pinned = resolveSrcTimingPins(doc, clockMap);
+  const { cues: overridden } = applyOverrides(splitted2, pinned.doc);
+  // finishOnClock's look pass, on this clock (L2, B8).
+  const merged = doc.takeLooks !== undefined ? applyTakeLooks(overridden, doc.takeLooks, clockMap) : overridden;
+  // The post-carve hidden drop, after the item times as produce drops
+  // (R8-5).
+  if (viaPreview) {
+    const timed = previewItemTimings({ sceneCues: merged }, doc, roots, run.words, clockMap);
+    return { cues: dropHiddenCues(timed.props.sceneCues, doc).cues, notes: timed.notes, exit: "main" };
+  }
+  const timed = resolveItemTimings(merged, doc, run.words, clockMap, roots!);
+  return { cues: dropHiddenCues(timed.cues, doc).cues, notes: timed.notes, exit: "main" };
+}
+
+/** What G7 is about, per graphic cue: which component, its item times, and
+ * the synced/paced prop the resolve may force. */
+const itemState = (cues: readonly SceneCue[]) =>
+  Object.fromEntries(
+    cues
+      .filter((c) => c.kind !== "plain")
+      .map((c) => [c.id, { component: c.component, itemAtSec: c.reveal?.itemAtSec, reveal: c.props?.reveal }]),
+  );
+
+/** Both pipelines, asserted equal; produce's outcome returned so each case
+ * can also show it exercised what it names. */
+function expectParity(run: Run, exit: "early" | "main", viaPreview = false) {
+  const produce = producePipeline(run);
+  const editor = editorPipeline(run, viaPreview);
+  expect(editor.exit).toBe(exit);
+  expect(itemState(editor.cues)).toEqual(itemState(produce.cues));
+  expect(editor.notes).toEqual(produce.notes);
+  return itemState(produce.cues);
+}
+
+// ---- The take ---------------------------------------------------------------
+// The EGM list (Overview), with a pause before "they forget", a retake
+// ("they forgot") and a pause after "code". Binary-exact seconds.
+const SAID: [string, number, number][] = [
+  ["so", 0.0, 0.25], //            0
+  ["agents", 0.5, 1.0], //         1
+  ["they", 1.25, 1.5], //          2
+  ["hallucinate", 1.625, 2.25], // 3
+  // pause 2.25–3.5
+  ["they", 3.5, 3.75], //          4
+  ["forget", 3.875, 4.25], //      5
+  ["the", 4.375, 4.5], //          6
+  ["context", 4.625, 5.25], //     7
+  // retake 5.5–6.5
+  ["they", 5.5, 5.75], //          8
+  ["forgot", 5.875, 6.25], //      9
+  ["and", 6.5, 6.75], //           10
+  ["they", 7.0, 7.25], //          11
+  ["review", 7.375, 7.75], //      12
+  ["the", 7.875, 8.0], //          13
+  ["code", 8.125, 8.625], //       14
+  // pause 8.75–10.0
+  ["then", 10.0, 10.25], //        15
+  ["we", 10.375, 10.5], //         16
+  ["ship", 10.625, 11.0], //       17
+  ["it", 11.125, 11.375], //       18
+  ["fast", 11.5, 12.0], //         19
+];
+const WORDS: Word[] = SAID.map(([text, start, end]) => ({ text, start, end }));
+const src = (i: number): number => WORDS[i]!.start;
+const PAUSE_1 = { srcIn: 2.25, srcOut: 3.5 };
+const RETAKE = { srcIn: 5.5, srcOut: 6.5 };
+const PROPOSAL: Segment[] = [
+  { srcIn: 0, srcOut: 2.25, kind: "keep" },
+  { ...PAUSE_1, kind: "remove", reason: "pause" },
+  { srcIn: 3.5, srcOut: 5.5, kind: "keep" },
+  { ...RETAKE, kind: "remove", reason: "retake" },
+  { srcIn: 6.5, srcOut: 8.75, kind: "keep" },
+  { srcIn: 8.75, srcOut: 10.0, kind: "remove", reason: "pause" },
+  { srcIn: 10.0, srcOut: 20.0, kind: "keep" },
+];
+const keep = (...ranges: { srcIn: number; srcOut: number }[]) => ({ reasons: {}, kept: ranges, dismissed: [] });
+
+const LIST = ["HALLUCINATE", "FORGET THE CONTEXT", "REVIEW THE CODE"];
+const bullets = (over: Partial<Scene> = {}): Scene => ({
+  id: "scene-0",
+  anchor: { startWord: 2, endWord: 14 },
+  layout: "video-top",
+  component: "BulletList",
+  props: { items: [...LIST] },
+  overrides: {},
+  cue: { entryWord: 3 },
+  ...over,
+});
+const pins = (list: ({ src: number; text: string } | null)[], component = "BulletList") => ({
+  itemPins: { component, pins: list },
+});
+const docOf = (raw: Record<string, unknown>): OverrideDoc => OverrideDocSchema.parse(raw);
+
+describe("item timing parity: produce and the editor preview (graphic-editor-modal G7, §4)", () => {
+  it("no veto: the ordinary session (finishOnClock's early exit) equals the render", () => {
+    const run: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets()],
+      doc: docOf({ scenes: { "scene-0": pins([null, { src: src(5), text: "FORGET THE CONTEXT" }, null]) } }),
+    };
+    const out = expectParity(run, "early");
+    expect(out["scene-0"]!.itemAtSec!.every((t) => t !== null)).toBe(true);
+    expect(out["scene-0"]!.reveal).toBe("synced");
+  });
+
+  it("a veto change cutting a pinned word: null in both", () => {
+    // The last render kept the retake; the author has since let it go (and
+    // still keeps the first pause, so a live re-cut is open). "forgot" is cut.
+    const run: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets({ props: { items: ["HALLUCINATE", "THEY FORGOT", "REVIEW THE CODE"] } })],
+      doc: docOf({
+        scenes: { "scene-0": pins([null, { src: src(9), text: "THEY FORGOT" }, null]) },
+        cleanup: keep(PAUSE_1),
+      }),
+      rendered: keep(PAUSE_1, RETAKE),
+    };
+    const out = expectParity(run, "main");
+    expect(out["scene-0"]!.itemAtSec![1]).toBeNull();
+    expect(out["scene-0"]!.itemAtSec![2]).not.toBeNull();
+  });
+
+  it("a veto reviving a word an auto item matches (an added graphic, window from its entry)", () => {
+    const run: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [],
+      doc: docOf({
+        addedScenes: [
+          {
+            id: "added-1",
+            component: "BulletList",
+            props: { items: ["THEY FORGOT", "REVIEW THE CODE"] },
+            srcStart: 5.5,
+            srcEnd: 8.625,
+          },
+        ],
+        scenes: { "added-1": pins([null, null]) },
+        cleanup: keep(RETAKE),
+      }),
+    };
+    const out = expectParity(run, "main");
+    // On the last render "they forgot" was cut; live it is spoken and matched.
+    expect(out["added-1"]!.itemAtSec![0]).not.toBeNull();
+  });
+
+  it("a seam at the block start that the veto revives", () => {
+    const run: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [
+        bullets({ anchor: { startWord: 4, endWord: 7 }, props: { items: ["THEY FORGET", "CONTEXT"] }, cue: { entryWord: 4 } }),
+      ],
+      doc: docOf({
+        scenes: { "scene-0": pins([{ src: src(4), text: "THEY FORGET" }, null]) },
+        cleanup: keep(PAUSE_1),
+      }),
+    };
+    const out = expectParity(run, "main");
+    expect(out["scene-0"]!.itemAtSec!.every((t) => t !== null)).toBe(true);
+  });
+
+  it("a revived pause inside a minScene-extended cue: the window is the anchor's, not the cue's", () => {
+    // Two words, 1 s of speech, stretched to the floor across the pause; the
+    // stretch reaches "forget" on the last render's clock, never in the window.
+    const run: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets({ anchor: { startWord: 2, endWord: 3 }, props: { items: ["HALLUCINATE", "FORGET"] } })],
+      doc: docOf({ scenes: { "scene-0": pins([null, null]) }, cleanup: keep(PAUSE_1) }),
+    };
+    const out = expectParity(run, "main");
+    expect(out["scene-0"]!.itemAtSec![0]).not.toBeNull();
+    expect(out["scene-0"]!.itemAtSec![1]).toBeNull();
+  });
+
+  it("a revived entry word (a planned cue whose stored item times the retime remaps first)", () => {
+    const run: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [
+        bullets({
+          component: "FlowDiagram",
+          anchor: { startWord: 8, endWord: 14 },
+          props: { nodes: ["FORGOT", "REVIEW"] },
+          cue: { entryWord: 9, itemWords: [9, 12] },
+        }),
+      ],
+      doc: docOf({ scenes: { "scene-0": pins([null, null], "FlowDiagram") }, cleanup: keep(RETAKE) }),
+    };
+    const out = expectParity(run, "main");
+    expect(out["scene-0"]!.itemAtSec!.every((t) => t !== null)).toBe(true);
+  });
+
+  it("a src timing pin that resolves only on the live clock", () => {
+    // Its start sits in the first pause: inert on the last render's clock,
+    // live once the pause is kept. Item 1's pin is then outside the window.
+    const run: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets()],
+      doc: docOf({
+        scenes: {
+          "scene-0": {
+            ...pins([{ src: src(3), text: "HALLUCINATE" }, null, null]),
+            timing: { srcStart: 2.75, srcEnd: 8.625 },
+          },
+        },
+        cleanup: keep(PAUSE_1),
+      }),
+    };
+    const out = expectParity(run, "main");
+    expect(out["scene-0"]!.itemAtSec![0]).toBeNull();
+    expect(producePipeline(run).notes).toEqual(['scene "scene-0" item 1: its word is outside this block']);
+  });
+
+  it("a legacy output timing pin under a veto", () => {
+    // Output 2.375–6.0 on the last render's clock is source 3.625–8.25:
+    // "they" (3.5) and "hallucinate" fall outside it.
+    const run: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets()],
+      doc: docOf({
+        scenes: {
+          "scene-0": {
+            ...pins([{ src: src(3), text: "HALLUCINATE" }, null, null]),
+            timing: { startSec: 2.375, endSec: 6.0 },
+          },
+        },
+        cleanup: keep(PAUSE_1),
+      }),
+    };
+    const out = expectParity(run, "main");
+    expect(out["scene-0"]!.itemAtSec![0]).toBeNull();
+    expect(out["scene-0"]!.itemAtSec![1]).not.toBeNull();
+  });
+
+  describe("a split half with its own component swap: left as swapped in both", () => {
+    // A normal ⌘B dual-writes `at` and `src` (SplitSchema); with no veto the
+    // two name the same instant (output == source before the first pause).
+    const split = { id: "s1", at: 1.875, src: 1.875 };
+    const halfSwap = { component: "StrikethroughReveal", props: { lines: [{ text: "a" }, { text: "b" }] } };
+
+    it("on a planned graphic that carries item times", () => {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [
+          bullets({
+            component: "FlowDiagram",
+            props: { nodes: ["HALLUCINATE", "FORGET", "REVIEW"] },
+            cue: { entryWord: 3, itemWords: [3, 5, 12] },
+          }),
+        ],
+        doc: docOf({
+          scenes: {
+            "scene-0": pins([null, { src: src(5), text: "FORGET" }, null], "FlowDiagram"),
+            "scene-0@s1": halfSwap,
+          },
+          splits: [split],
+        }),
+      };
+      const out = expectParity(run, "early");
+      expect(out["scene-0"]!.itemAtSec!.every((t) => t !== null)).toBe(true);
+      expect(out["scene-0@s1"]!.component).toBe("StrikethroughReveal");
+    });
+
+    it("on a stored bullet list (no item times until the resolve)", () => {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [bullets()],
+        doc: docOf({
+          scenes: {
+            "scene-0": pins([null, { src: src(5), text: "FORGET THE CONTEXT" }, null]),
+            "scene-0@s1": halfSwap,
+          },
+          splits: [split],
+        }),
+      };
+      const out = expectParity(run, "early");
+      expect(out["scene-0@s1"]!.component).toBe("StrikethroughReveal");
+    });
+  });
+
+  it("through the editor's own helpers (App's wiring): both exits equal the render", () => {
+    // The no-veto case and the veto case above, re-run with the item step
+    // App actually calls: the early exit, then the main path with a pinned
+    // word the live clock cuts.
+    const early: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets()],
+      doc: docOf({ scenes: { "scene-0": pins([null, { src: src(5), text: "FORGET THE CONTEXT" }, null]) } }),
+    };
+    const atEarly = expectParity(early, "early", true);
+    expect(atEarly["scene-0"]!.itemAtSec!.every((t) => t !== null)).toBe(true);
+    expect(atEarly["scene-0"]!.reveal).toBe("synced");
+    const main: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets({ props: { items: ["HALLUCINATE", "THEY FORGOT", "REVIEW THE CODE"] } })],
+      doc: docOf({
+        scenes: { "scene-0": pins([null, { src: src(9), text: "THEY FORGOT" }, null]) },
+        cleanup: keep(PAUSE_1),
+      }),
+      rendered: keep(PAUSE_1, RETAKE),
+    };
+    const atMain = expectParity(main, "main", true);
+    expect(atMain["scene-0"]!.itemAtSec![1]).toBeNull();
+    expect(atMain["scene-0"]!.itemAtSec![2]).not.toBeNull();
+  });
+
+  it("a src-only flagged take half resolves the same framing in both when its root is framed after the split (final review I-1)", () => {
+    // ⌘B in revived material no `take-kept-*` block covers: a src-only split
+    // on a plain take, flagged, the root unframed then so no copy stored.
+    // The author frames the root afterwards. The editor splits src-only
+    // splits in `finishOnClock`, on cues its first pass already merged, so
+    // the half arrives carrying the root's framing; produce splits the
+    // unmerged fill cues. Both must show the half's OWN framing only.
+    const framingOf = (cues: readonly SceneCue[]) =>
+      Object.fromEntries(cues.filter((c) => c.kind === "plain").map((c) => [c.id, { video: c.video, pip: c.pip }]));
+    const root = { video: { scale: 2 }, pip: { x: 0.3 } };
+    for (const half of [undefined, { video: { dx: 3 } }]) {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [],
+        doc: docOf({
+          scenes: { "take-3": root, ...(half ? { "take-3@s": half } : {}) },
+          splits: [{ src: src(15) + 1, id: "s", ownFraming: true }],
+        }),
+      };
+      const produce = framingOf(producePipeline(run).cues);
+      const editor = editorPipeline(run);
+      // The post-carve pass, not the early exit: the src-only split is what
+      // routes the editor through it.
+      expect(editor.exit).toBe("main");
+      expect(framingOf(editor.cues)).toEqual(produce);
+      expect(produce["take-3"]).toEqual(root);
+      expect(produce["take-3@s"]).toEqual({ video: half?.video, pip: undefined });
+    }
+  });
+
+  describe("take looks resolve the same by output time (take-looks-by-source Tests, Parity)", () => {
+    // A migrated doc (the marker present). The graphic sits late, over
+    // "then we ship it fast", so the takes before it are plain footage the
+    // first pause's kept block can carve.
+    const looks = [
+      { srcIn: 0, srcOut: 2.25, look: { video: { scale: 1.5, dx: -20 } } },
+      { srcIn: 2.25, srcOut: 3.5, look: { video: { dx: 40 }, captionY: 0.3 } },
+      { srcIn: 3.5, srcOut: 8.75, look: { layout: "pip-bubble" as const, pip: { x: 0.2, y: 0.6 } } },
+    ];
+    const graphic = bullets({ anchor: { startWord: 15, endWord: 19 }, props: { items: ["SHIP IT"] }, cue: { entryWord: 16 } });
+    const LOOK_KEYS = ["layout", "video", "pip", "captionY", "captionScale"] as const;
+    const lookOf = (c: SceneCue) => Object.fromEntries(LOOK_KEYS.map((k) => [k, c[k]]));
+    /** Each produce plain cue's midpoint, and the look each pipeline shows
+     * there: produce and the editor need not cut the takes at the same ids,
+     * only show the same footage the same way at the same moment. */
+    const looksByTime = (run: Run, exit: "early" | "main") => {
+      const produce = producePipeline(run).cues;
+      const editor = editorPipeline(run);
+      expect(editor.exit).toBe(exit);
+      const at = (cues: readonly SceneCue[], t: number) => cues.find((c) => c.startSec <= t && t < c.endSec)!;
+      const mids = produce.filter((c) => c.kind === "plain").map((c) => (c.startSec + c.endSec) / 2);
+      for (const t of mids) {
+        expect(at(editor.cues, t).kind, `t=${t}`).toBe("plain");
+        expect(lookOf(at(editor.cues, t)), `t=${t}`).toEqual(lookOf(at(produce, t)));
+      }
+      return { produce, at };
+    };
+
+    it("on the old clock (the early exit)", () => {
+      const run: Run = { words: WORDS, proposal: PROPOSAL, scenes: [graphic], doc: docOf({ takeLooks: looks }) };
+      const { produce, at } = looksByTime(run, "early");
+      // Exercised: the first take shows its framing, the next its pip.
+      expect(at(produce, 1).video).toEqual({ scale: 1.5, dx: -20 });
+      expect(at(produce, 3).layout).toBe("pip-bubble");
+    });
+
+    it("with a kept block (the main path): the revived pause shows its own footage's look", () => {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [graphic],
+        doc: docOf({ takeLooks: looks, cleanup: keep(PAUSE_1) }),
+      };
+      const { produce } = looksByTime(run, "main");
+      const kept = produce.find((c) => c.id.startsWith("take-kept-"))!;
+      expect(kept.video).toEqual({ dx: 40 });
+      expect(kept.captionY).toBe(0.3);
+      expect(kept.layout).toBe("full-bleed");
+    });
+  });
+
+  describe("splits cut once, the same in both (split-positions-by-source D2, D3, R7-8, R8-6)", () => {
+    /** The whole cue list, `(id, start, end)` to the millisecond, sorted —
+     * so a split one pipeline cuts and the other does not, or cuts at
+     * another moment, fails here (R7-8). */
+    const cueWindows = (cues: readonly SceneCue[]) =>
+      cues
+        .map((c): [string, number, number] => [c.id, Math.round(c.startSec * 1000) / 1000, Math.round(c.endSec * 1000) / 1000])
+        .sort((x, y) => x[1] - y[1] || (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0));
+    const expectSameCues = (run: Run, exit: "early" | "main") => {
+      const produce = cueWindows(producePipeline(run).cues);
+      const editor = editorPipeline(run);
+      expect(editor.exit).toBe(exit);
+      expect(cueWindows(editor.cues)).toEqual(produce);
+      return produce;
+    };
+    const ids = (list: ReturnType<typeof cueWindows>) => list.map(([id]) => id);
+
+    it("20752's shape: `src` in a kept range, on the carved block's edge — margin-skipped in both", () => {
+      // The pause was kept on the last render too (`rendered` = the doc's
+      // choices, R7-8). The split's `src` 2.25 is the carved block's start;
+      // its stale `at` 1.0 would have cut take-0 in the editor's old take
+      // pass, the block FE Loop showed and the render did not.
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [],
+        doc: docOf({ cleanup: keep(PAUSE_1), splits: [{ at: 1.0, src: 2.25, id: "s20752" }] }),
+        rendered: keep(PAUSE_1),
+      };
+      const out = expectSameCues(run, "main");
+      // Path: the carve made the block and the split cut nothing.
+      expect(out.find(([id]) => id === "take-kept-2250")?.slice(1)).toEqual([2.25, 3.5]);
+      expect(ids(out).some((id) => id.endsWith("@s20752"))).toBe(false);
+    });
+
+    it("an inert split: `src` in removed material — no graphic and no take is cut (R7-3, R8-2)", () => {
+      // Its stale `at` 3.0 sits inside scene-0; `src` 6.0 is in the retake.
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [bullets()],
+        doc: docOf({ splits: [{ at: 3.0, src: 6.0, id: "inert" }] }),
+      };
+      const out = expectSameCues(run, "early");
+      expect(ids(out).some((id) => id.endsWith("@inert"))).toBe(false);
+      expect(ids(out)).toContain("scene-0");
+    });
+
+    it("a drifted graphic split (fc2's shape): one cut, on the graphic, at `at`", () => {
+      // `at` 3.0 is in scene-0; `src` 0.5 would cut take-0 — before, produce
+      // cut both, naming two cues `…@fc2`.
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [bullets()],
+        doc: docOf({ splits: [{ at: 3.0, src: 0.5, id: "fc2" }] }),
+      };
+      const out = expectSameCues(run, "early");
+      const halves = out.filter(([id]) => id.endsWith("@fc2"));
+      expect(halves).toHaveLength(1);
+      expect(halves[0]![0]).toBe("scene-0@fc2");
+      expect(halves[0]![1]).toBe(3);
+    });
+
+    it("a src-only split: cut in the post-carve pass, at toOutput(src)", () => {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [bullets()],
+        doc: docOf({ splits: [{ src: 11.0, id: "so" }] }),
+      };
+      const out = expectSameCues(run, "main");
+      const half = out.filter(([id]) => id.endsWith("@so"));
+      expect(half).toHaveLength(1);
+      // Output = source − 3.5 past the third cut.
+      expect(half[0]![1]).toBe(7.5);
+    });
+
+    it("a carved-range split with its half deleted: cut on the carved block, the half hidden in both (R7-6, R8-5)", () => {
+      const run: Run = {
+        words: WORDS,
+        proposal: PROPOSAL,
+        scenes: [],
+        doc: docOf({
+          cleanup: keep(PAUSE_1),
+          splits: [{ at: 2.75, src: 2.75, id: "cr" }],
+          scenes: { "take-kept-2250@cr": { hidden: true } },
+        }),
+        rendered: keep(PAUSE_1),
+      };
+      const out = expectSameCues(run, "main");
+      // Path: the split cut the carved block (its first piece ends there),
+      // and its deleted half is gone from both.
+      expect(out.find(([id]) => id === "take-kept-2250")?.slice(1)).toEqual([2.25, 2.75]);
+      expect(ids(out).some((id) => id.endsWith("@cr"))).toBe(false);
+    });
+  });
+
+  it("invariant: a BulletList with neither itemWords nor itemPins has no reveal after both pipelines", () => {
+    const run: Run = {
+      words: WORDS,
+      proposal: PROPOSAL,
+      scenes: [bullets()],
+      doc: docOf({ scenes: { "scene-0": { props: { items: ["A", "B", "C"] } } }, cleanup: keep(PAUSE_1) }),
+    };
+    const produce = producePipeline(run).cues.find((c) => c.id === "scene-0")!;
+    const editor = editorPipeline(run).cues.find((c) => c.id === "scene-0")!;
+    expect("reveal" in produce).toBe(false);
+    expect("reveal" in editor).toBe(false);
+  });
+});

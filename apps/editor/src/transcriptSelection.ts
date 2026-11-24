@@ -120,3 +120,68 @@ export function findOccurrences(
   }
   return out;
 }
+
+/** The panel's word selection: flat word indices, `anchor` where it started. */
+export interface WordSelection {
+  anchor: number;
+  focus: number;
+}
+
+/**
+ * What a PLAIN (non-shift) click on word `index` leaves selected
+ * (2026-11-21). Every click-to-seek selects its word, so a selection that only
+ * Escape could drop stuck in App for good and the storyboard read "Selected in
+ * the transcript: “has”" forever. Clicking the one selected word again is the
+ * off switch — the panel still seeks, seeking is why people click words.
+ *
+ * Never on a double-click's second click (`detail >= 2`): the browser fires
+ * click, click, dblclick, and a toggle there would open the retype box over a
+ * selection that had just been dropped — Escape out of the box would then
+ * bring back no bar. `detail` 0 is a synthetic click (keyboard activation,
+ * jsdom) and counts as a first click. A different word, or a word inside a
+ * multi-word run, selects that one word, exactly as before.
+ */
+export function plainWordClick(
+  prev: WordSelection | null,
+  index: number,
+  detail: number,
+): WordSelection | null {
+  if (prev !== null && prev.anchor === index && prev.focus === index && detail < 2) return null;
+  return { anchor: index, focus: index };
+}
+
+/**
+ * Whether a click inside the transcript body is a click on EMPTY space that
+ * clears the selection (2026-11-21) — the gaps between words and lines and
+ * the space below the last line, which is where a click lands on the body
+ * element itself. Each refusal guards a gesture that shares the click:
+ *  - the press started on a word: a press on a word whose release drifts
+ *    into a gap fires its click on the body (the two targets' common
+ *    ancestor), and that is a missed word click, not a clear;
+ *  - the click landed on anything inside the body — a word, the bar and its
+ *    flyout, the range editor, the timing widget, the retype input;
+ *  - a modifier: shift extends a selection, it never drops one;
+ *  - a native text selection is still up (a drag the word mapping could not
+ *    convert keeps the browser's highlight; clearing under it would be a
+ *    second, invisible effect of the same drag);
+ *  - the release just made a drag selection (`onBodyMouseUp`): a drag that
+ *    started in a gap clicks the body too, and has already collapsed the
+ *    native range, so without this the click would wipe what the drag chose.
+ */
+export function emptyBodyClickClears(click: {
+  hasSelection: boolean;
+  pressedOnBody: boolean;
+  releasedOnBody: boolean;
+  modified: boolean;
+  nativeCollapsed: boolean;
+  dragJustSelected: boolean;
+}): boolean {
+  return (
+    click.hasSelection &&
+    click.pressedOnBody &&
+    click.releasedOnBody &&
+    !click.modified &&
+    click.nativeCollapsed &&
+    !click.dragJustSelected
+  );
+}

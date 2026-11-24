@@ -603,8 +603,14 @@ describe("produce's §137 caption wiring (source-text guard)", () => {
     // all four.
     // `splitSrcResolved` joined with the cut-review rework — a backfilled
     // source anchor is a doc change none of the others see, same shape again.
+    // `splitHalvesChanged` joined with take-framing-identity P2 — a take half
+    // re-keyed to where its split landed, or a migrated/refreshed split.
+    // `takeLooksMigrated` joined with take-looks-by-source L3 — the one-time
+    // move of take looks onto source time sets the marker on no other flag.
+    // `splitsReconciled` joined with split-positions-by-source R7-4 — a
+    // split anchor written onto where it cut moves no other flag either.
     expect(src).toMatch(
-      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysReanchored|captionKeysReanchored\s*\|\|\s*cutResult\.changed)\s*\|\|\s*hidesPruned\s*\|\|\s*sceneKeysRemapped\s*\|\|\s*splitSrcResolved\s*\)/,
+      /if\s*\(\s*(cutResult\.changed\s*\|\|\s*captionKeysReanchored|captionKeysReanchored\s*\|\|\s*cutResult\.changed)\s*\|\|\s*hidesPruned\s*\|\|\s*sceneKeysRemapped\s*\|\|\s*splitSrcResolved\s*\|\|\s*splitHalvesChanged\s*\|\|\s*takeLooksMigrated\s*\|\|\s*splitsReconciled\s*\)/,
     );
   });
 

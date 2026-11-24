@@ -15,9 +15,12 @@ import {
   fillPlainCues,
   splitCues,
   atSplitPoints,
+  pass1SplitPoints,
+  survivingLandings,
   resolveSplitPoints,
   resolveSrcTimingPins,
   carveKeptTakes,
+  applyTakeLooks,
   dismissedRemovals,
   vetoedRemovals,
   resolveTheme,
@@ -28,6 +31,7 @@ import {
   mapsClose,
   previewClockMappers,
   retimeForPreview,
+  sceneKeyRoot,
   sceneStartSeconds,
   type AppliedCaptionEdits,
   type LivePreviewClocks,
@@ -41,7 +45,8 @@ import {
   type Segment,
   type Theme,
 } from "@ossclip/core/browser";
-import { useEdits } from "./useEdits";
+import { unseenRefusal, useEdits } from "./useEdits";
+import { pieceRanges, pieceSelection, revalidateSelection, selectedPiece, withVideoPreview } from "./takeLookTarget";
 import {
   applyWindowsOnLastRenderClock,
   rebuildCaptionTrack,
@@ -77,7 +82,20 @@ import { Timeline } from "./Timeline";
 import { TranscriptPanel } from "./TranscriptPanel";
 import { ShortcutsModal } from "./ShortcutsModal";
 import { DeleteSceneModal } from "./DeleteSceneModal";
-import type { DeletePlan } from "./deleteScene";
+import { graphicDeleteFor, type DeletePlan } from "./deleteScene";
+import {
+  addGraphicCheck,
+  addBaseIds,
+  addPreviewCue,
+  addedSkippedRows,
+  previewBaseCues,
+  previewDropCovered,
+  type AddGraphicCheck,
+  type AddGraphicWord,
+} from "./addedGraphics";
+import { GraphicEditorModal } from "./GraphicEditorModal";
+import { editModalInput, graphicModalStale, previousGraphicEndSec } from "./graphicEditorModel";
+import { previewItemRoots, previewItemTimings } from "./itemTimingPreview";
 import { DeleteWordsModal } from "./DeleteWordsModal";
 import type { DeleteWordsPlan } from "./deleteWords";
 import { ProjectPicker } from "./ProjectPicker";
@@ -87,6 +105,9 @@ import { CleanupPanel } from "./CleanupPanel";
 import { YoutubePanel } from "./YoutubePanel";
 import { CoverPanel } from "./CoverPanel";
 import { PublishPanel } from "./PublishPanel";
+import { StoryboardPanel } from "./StoryboardPanel";
+import { storyboardBusyTitle, storyboardButtonState, type StoryboardButtonState } from "./storyboardModel";
+import { useStoryboardJobWatch } from "./useStoryboardJobWatch";
 import {
   formatElapsed,
   pinnedInfoLines,
@@ -98,6 +119,7 @@ import {
 } from "./renderStatus";
 import { onSaveEffect } from "./save";
 import { ghostCues as computeGhostCues } from "./ghosts";
+import { editorTakeClipStarts } from "./takeClipStarts";
 import {
   anchorCaptionLines,
   droppedEditNotices,
@@ -162,6 +184,16 @@ type RawRenderProps = PlayerProductionProps & {
    * stays hidden in the preview exactly as the command.json pin will render
    * it. */
   captionsHiddenByFlag?: boolean;
+  /** Added graphics the last produce run skipped or dropped, with the reason
+   * (editor-added-graphics §2) — omitted when there are none. The preview
+   * leaves these out (they have no cue to build) and the Inspector lists
+   * them with Remove (§7). */
+  addedSceneIssues?: { id: string; reason: string }[];
+  /** The clip starts produce's take fill numbered `take-N` from — span
+   * starts plus kept cleanup ranges' output edges (take-framing-identity
+   * P0). Always written by an upgraded produce; absent on older props, where
+   * `editorTakeClipStarts` falls back to the span starts. */
+  takeClipStarts?: number[];
 };
 
 /**
@@ -512,6 +544,10 @@ export const App: React.FC = () => {
   // backdrops only in a 16:9 script project. Server-derived, like canRender,
   // because the record lives in production.json, which the page never reads.
   const [scriptProject, setScriptProject] = useState(false);
+  // A storyboard project (`/api/production`'s `storyboardProject`, §169):
+  // its approved shots are clip scenes, and the §163 backdrop choice is
+  // offered for them as for a script project's (design §8).
+  const [storyboardProject, setStoryboardProject] = useState(false);
   // The state shape lives in renderStatus.ts beside `resumeRenderState`,
   // which rebuilds it after a page reload — one definition, not a drifting
   // inline copy (2026-08-18).
@@ -709,6 +745,57 @@ export const App: React.FC = () => {
   // undo/redo/dirty/save all apply to its checkboxes; only the open/closed
   // state lives here.
   const [showCleanup, setShowCleanup] = useState(false);
+  // The storyboard's plan table (storyboard design §10; §168) — server-owned
+  // like the publish panel (storyboard.json, not overrides.json). Its button
+  // exists only for a project that has a storyboard (`storyboardButtonState`),
+  // fetched per project open.
+  const [showStoryboard, setShowStoryboard] = useState(false);
+  /**
+   * The open graphic editor (graphic-editor-modal §5). An add carries what
+   * the press captured — the words, App's verdict on them (the overlap
+   * refusal is decided once, there) and the panel's `done` — and an edit the
+   * root id it opened (a split half opens its root). Everything else the
+   * modal reads is derived live from the memo below, so a word list that
+   * arrives while it is open places its items.
+   */
+  const [graphicModal, setGraphicModal] = useState<
+    | {
+        mode: "add";
+        words: AddGraphicWord[];
+        check: AddGraphicCheck;
+        baseIds: string[];
+        done: (added: boolean) => void;
+      }
+    | { mode: "edit"; rootId: string; opener: HTMLElement | null }
+    | null
+  >(null);
+  const [storyboardButton, setStoryboardButton] = useState<StoryboardButtonState>({ kind: "hidden" });
+  /**
+   * The last transcript selection, as source starts, for the storyboard's
+   * "Add shot from selection" and "Use selection". Not cleared when the
+   * transcript drops its own on a click-away (`reason === "away"`): pressing
+   * the Storyboard button is a click outside the transcript, which drops its
+   * selection (the click-away rule, field report 2026-08-31), so the
+   * selection the author made for the table would be gone by the time the
+   * table opens. Cleared when the author clears it — Escape, the bar's ✕, a
+   * click on empty transcript space, clicking the one selected word again,
+   * the storyboard's own Clear — because a selection that only a project load
+   * could drop held the table on a word clicked once to seek, for good
+   * (2026-11-21: "Selected in the transcript: “has”"). Replaced by the next
+   * selection, and dropped on a project load with every other selection.
+   */
+  const [transcriptSelection, setTranscriptSelection] = useState<{ srcStart: number }[] | null>(null);
+  const onTranscriptSelection = useCallback((words: { srcStart: number }[] | null, reason?: "away") => {
+    if (words === null || words.length === 0) {
+      if (reason !== "away") setTranscriptSelection(null);
+      return;
+    }
+    setTranscriptSelection((prev) =>
+      prev !== null && prev.length === words.length && prev.every((w, i) => w.srcStart === words[i]!.srcStart)
+        ? prev
+        : words,
+    );
+  }, []);
   useEffect(() => {
     if (!showYoutubeMenu) return;
     // Esc closes the menu the way it closes the panels (capture-phase, so
@@ -807,11 +894,13 @@ export const App: React.FC = () => {
               overrides?: OverrideDoc;
               canRender?: boolean;
               scriptProject?: boolean;
+              storyboardProject?: boolean;
             };
             const props = anchored(prod.renderProps);
             setRenderProps(props);
             setCanRender(Boolean(prod.canRender));
             setScriptProject(prod.scriptProject === true);
+            setStoryboardProject(prod.storyboardProject === true);
             // Finding 2, PLAN 2026-08-04 Task 4c fix wave — see
             // `renderCompleteReload`'s own doc comment (renderStatus.ts) for
             // the full reasoning; this is the thin I/O wrapper around that
@@ -910,6 +999,11 @@ export const App: React.FC = () => {
     // harmless and this callback can stay referentially stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // The storyboard job is followed here, not in its panel: the panel can
+  // close while an approve runs, and the sync run that follows it must still
+  // reach the render poll so the timeline reloads (§169).
+  const storyboardJob = useStoryboardJobWatch(beginRenderPoll);
+
 
   // The production load, shared by mount and every project switch (R17 §83).
   const loadProduction = useCallback(async (): Promise<void> => {
@@ -920,6 +1014,7 @@ export const App: React.FC = () => {
       overrides?: OverrideDoc;
       canRender?: boolean;
       scriptProject?: boolean;
+      storyboardProject?: boolean;
       defaultOutPath?: string;
       workdir?: string;
       noWorkdir?: boolean;
@@ -944,6 +1039,7 @@ export const App: React.FC = () => {
     setWorkdirPath(nextWorkdir);
     setCanRender(Boolean(body.canRender));
     setScriptProject(body.scriptProject === true);
+    setStoryboardProject(body.storyboardProject === true);
     // §137: a doc saved before this change keys caption edits by POSITION,
     // which any cut shifts — every one of them would silently revert on
     // screen. Upgraded here, against the just-anchored lines, because this is
@@ -991,6 +1087,10 @@ export const App: React.FC = () => {
         );
       })
       .catch(() => setTranscriptDoc(null));
+    void fetch("/api/storyboard")
+      .then(async (r) => setStoryboardButton(storyboardButtonState(r.status, await r.json().catch(() => null))))
+      .catch(() => setStoryboardButton({ kind: "hidden" }));
+    setTranscriptSelection(null);
     // The SFX plan + its word space, and the sound library (Phase 4). The
     // /api/cleanup posture throughout: any failure degrades to "no lane, no
     // palette" — the server already answers `{sfx: null, words: null}` for a
@@ -1286,6 +1386,19 @@ export const App: React.FC = () => {
     props: PlayerProductionProps;
     reports: string[];
     transcript?: LiveCaptionTrack;
+    /** New added graphics the preview could not show (§7) — the Inspector's
+     * list joins these with render-props' `addedSceneIssues`. */
+    addedSkipped: { id: string; reason: string }[];
+    /** The graphic-only base AFTER the added-graphics reconcile — what
+     * `ghostCues` below must read too (editor-added-graphics §4). */
+    previewBase: SceneCue[];
+    /** The last render's clock, the one the preview times a fresh add on —
+     * null means a new add cannot preview yet (§4). */
+    oldClock: TimeMap | null;
+    /** The clock `props.sceneCues` ends up on: the live re-cut's when a
+     * cleanup veto is live, else the old one. The add gesture measures its
+     * window here, against those cues (§5). */
+    cueClock: TimeMap | null;
   } | null>(() => {
     if (!renderProps) return null;
     // The LAST RENDER's clock, from its own spans. Declared here (it used to
@@ -1310,12 +1423,30 @@ export const App: React.FC = () => {
     // an already-filled list back in would treat the old takes as occupied
     // windows. Old workdirs' `sceneCues` fallback predates the fill, so it
     // is graphic-only too.
-    const baseCues = (renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).filter(
+    const producedCues = (renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).filter(
       (c) => c.kind !== "plain",
     );
     const baseTheme = renderProps.baseTheme ?? renderProps.theme ?? defaultTheme;
-    // The clock THESE cues are on — one derivation, three uses below.
+    // The clock THESE cues are on — one derivation, four uses below.
     const oldClockMap = spansMap();
+    // Added graphics reconciled into the base BEFORE any override pass
+    // (editor-added-graphics §4): a baked `added-` cue whose entry was undone
+    // or deleted leaves, and an add made since the last run joins, timed on
+    // this same old clock — so the pins, overrides, splits and fill below
+    // treat it exactly as they will after the next run makes it a base cue.
+    // Graphic-only in, graphic-only out: the fill still runs after.
+    const addedPreview = previewBaseCues({
+      baseCues: producedCues,
+      added: edits.doc.addedScenes ?? [],
+      issueIds: new Set((renderProps.addedSceneIssues ?? []).map((i) => i.id)),
+      words: sfxPlan.words,
+      map: oldClockMap,
+      // The frame produce lays the add out for (fix-wave I2) — the same
+      // width/height test `finishOnClock`'s caption rebuild reads below.
+      landscape: (renderProps.settings?.width ?? 1080) > (renderProps.settings?.height ?? 1920),
+      scriptProject,
+    });
+    const baseCues = addedPreview.cues;
     // Src-anchored pins resolved onto that clock BEFORE the merge
     // (`resolveSrcTimingPins` owns why this is a pre-pass and not a `map`
     // argument on `applyOverrides`). Old-clock here, deliberately: these two
@@ -1329,6 +1460,24 @@ export const App: React.FC = () => {
     // frame the user is looking at.
     const oldClockDoc = oldClockMap ? resolveSrcTimingPins(edits.doc, oldClockMap).doc : edits.doc;
     const { cues: graphicCues } = applyOverrides(baseCues, oldClockDoc);
+    // Word-timed list items (graphic-editor-modal §4): the roots come from
+    // THIS list, the last one before the split — `finishOnClock` resolves on
+    // split cues, where a root may be two halves or (a hidden root half)
+    // only its second. Windows from stored source data, the same on any
+    // clock; a legacy timing pin read through the old clock it was written
+    // on, a src pin tested on the live one. The raw `edits.doc`, not
+    // `oldClockDoc`, whose src pins already read as output seconds.
+    // item-timing-parity.test.ts proves these two helpers match produce on
+    // its model of this memo; that the calls sit HERE and on both exits of
+    // `finishOnClock` is kept by hand-mirroring that model (the memo itself
+    // is not under test), so move one, move the other.
+    const itemRoots = previewItemRoots(
+      graphicCues,
+      edits.doc,
+      sfxPlan.words,
+      oldClockMap,
+      liveRecut?.newMap ?? oldClockMap,
+    );
     // Same sequence as `produce.ts`: overrides → split, then drop the deleted
     // scenes → fill the gaps with plain takes (a deleted scene's window
     // becomes an editable take — Task C's payoff for doing A first) → a
@@ -1342,24 +1491,107 @@ export const App: React.FC = () => {
     // instead of erasing the whole pre-split window — including the half a
     // split was about to carve off — before the split ever ran (PLAN
     // 2026-08-04 Task 1, bug 3: deleting one split half used to delete both).
-    const { cues: visibleCues } = splitThenDropHidden(graphicCues, edits.doc);
+    // Produce's pass 1, the graphic pass (split-positions-by-source D2, D3):
+    // each split at its `at`, which the last produce left fresh on this
+    // clock (D1), minus the ones inert on it (`pass1SplitPoints`, R8-2) —
+    // the points produce's pass 1 cut, on the clock it cut them on.
+    const { cues: shownCues, landedHost: graphicLandedHost } = splitThenDropHidden(
+      graphicCues,
+      edits.doc,
+      pass1SplitPoints(edits.doc.splits, oldClockMap),
+    );
+    // An added graphic a visible plan graphic now covers gives way, here at
+    // the hidden drop as in produce (fix-wave I1, AG2), so the preview drops
+    // the block the render will — and lists it as not shown, with the reason.
+    // The one spot: the `dropHiddenCues` after the fill and the one in
+    // `finishOnClock` only catch split halves that pass made — neither
+    // re-runs the overlap test.
+    const covered = previewDropCovered(shownCues);
+    const visibleCues = covered.cues;
+    // A graphic landing counts only while a piece it cut is shown, after
+    // both drops, as in produce (R7-2, R8-4); every other split is the take
+    // passes' to cut.
+    const graphicLanded = survivingLandings(graphicLandedHost, visibleCues);
+    // The removals the carve below revives — hoisted out of `finishOnClock`
+    // (D3), because the take pass must know them too. Produce splits AFTER
+    // its carve, so a split whose `src` sits in one meets the carved block's
+    // edges, not the uncarved take's, and the margin test can answer
+    // differently on the two (FE Loop's 20752 is margin-skipped against the
+    // block). So it waits for the post-carve pass, which cuts the carved
+    // blocks as produce does (R7-6). Closed containment, `carveKeptTakes`'
+    // own.
+    const keptRanges = vetoedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
+      srcIn: seg.srcIn,
+      srcOut: seg.srcOut,
+    }));
+    const dismissedRanges = dismissedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
+      srcIn: seg.srcIn,
+      srcOut: seg.srcOut,
+      dismissed: true,
+    }));
+    const carvedRanges = [...keptRanges, ...dismissedRanges];
+    const inCarvedRange = (src: number) => carvedRanges.some((r) => src >= r.srcIn && src <= r.srcOut);
+    // The two sets the take passes cut: on an old clock no split is in
+    // both, and neither holds a graphic landing (D2: a split cuts once).
+    // With no old clock (an unrendered workdir) nothing can be resolved or
+    // called carved, so the take pass keeps today's rule — every `at`, the
+    // graphic landings re-cut on their own joints as a no-op — and the
+    // post-carve set is the src-only splits alone (R7-6).
+    const takePassSplits =
+      oldClockMap === null
+        ? edits.doc.splits
+        : edits.doc.splits.filter(
+            (s) =>
+              s.at !== undefined && !graphicLanded.has(s.id) && (s.src === undefined || !inCarvedRange(s.src)),
+          );
+    const postCarveSplits = edits.doc.splits.filter(
+      (s) =>
+        s.src !== undefined &&
+        !graphicLanded.has(s.id) &&
+        (s.at === undefined || (oldClockMap !== null && inCarvedRange(s.src))),
+    );
     const filled = fillPlainCues(visibleCues, {
       outputDurationSec: renderProps.outputDurationSec,
-      clipStarts: (renderProps.spans ?? []).map((s) => s.outIn),
+      // Produce's own list when it wrote one (take-framing-identity P0), so
+      // the editor's take ids are the render's once a range is kept.
+      clipStarts: editorTakeClipStarts(renderProps),
     });
     // User splits (R16 §61) — after the fill so TAKES split like scenes did
-    // above; a no-op here for scene ids, already split by
-    // `splitThenDropHidden`. Before the final pass so edits on the
+    // above. Graphic-pass landings are excluded from this set outright
+    // (split-positions-by-source D2), so a split cuts here only if it did
+    // not cut a graphic above. Before the final pass so edits on the
     // `id@<split id>` halves land (the suffix is the split's minted id, §137).
     // The extra dropHiddenCues below catches halves of a TAKE
     // the user deleted, whose id did not exist until the fill just ran.
-    // Pass 1 of two (cut-review rework): old-clock splits — entries carrying
-    // an `at`. Src-only splits (minted inside revived material) have no image
-    // on this clock; they apply in the post-retime pass below.
-    const splitted = splitCues(filled, atSplitPoints(edits.doc.splits));
+    // Produce's pass 2, on the old clock (split-positions-by-source D3):
+    // `takePassSplits` — not landed on a graphic, not in a carved range — at
+    // `toOutput(src)`, where produce cuts them. Cutting them at `at`, as this
+    // did, showed a split where the render made none whenever the two
+    // anchors disagreed. Its inert reports are not surfaced: produce prints
+    // the same line for the same split on every run. Src-only and
+    // carved-range splits apply in `finishOnClock`'s pass below.
+    const splitted = splitCues(
+      filled,
+      oldClockMap !== null
+        ? resolveSplitPoints(takePassSplits, oldClockMap).points
+        : atSplitPoints(takePassSplits),
+    );
     // `oldClockDoc` again — same clock as pass 1 (a split does not move time).
     const { cues: mergedCues } = applyOverrides(splitted, oldClockDoc);
-    const { cues } = dropHiddenCues(mergedCues, edits.doc);
+    const { cues: shownTakes } = dropHiddenCues(mergedCues, edits.doc);
+    // Take looks from SOURCE time (take-looks-by-source L2, B8), on the last
+    // render's clock — the clock these cues are on — after the hidden drop
+    // and before the stage previews, so a mid-drag preview shows over the
+    // look. Only for a migrated doc: a legacy one keeps its id-keyed look
+    // fields exactly as the pass above merged them (N1). With no old-clock
+    // map (an unrendered workdir) nothing can be placed, so the takes show
+    // without looks; a migrated doc always has a prior render, because
+    // produce migrated it while writing one (N4). Produce runs this pass at
+    // the same step (produce.ts, after `applyOverrides(split`).
+    const cues =
+      edits.doc.takeLooks !== undefined && oldClockMap !== null
+        ? applyTakeLooks(shownTakes, edits.doc.takeLooks, oldClockMap)
+        : shownTakes;
     // The framing preview applies LAST, onto the fully-merged cue, so what
     // the Player shows mid-gesture is exactly what committing would store.
     //
@@ -1373,14 +1605,12 @@ export const App: React.FC = () => {
     // is broken on a kept take" rather than "the slider is dead".) Idempotent
     // by construction — same id, same patch — so the second pass costs the
     // ordinary path nothing.
-    const withStagePreviews = (list: readonly SceneCue[]): SceneCue[] => {
-      let out = videoPreview
-        ? list.map((c) =>
-            c.id === videoPreview.sceneId
-              ? { ...c, video: { ...c.video, ...videoPreview.patch } }
-              : c,
-          )
-        : [...list];
+    //
+    // `map` is the clock `list` is on: a look-mode preview names its piece
+    // by source extent (take-looks-by-source R4-S1, R7-1), resolved here on
+    // each pass's own clock — `withVideoPreview` owns the rule.
+    const withStagePreviews = (list: readonly SceneCue[], map: TimeMap | null): SceneCue[] => {
+      let out = withVideoPreview(list, videoPreview, map);
       if (graphicPreview) {
         out = out.map((c) =>
           c.id === graphicPreview.sceneId ? { ...c, graphicRect: graphicPreview.rect } : c,
@@ -1388,7 +1618,7 @@ export const App: React.FC = () => {
       }
       return out;
     };
-    const previewed = withStagePreviews(cues);
+    const previewed = withStagePreviews(cues, oldClockMap);
     const effectiveCaptionTheme =
       edits.doc.captionTheme ?? renderProps.baseCaptionTheme ?? renderProps.captionTheme;
     const base: PlayerProductionProps = {
@@ -1469,29 +1699,21 @@ export const App: React.FC = () => {
     // player genuinely plays the revived material.
     // Cut-review rework (2026-08-26): the shared tail for both branches —
     // carve kept/dismissed removals into first-class `take-kept-*` blocks
-    // (`carveKeptTakes`) and apply src-only splits (`resolveSplitPoints`,
-    // minted by ⌘B inside revived material), on whichever clock the branch
-    // is on: the live map under a veto, the spans-backed map once a veto is
-    // BAKED into the render (livePreviewMap answers null then, but the doc's
-    // kept/dismissed ranges and src splits are still live edits to show).
-    // Nothing to do → the props pass through untouched, the regression
-    // anchor both branches held before this existed.
+    // (`carveKeptTakes`) and apply `postCarveSplits` (`resolveSplitPoints`:
+    // src-only splits, minted by ⌘B inside revived material, and the splits
+    // whose `src` is in a carved range — split-positions-by-source D3,
+    // R7-6), on whichever clock the branch is on: the live map under a veto,
+    // the spans-backed map once a veto is BAKED into the render
+    // (livePreviewMap answers null then, but the doc's kept/dismissed ranges
+    // and src splits are still live edits to show). Nothing to do → the
+    // props pass through untouched, the regression anchor both branches held
+    // before this existed.
     const finishOnClock = (
       props: PlayerProductionProps,
       priorReports: string[],
       clockMap: TimeMap | null,
     ): { props: PlayerProductionProps; reports: string[]; transcript?: LiveCaptionTrack } => {
-      const keptRanges = vetoedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
-        srcIn: seg.srcIn,
-        srcOut: seg.srcOut,
-      }));
-      const dismissedRanges = dismissedRemovals(cleanupCutlist, edits.doc.cleanup).map((seg) => ({
-        srcIn: seg.srcIn,
-        srcOut: seg.srcOut,
-        dismissed: true,
-      }));
-      const srcOnly = edits.doc.splits.filter((s) => s.at === undefined && s.src !== undefined);
-      const ranges = [...keptRanges, ...dismissedRanges];
+      const ranges = carvedRanges;
       // The caption rebuild's OWN trigger (cut-review rework phase 2), wider
       // than the carve's: any clock change invalidates the retimed lines, and
       // a LIVE user cut (`liveRecut !== null` with no veto and no split)
@@ -1504,11 +1726,22 @@ export const App: React.FC = () => {
       // stay byte-identical: no rebuild, and the early return below is the
       // one this function has always taken.
       const rebuildCaptions = transcriptDoc !== null && (ranges.length > 0 || liveRecut !== null);
-      if (clockMap === null || (ranges.length === 0 && srcOnly.length === 0 && !rebuildCaptions)) {
-        return { props, reports: priorReports };
+      if (clockMap === null || (ranges.length === 0 && postCarveSplits.length === 0 && !rebuildCaptions)) {
+        // The ordinary session lands here too (no veto, no live-only split),
+        // so list items resolve on this exit as well as the main one (§4) —
+        // G2 before any veto. No marked root, or no clock or word list, hands
+        // back the SAME `props`: this exit's byte-identical promise above.
+        // No hidden drop here, unlike the main path: with no post-carve
+        // split nothing below has minted a half since the old-clock drop
+        // (r8 m6).
+        const items = previewItemTimings(props, edits.doc, itemRoots, sfxPlan.words, clockMap);
+        return {
+          props: items.props,
+          reports: items.notes.length > 0 ? [...priorReports, ...items.notes] : priorReports,
+        };
       }
       const carved = carveKeptTakes(props.sceneCues ?? [], ranges, clockMap);
-      const resolved = resolveSplitPoints(srcOnly, clockMap);
+      const resolved = resolveSplitPoints(postCarveSplits, clockMap);
       const splitted2 = splitCues(carved.cues, resolved.points);
       // One more override pass so framing edits on `take-kept-*` (and on
       // src-split halves) preview live — idempotent on already-merged cues,
@@ -1522,10 +1755,32 @@ export const App: React.FC = () => {
       // that did not exist until `carveKeptTakes` ran a moment ago. These
       // reports DO surface: this clock is the one the user is watching.
       const pinned = resolveSrcTimingPins(edits.doc, clockMap);
-      const { cues: merged } = applyOverrides(splitted2, pinned.doc);
+      const { cues: overridden } = applyOverrides(splitted2, pinned.doc);
+      // The look pass again, on THIS clock (take-looks-by-source L2, B8):
+      // the carve just minted `take-kept-*` blocks and src-only halves the
+      // old-clock pass never saw, and under a live cut a piece's footage is
+      // this clock's, not the last render's. SET semantics, so the framing a
+      // carve copied from its host does not survive (S14). Before the item
+      // times and the stage previews, as on the old-clock path; legacy docs
+      // skip it (N1).
+      const merged =
+        edits.doc.takeLooks !== undefined
+          ? applyTakeLooks(overridden, edits.doc.takeLooks, clockMap)
+          : overridden;
+      // Item times AFTER that pass (§4), so a src timing pin that resolves
+      // only on this clock has applied and a half's own swap has happened —
+      // produce resolves after its second pass for the same reason — and
+      // before the stage previews, which only ever patch framing.
+      const items = previewItemTimings({ sceneCues: merged }, edits.doc, itemRoots, sfxPlan.words, clockMap);
+      // A deleted half of a split this pass cut drops HERE, as produce's
+      // final `dropHiddenCues` drops it — after the item times, in produce's
+      // order (split-positions-by-source R7-6, R8-5): the half did not exist
+      // when the old-clock drop ran, so without this a hidden carved-range
+      // half showed in the preview and not in the render.
+      const { cues: shownFinal } = dropHiddenCues(items.props.sceneCues, edits.doc);
       // The stage preview, re-applied on the cues the Inspector actually
       // reads — see `withStagePreviews` for the slider that died without it.
-      const finalCues = withStagePreviews(merged);
+      const finalCues = withStagePreviews(shownFinal, clockMap);
       // Captions over the REVIVED material (field report 2026-08-26): the
       // retimed captionLines only cover words the LAST RENDER kept — the
       // revived stretch's words exist nowhere in render-props. Rebuild the
@@ -1556,14 +1811,20 @@ export const App: React.FC = () => {
       }
       return {
         props: { ...props, sceneCues: finalCues, captionLines },
-        reports: [...priorReports, ...carved.reports, ...resolved.reports, ...pinned.reports],
+        reports: [...priorReports, ...carved.reports, ...resolved.reports, ...pinned.reports, ...items.notes],
         transcript,
       };
     };
-    if (!liveRecut) return finishOnClock(base, [], oldClockMap);
+    const added = {
+      addedSkipped: [...addedPreview.skipped, ...covered.skipped],
+      previewBase: baseCues,
+      oldClock: oldClockMap,
+      cueClock: liveRecut ? liveRecut.newMap : oldClockMap,
+    };
+    if (!liveRecut) return { ...finishOnClock(base, [], oldClockMap), ...added };
     const { fields, reports } = retimeForPreview(base, liveRecut.oldMap, liveRecut.newMap);
-    return finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap);
-  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionWindows, liveRecut, cleanupCutlist, transcriptDoc]);
+    return { ...finishOnClock({ ...base, ...fields }, reports, liveRecut.newMap), ...added };
+  }, [renderProps, edits.doc, videoPreview, graphicPreview, appliedCaptionWindows, liveRecut, cleanupCutlist, transcriptDoc, sfxPlan.words, scriptProject]);
   const live = liveRetimed === null ? null : liveRetimed.props;
   // ONE boolean for the two surfaces that must agree about which clock the
   // Transcript panel speaks (cut-review rework phase 2): the panel wiring
@@ -1572,6 +1833,114 @@ export const App: React.FC = () => {
   // the plan's window was never measured in — off by exactly the revived (or
   // cut) seconds, silently, since nothing downstream can tell.
   const liveTranscript = liveRetimed?.transcript;
+  // The Inspector's "not shown" list (editor-added-graphics §7): what produce
+  // reported plus what the preview just skipped, filtered to the doc so a
+  // Remove takes its row away before any run rewrites render-props — and a
+  // reported row whose graphic the preview now shows leaves too (the author
+  // fixed it live; the live preview wins, fix-wave ruling 5).
+  const addedSkipped = useMemo(
+    () =>
+      addedSkippedRows(
+        edits.doc.addedScenes ?? [],
+        renderProps?.addedSceneIssues ?? [],
+        liveRetimed?.addedSkipped ?? [],
+        (liveRetimed?.props.sceneCues ?? []).map((c) => c.id),
+      ),
+    [edits.doc.addedScenes, renderProps, liveRetimed],
+  );
+
+  /**
+   * The transcript bar's Graphic… (editor-added-graphics §5,
+   * graphic-editor-modal §5): the overlap verdict against what the author
+   * sees, taken once at the press, and the graphic editor opened over it.
+   *
+   * The cues are `live.sceneCues` — overrides, hides and pins applied, the
+   * list on screen — and the window is measured on THEIR clock (`cueClock`).
+   * The panel's word times are on the lines' clock, which is the old one
+   * unless the track was rebuilt live, so the no-clock fallback maps them
+   * with the panel's own seek mapping (the `toPlayerSec` it is handed below).
+   *
+   * "After the next Render" when either input `previewBaseCues` needs is
+   * missing — the clock or the repaired word list — since then the add is
+   * stored but no block can appear yet.
+   *
+   * `baseIds` is the base the live memo reconciles (`baseSceneCues`, or the
+   * old `sceneCues` fallback) plus the ids the run reported in
+   * `addedSceneIssues` (`addBaseIds`): an id a past run baked in or reported
+   * must never be minted again, or the add would preview that old cue or
+   * inherit that old reason (§1, fix-wave I3).
+   */
+  const requestAddGraphic = useCallback(
+    (words: AddGraphicWord[], done: (added: boolean) => void): void => {
+      const check = addGraphicCheck({
+        words,
+        cues: liveRetimed?.props.sceneCues ?? [],
+        clock: liveRetimed?.cueClock ?? null,
+        toPlayerSec: liveRetimed?.transcript ? identitySec : clock.toLive,
+        deferred: (liveRetimed?.oldClock ?? null) === null || sfxPlan.words === null,
+      });
+      // The stage stops while the modal is open: its preview plays the
+      // block on its own Player, with sound, and two voices at once is noise.
+      playerRef.current?.pause();
+      setGraphicModal({ mode: "add", words, check, baseIds: addBaseIds(renderProps), done });
+    },
+    [liveRetimed, clock, sfxPlan.words, renderProps],
+  );
+
+  /** The Inspector's "Edit text & timing…" (§5): the ROOT opens, so a split
+   * half edits the graphic both halves draw. Focus goes back to the button
+   * that opened it when the modal closes. */
+  const openGraphicEditor = useCallback((sceneId: string) => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // Paused, as for an add: the preview carries the sound now.
+    playerRef.current?.pause();
+    setGraphicModal({ mode: "edit", rootId: sceneKeyRoot(sceneId), opener });
+  }, []);
+  // An edit's inputs, derived from the live memo (`editModalInput`), so the
+  // modal opens on what the stage draws. Memoized: the modal's rows and
+  // preview re-derive from these, and App re-renders for unrelated state.
+  const graphicEditInput = useMemo(
+    () =>
+      graphicModal?.mode === "edit" && liveRetimed !== null
+        ? editModalInput({
+            rootId: graphicModal.rootId,
+            cues: liveRetimed.props.sceneCues ?? [],
+            base: liveRetimed.previewBase,
+            doc: edits.doc,
+            words: sfxPlan.words,
+            pinMap: liveRetimed.oldClock,
+            liveMap: liveRetimed.cueClock,
+          })
+        : null,
+    [graphicModal, liveRetimed, edits.doc, sfxPlan.words],
+  );
+  // A modal with nothing to show closes itself (`graphicModalStale`): no
+  // live memo, or an edit whose root is gone or has no form. An add tells
+  // the panel (`done(false)`), so its hold on the selection is released and
+  // nothing pops up later when the memo arrives.
+  useEffect(() => {
+    if (graphicModal === null) return;
+    if (!graphicModalStale(graphicModal.mode, liveRetimed !== null, graphicEditInput !== null)) return;
+    setGraphicModal(null);
+    if (graphicModal.mode === "add") graphicModal.done(false);
+  }, [graphicModal, liveRetimed, graphicEditInput]);
+  /** The Inspector's "Edit text & timing…" shows only when the ROOT it opens
+   * is one the modal can edit — a half swapped to a card over a terminal
+   * root is not (`editModalInput`, the very test the open makes). */
+  const canEditGraphic = useCallback(
+    (sceneId: string): boolean =>
+      liveRetimed !== null &&
+      editModalInput({
+        rootId: sceneKeyRoot(sceneId),
+        cues: liveRetimed.props.sceneCues ?? [],
+        base: liveRetimed.previewBase,
+        doc: edits.doc,
+        words: null,
+        pinMap: null,
+        liveMap: null,
+      }) !== null,
+    [liveRetimed, edits.doc],
+  );
 
   // BELOW the live memo since phase 2, not above with the caption layers it
   // mostly reads: the REBUILT track's timing layer reports here too, and a
@@ -1640,6 +2009,14 @@ export const App: React.FC = () => {
       return null;
     }
   }, [liveRecut, renderProps]);
+  // "Is this source second played" on the clock `clock.toSourceSec` inverts
+  // (the live map under a veto, the spans' without one: `rulerMap`'s two
+  // arms are exactly `previewClockMappers`'), so a pin a drag or a speed
+  // resize writes is rounded onto the kept side and resolves (`pinTiming`).
+  const pinKeptSrc = useMemo(
+    () => (rulerMap === null ? undefined : (src: number): boolean => rulerMap.toOutput(src) !== null),
+    [rulerMap],
+  );
   const sfxWords = useMemo<SfxWordAnchor[]>(() => {
     const words = sfxPlan.words;
     if (words === null || words.length === 0) return [];
@@ -2034,10 +2411,13 @@ export const App: React.FC = () => {
   // this list so the Inspector can offer Restore even though the live cues
   // no longer contain it.
   const ghostCues = useMemo<SceneCue[]>(() => {
-    if (!renderProps) return [];
-    const baseCues = (renderProps.baseSceneCues ?? renderProps.sceneCues ?? []).filter(
-      (c) => c.kind !== "plain",
-    );
+    if (!renderProps || !liveRetimed) return [];
+    // The live memo's base, added graphics reconciled (editor-added-graphics
+    // §4), never the raw `baseSceneCues`: an added graphic no run has baked
+    // yet exists only there, so a hidden half of it found no cue to ghost and
+    // its take showed no Restore — ⌘Z was the only way back. Same list the
+    // preview merges onto, so a ghost and the block it restores agree.
+    const baseCues = liveRetimed.previewBase;
     // Finding 2, PLAN 2026-08-04 fix wave final review: `ghostCues`'s own
     // doc comment (ghosts.ts) has the full reasoning — this used to filter
     // for `hidden` on the PRE-split cues, so a hidden `id@<split id>` half (a
@@ -2047,18 +2427,50 @@ export const App: React.FC = () => {
     // and the Timeline draws these bands on the live (possibly re-cut)
     // timeline — unmapped, every ghost past a revived pause sat the revived
     // seconds off its true window.
-    return computeGhostCues(baseCues, edits.doc, clock.toLive);
-  }, [renderProps, edits.doc, clock]);
+    // `liveRetimed.oldClock`, the clock the base cues are on, so the ghosts
+    // are cut by the graphic pass's points and an inert split cuts none
+    // (split-positions-by-source R8-2) — App's `clock` mapper is a
+    // different object (r8 m1, m21).
+    return computeGhostCues(baseCues, edits.doc, clock.toLive, liveRetimed.oldClock);
+  }, [renderProps, liveRetimed, edits.doc, clock]);
+
+  // Look mode (take-looks-by-source L3 marker): a migrated doc. Every
+  // extent behaviour below is gated on it (R6-4); a legacy doc keeps id
+  // matching everywhere (R4-S11).
+  const lookMode = edits.doc.takeLooks !== undefined;
+  // The clock the live cues are on — the one a piece's source ranges are
+  // read on, for selection, writes and previews alike (L4 "Clock", S5).
+  const cueClock = liveRetimed?.cueClock ?? null;
 
   const selectedCue = useMemo(
     () =>
       selection
-        ? live?.sceneCues.find((c) => c.id === selection.sceneId) ??
-          ghostCues.find((c) => c.id === selection.sceneId) ??
-          null
+        ? // A look-mode take selection names its piece by source extent:
+          // carved lead and tail share an id, so an id match would hand the
+          // Inspector the lead's values while the tail is selected (R4-B1).
+          // Null when nothing plays that footage — never the lead silently.
+          lookMode && selection.pieceExtent !== undefined
+          ? selectedPiece(live?.sceneCues ?? [], selection, cueClock)
+          : live?.sceneCues.find((c) => c.id === selection.sceneId) ??
+            ghostCues.find((c) => c.id === selection.sceneId) ??
+            null
         : null,
-    [live, selection, ghostCues],
+    [live, selection, ghostCues, lookMode, cueClock],
   );
+
+  // Revalidation (take-looks-by-source R6-1, R7-1): whenever the live cues
+  // or their clock move — a reload, a render, a live cut, keep, undo, ⌘B —
+  // re-point a look-mode selection at the piece playing its footage (id and
+  // hull, so the header, the writes and the previews follow it), or clear
+  // it when no piece does. Functional, so it never reads a stale selection;
+  // `revalidateSelection` hands the same object back when nothing moved.
+  // Skipped while there are no live cues (a project loading): clearing then
+  // would drop a selection the next memo could resolve. `liveCues` is the
+  // save-stamp effect's own handle on the same list.
+  useEffect(() => {
+    if (!lookMode || liveCues === undefined) return;
+    setSelection((prev) => (prev === null ? prev : revalidateSelection(prev, liveCues, cueClock)));
+  }, [liveCues, cueClock, lookMode]);
 
   // A deleted scene is no longer selectable (field report 2026-08-31): its
   // window belongs to the take `fillPlainCues` minted, and edits keyed to
@@ -2077,8 +2489,46 @@ export const App: React.FC = () => {
       mid !== null
         ? live.sceneCues.find((c) => c.startSec <= mid && mid < c.endSec)
         : undefined;
-    setSelection(covering ? { sceneId: covering.id, elementId: null } : null);
-  }, [selection, live, edits.doc.scenes, ghostCues]);
+    // In look mode the covering take is selected by its footage (R4-S2), so
+    // a tail covering the deleted scene is not resolved back to its lead.
+    setSelection(
+      covering
+        ? lookMode
+          ? pieceSelection(covering, cueClock)
+          : { sceneId: covering.id, elementId: null }
+        : null,
+    );
+  }, [selection, live, edits.doc.scenes, ghostCues, lookMode, cueClock]);
+
+  // A refused write (take-looks-by-source R4-S4, R6-5) shows in the
+  // clock-refused notice, once per refusal: `seq` tells a new refusal from
+  // a re-render of the old one, even when the message repeats.
+  const shownRefusalSeq = useRef(0);
+  useEffect(() => {
+    const message = unseenRefusal(edits.lastRefusal, shownRefusalSeq.current);
+    if (message === null) return;
+    shownRefusalSeq.current = edits.lastRefusal!.seq;
+    setClockRefusedNotice(message);
+  }, [edits.lastRefusal]);
+
+  // Every `load` drops the stage previews (take-looks-by-source R4-S3): a
+  // preview names a piece of the doc it was made on, and a scrub left
+  // showing over a reloaded doc would preview a look nothing will commit.
+  useEffect(() => {
+    setVideoPreview(null);
+    setGraphicPreview(null);
+  }, [edits.loadCount]);
+
+  // "Apply to all" in look mode (R4-S5, R6-6): one source-range list per
+  // plain cue on screen, on the clock those cues are on. None without a
+  // clock — the Inspector then applies the graphic part only and says so.
+  const allTakeRanges = useMemo(
+    () =>
+      lookMode && live && cueClock !== null
+        ? live.sceneCues.filter((c) => c.kind === "plain").map((c) => pieceRanges(c, cueClock))
+        : [],
+    [lookMode, live, cueClock],
+  );
 
   // The words the selected cue is on screen FOR — "tracking transcript" as a
   // checkable fact rather than a claim (PLAN Task 6). Captions are the words
@@ -2148,6 +2598,109 @@ export const App: React.FC = () => {
       {logsOpen ? "▾ logs" : "▸ logs"}
     </button>
   );
+
+  // The graphic editor (graphic-editor-modal §5), wired to the live memo:
+  // its words and clock are the stage's (`sfxPlan.words`, `cueClock`), its
+  // preview a second Player playing the one cue (G5), and its commit one
+  // reducer step — `addScene` with its `scenes` patch, or `patchProps` with
+  // the Save's timing, pins and cleared keys — or nothing at all when Save
+  // has nothing to say (§6).
+  let graphicEditor: React.ReactNode = null;
+  if (graphicModal !== null && liveRetimed !== null) {
+    const liveMap = liveRetimed.cueClock;
+    const fps = live.settings.fps;
+    const previewBase = playerProps ?? live;
+    const renderPreview = (args: { cue: SceneCue; playerRef: React.RefObject<PlayerRef> }): React.ReactNode => (
+      <GraphicPreviewPlayer cue={args.cue} base={previewBase} playerRef={args.playerRef} />
+    );
+    if (graphicModal.mode === "add") {
+      const { check, words, baseIds, done } = graphicModal;
+      const close = (added: boolean): void => {
+        setGraphicModal(null);
+        done(added);
+      };
+      graphicEditor = (
+        <GraphicEditorModal
+          key="add"
+          mode="add"
+          words={sfxPlan.words}
+          liveMap={liveMap}
+          // The selection's source span, the span the entry will store (§5):
+          // the modal, the timeline and produce time items in one window.
+          window={check.span}
+          fps={fps}
+          prevGraphicEndSec={previousGraphicEndSec(live.sceneCues, check.at.startSec, null)}
+          renderPreview={renderPreview}
+          selectionText={words.map((w) => w.text).join(" ")}
+          selectionWordCount={words.length}
+          check={check}
+          previewFor={(component, props) =>
+            addPreviewCue({
+              component,
+              props,
+              span: check.span,
+              words: sfxPlan.words,
+              map: liveMap,
+              landscape: live.settings.width > live.settings.height,
+              scriptProject,
+            })
+          }
+          onAdd={(component, save) => {
+            const id = edits.addScene({
+              component,
+              props: save.props,
+              ...check.span,
+              baseIds,
+              scenePatch: {
+                ...(save.itemPins !== undefined ? { itemPins: save.itemPins } : {}),
+                ...(save.timing !== undefined ? { timing: save.timing } : {}),
+              },
+            });
+            // The new block is selected at once (the reducer holds no
+            // selection); when it cannot preview yet the Inspector shows its
+            // no-selection view until it can.
+            selectScene({ sceneId: id, elementId: null });
+            close(true);
+          }}
+          onClose={() => close(false)}
+        />
+      );
+    } else if (graphicEditInput !== null) {
+      const { rootId, opener } = graphicModal;
+      const close = (): void => {
+        setGraphicModal(null);
+        opener?.focus({ preventScroll: true });
+      };
+      graphicEditor = (
+        <GraphicEditorModal
+          key={`edit-${rootId}`}
+          mode="edit"
+          sceneId={rootId}
+          component={graphicEditInput.component}
+          props={graphicEditInput.props}
+          itemPins={graphicEditInput.itemPins}
+          timing={graphicEditInput.timing}
+          ownReveal={graphicEditInput.ownReveal}
+          liveCue={graphicEditInput.liveCue}
+          words={sfxPlan.words}
+          liveMap={liveMap}
+          window={graphicEditInput.window}
+          fps={fps}
+          prevGraphicEndSec={previousGraphicEndSec(live.sceneCues, graphicEditInput.liveCue.startSec, rootId)}
+          renderPreview={renderPreview}
+          onSave={(save) => {
+            edits.patchProps(rootId, save.props, {
+              clearKeys: save.clearKeys,
+              ...(save.itemPins !== undefined ? { itemPins: save.itemPins } : {}),
+              ...(save.timing !== undefined ? { timing: save.timing } : {}),
+            });
+            close();
+          }}
+          onClose={close}
+        />
+      );
+    }
+  }
 
   return (
     <div style={shell}>
@@ -2225,6 +2778,37 @@ export const App: React.FC = () => {
           >
             Cleanup
           </button>
+          {storyboardButton.kind !== "hidden" ? (
+            <button
+              data-testid="storyboard-open"
+              style={{
+                ...ghostButton,
+                ...(showStoryboard ? { borderColor: "#5b8cff" } : {}),
+                ...(storyboardButton.kind === "error" ? { borderColor: "#FF5C5C", color: "#FF5C5C" } : {}),
+              }}
+              onClick={() => setShowStoryboard(true)}
+              title={
+                storyboardButton.kind === "error"
+                  ? `storyboard.json could not be read: ${storyboardButton.message}`
+                  : storyboardJob.job !== null
+                    ? storyboardBusyTitle(storyboardJob.job)
+                    : "The planned shots: drop, reword, move or add them, or plan again"
+              }
+            >
+              {storyboardJob.job !== null ? (
+                // The job outlives the panel (§169): the button says so.
+                <>
+                  <style>{"@keyframes ossclip-spin { to { transform: rotate(360deg) } }"}</style>
+                  <span
+                    data-testid="storyboard-open-busy"
+                    style={{ ...spinner, display: "inline-block", verticalAlign: "-1px", marginRight: 6 }}
+                    aria-hidden
+                  />
+                </>
+              ) : null}
+              Storyboard
+            </button>
+          ) : null}
           {/* One menu for the --youtube extras (2026-08-17): the thumbnail
               and the SEO pack are two panels over one feature, and two
               top-bar buttons were the bar's first scaling failure. */}
@@ -2369,6 +2953,24 @@ export const App: React.FC = () => {
       ) : null}
       {showYoutubeSeo ? <YoutubePanel onClose={() => setShowYoutubeSeo(false)} /> : null}
       {showPublish ? <PublishPanel onClose={() => setShowPublish(false)} /> : null}
+      {showStoryboard ? (
+        <StoryboardPanel
+          // Approve is refused while the doc is unsaved (Review Focus 4), and
+          // a sync run the server starts is followed by the render poll, so
+          // the clip scene produce writes is reloaded when it ends (§169).
+          dirty={edits.dirty}
+          onReplayStarted={beginRenderPoll}
+          onJobStarted={storyboardJob.watch}
+          words={transcriptDoc?.words ?? null}
+          // The ruler's clock, the one the player plays: a cut made in the
+          // editor shows in the table before any render (§168).
+          map={rulerMap}
+          selection={transcriptSelection}
+          onClearSelection={() => setTranscriptSelection(null)}
+          onSeek={seekToSec}
+          onClose={() => setShowStoryboard(false)}
+        />
+      ) : null}
       {showCover ? (
         <CoverPanel
           onClose={() => setShowCover(false)}
@@ -2439,6 +3041,7 @@ export const App: React.FC = () => {
           onClose={closeLogoPopover}
         />
       ) : null}
+      {graphicEditor}
       {deletePlan ? (
         <DeleteSceneModal
           plan={deletePlan}
@@ -2447,7 +3050,16 @@ export const App: React.FC = () => {
             // Both arms are ordinary reducer commits, so ⌘Z takes either
             // back — the modal adds friction, not a second edit mechanism.
             if (target === "graphic") {
-              edits.hideScene(deletePlan.sceneId);
+              // The Inspector button's routing (`graphicDeleteFor`): an added
+              // graphic's root is removed, a half is hidden (§6).
+              const del = graphicDeleteFor(deletePlan.sceneId);
+              if (del.kind === "removeAdded") {
+                edits.removeAddedScene(del.id);
+                // Removed, not ghosted — the hidden-scene remap never fires
+                // for it, so a selection on the block (or a half of it) would
+                // be left naming nothing (§6).
+                if (selection !== null && sceneKeyRoot(selection.sceneId) === del.id) selectScene(null);
+              } else edits.hideScene(del.sceneId);
             } else {
               // The plan's window came off a retimed cue — the LIVE clock —
               // but a `cuts[]` entry's `startSec`/`endSec` speak the LAST
@@ -2833,6 +3445,8 @@ export const App: React.FC = () => {
               fromPlayerSec={liveTranscript ? identitySec : clock.fromLive}
               // Overlay adds need a word space to anchor to.
               onAddOverlayAt={overlayPlan.words === null ? undefined : addOverlayAt}
+              onSelectionChange={onTranscriptSelection}
+              onAddGraphic={requestAddGraphic}
             />
             {/* The pane ↔ stage divider (R16 §65). preventDefault keeps the
                 press from starting a text selection across the transcript. */}
@@ -2931,6 +3545,9 @@ export const App: React.FC = () => {
               toSourceSec={clock.toSourceSec}
               onClockRefused={setClockRefusedNotice}
               onOverlayPress={onOverlayPress}
+              // The live cues' clock — a take piece's footage is read on it
+              // (take-looks-by-source L4 "Clock").
+              cueClock={cueClock}
             />
             <OverlayImageBox
               ref={overlayImageBoxRef}
@@ -3044,6 +3661,8 @@ export const App: React.FC = () => {
             cue={selectedCue}
             frame={{ width: live.settings.width, height: live.settings.height }}
             allSceneIds={live.sceneCues.map((c) => c.id)}
+            allTakeRanges={allTakeRanges}
+            cueClock={cueClock}
             edits={edits}
             onSelect={selectScene}
             resolvedTheme={live.theme}
@@ -3052,6 +3671,7 @@ export const App: React.FC = () => {
             runInfo={runInfo}
             captionsHiddenByFlag={renderProps?.captionsHiddenByFlag === true}
             scriptProject={scriptProject}
+            storyboardProject={storyboardProject}
             face={live.face ?? null}
             baseCaptionTheme={renderProps?.baseCaptionTheme ?? renderProps?.captionTheme}
             // "Delete this chunk"'s write boundary (step 4 follow-up): the
@@ -3062,6 +3682,7 @@ export const App: React.FC = () => {
             fromLive={clock.fromLive}
             hasOldClockPreimage={clock.hasOldClockPreimage}
             toSourceSec={clock.toSourceSec}
+            sourceKept={pinKeptSrc}
             onClockRefused={setClockRefusedNotice}
             // The SFX panel (Phase 4). `sfxEnabled` is the lane's own
             // visibility signal — a production with no plan gets no palette,
@@ -3089,7 +3710,14 @@ export const App: React.FC = () => {
             // one offers its Restore (field report 2026-08-31 — the ghost
             // block is gone from the timeline, the take IS the selection).
             deletedScenes={ghostCues}
+            addedSkipped={addedSkipped}
+            onEditGraphic={openGraphicEditor}
+            canEditGraphic={canEditGraphic}
             playheadSec={() => (playerRef.current?.getCurrentFrame() ?? 0) / live.settings.fps}
+            // The Timeline's own two props below: a clip's speed resizes a
+            // pinned block within the limits an edge drag has.
+            sceneCues={live.sceneCues}
+            outputDurationSec={live.outputDurationSec}
             sfxWordAtPlayhead={() => {
               // Read at the CLICK, off the player (the CoverPanel's
               // `playheadSec` idiom), and resolved through the same anchors
@@ -3119,6 +3747,8 @@ export const App: React.FC = () => {
         selection={selection}
         onSelect={selectScene}
         edits={edits}
+        // Look-mode selection resolves pieces on this clock (R6-4).
+        cueClock={cueClock}
         // The revived-range hook (Phase A): Timeline calls this AFTER the
         // keep/dismiss dispatch, and only when material came BACK — see
         // `onRevived`'s docstring for why a re-remove must not fire it.
@@ -3133,6 +3763,7 @@ export const App: React.FC = () => {
         // dropped across the next re-cut. Same mapper ⌘B's `splits[].src`
         // resolves through — one clock, both anchors.
         pinSourceSec={clock.toSourceSec}
+        pinKeptSrc={pinKeptSrc}
         // The sound lane (Phase 4): NULL when this production has no plan, so
         // the row is not drawn at all — an empty array would draw an empty
         // lane, which is a different (and real) state (the prop's doc).
@@ -3163,6 +3794,49 @@ export const App: React.FC = () => {
         }}
       />
     </div>
+  );
+};
+
+/**
+ * The graphic editor's preview (graphic-editor-modal §5, G5): a second
+ * Player, the stage's composition with ONE cue — the modal's — over the stage
+ * background and captions, limited to the block and looping. The stage's own
+ * props (`playerProps`, clip sources already on `/media/`) minus every other
+ * graphic and the overlay images, so what plays is the block alone, as the
+ * render will draw it.
+ */
+const GraphicPreviewPlayer: React.FC<{
+  cue: SceneCue;
+  base: PlayerProductionProps;
+  playerRef: React.RefObject<PlayerRef>;
+}> = ({ cue, base, playerRef }) => {
+  const fps = base.settings.fps;
+  const total = Math.max(2, Math.round(base.outputDurationSec * fps));
+  // In and out inside the composition, in before out: the Player throws on
+  // anything else, and a block flush with the video's end rounds past it.
+  const inFrame = Math.min(Math.max(0, Math.floor(cue.startSec * fps)), total - 2);
+  const outFrame = Math.min(Math.max(inFrame + 1, Math.ceil(cue.endSec * fps)), total - 1);
+  const inputProps = useMemo<PlayerProductionProps>(() => {
+    const { overlayCues: _images, ...rest } = base;
+    return { ...rest, sceneCues: withMediaClipSrc([cue]) };
+  }, [base, cue]);
+  return (
+    <Player<AnyZodObject, PlayerProductionProps>
+      ref={playerRef}
+      component={ProductionComposition}
+      inputProps={inputProps}
+      durationInFrames={total}
+      fps={fps}
+      compositionWidth={base.settings.width}
+      compositionHeight={base.settings.height}
+      style={{ width: "100%" }}
+      controls
+      loop
+      inFrame={inFrame}
+      outFrame={outFrame}
+      initialFrame={inFrame}
+      clickToPlay={false}
+    />
   );
 };
 
@@ -3257,9 +3931,15 @@ const statusText: React.CSSProperties = {
   fontSize: 12,
   fontFamily: "ui-monospace, 'SF Mono', monospace",
   marginLeft: "auto",
+  // One line always (§168): "● Unsaved changes" wrapping made the bar 14 px
+  // taller, which shrank the stage mid-drag — the dragged element landed
+  // short of the pointer. The workdir label takes the squeeze instead.
+  whiteSpace: "nowrap",
 };
 
 const ghostButton: React.CSSProperties = {
+  // A label never wraps: a two-line button grows the top bar (see statusText).
+  whiteSpace: "nowrap",
   fontSize: 12,
   fontWeight: 600,
   color: "#EDEDF2",

@@ -2,6 +2,7 @@ import type { z } from "zod/v4";
 import type { LlmProvider } from "./provider";
 import { estimateTokens, type LlmUsage } from "./usage";
 import { BeatSheetSchema } from "./beats";
+import { DRAW_EXAMPLE_CHARACTER } from "../draw/examples";
 
 /**
  * Deterministic offline producer: segments the transcript into fixed-size
@@ -36,7 +37,18 @@ export class MockProvider implements LlmProvider {
                 ? this.captionChoreography(req.user, req.schema)
                 : req.schemaName === "script_plan"
                   ? this.scriptPlan(req.user, req.schema)
-                  : this.sceneProps(req.user, req.schema, req.schemaName);
+                  : req.schemaName === "drawn_scene"
+                    ? // The character example (§167): it passes every check
+                      // and draws SVG shapes rather than kit cards, so the
+                      // offline path exercises the still render on real
+                      // drawing, whatever idea the prompt carries.
+                      req.schema.parse({
+                        code: DRAW_EXAMPLE_CHARACTER,
+                        said: "mock: the worked example, a goldfish swimming in with a speech bubble",
+                      })
+                    : req.schemaName === "storyboard_plan"
+                      ? this.storyboardPlan(req.user, req.schema)
+                      : this.sceneProps(req.user, req.schema, req.schemaName);
     // Estimated, and costing exactly nothing — but recorded, because the
     // offline path is first-class and "how big are the prompts this pipeline
     // sends" is worth answering without spending anything to find out.
@@ -140,6 +152,33 @@ export class MockProvider implements LlmProvider {
       onScreenCopy: m[2]!.slice(0, 60),
     }));
     return schema.parse({ cues });
+  }
+
+  /**
+   * A storyboard plan (`--storyboard`, §168): one shot per 40 kept words,
+   * each about 12 kept words long, read off the prompt's `[i]word` listing
+   * the way `beatSheet` reads it. Kept words only (a cut one is `[i]⟦word⟧`),
+   * so the offline path plans on words the viewer hears, as a planner
+   * following the prompt would, and the limits are exercised on real spans
+   * rather than on fixing the mock. Read from the transcript heading on, so
+   * an idea quoted in the "Already taken" list cannot add a word.
+   */
+  private storyboardPlan<T>(user: string, schema: z.ZodType<T>): T {
+    const at = user.indexOf("Word-indexed transcript");
+    const listing = at >= 0 ? user.slice(at) : user;
+    const kept = [...listing.matchAll(/\[(\d+)\](⟦)?/g)].filter((m) => m[2] === undefined).map((m) => Number.parseInt(m[1]!, 10));
+    const shots = [];
+    for (let k = 0, n = 1; k < kept.length && shots.length < 40; k += 40, n++) {
+      shots.push({
+        startWord: kept[k]!,
+        endWord: kept[Math.min(k + 11, kept.length - 1)]!,
+        idea: `mock shot ${n}`,
+        why: "mock: one shot per 40 kept words",
+        priority: ((n - 1) % 3) + 1,
+        assets: [],
+      });
+    }
+    return schema.parse({ shots });
   }
 
   private captionChoreography<T>(user: string, schema: z.ZodType<T>): T {

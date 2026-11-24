@@ -9,6 +9,7 @@ import {
   subtractRangesFromCutlist,
 } from "../src/recut";
 import { isSrcTiming, OverrideDocSchema, type SceneTiming } from "../src/overrides";
+import { SPANS, feMap } from "./take-looks.fixtures";
 import type { Segment } from "../src/schema";
 
 /** Narrow a `timing` entry to the LEGACY output-clock arm — every assertion
@@ -844,8 +845,10 @@ describe("pruneHidesInsideCuts (§59b revisited — the cut supersedes the hide)
   });
 });
 
-describe("src-anchored splits pass through the recut remap untouched (cut-review rework)", () => {
-  it("only the src-less legacy shape moves; {src} and {at, src} ride verbatim", () => {
+describe("split `at` follows every re-cut (split-positions-by-source D1, R8-1)", () => {
+  it("legacy and {at, src} splits move through a cut in front; `src` and src-only splits do not", () => {
+    // Before D1 `{at, src}` rode through verbatim, so its `at` went stale
+    // and the graphic pass cut it at the old moment.
     const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
     const newMap = new TimeMap([
       { srcIn: 0, srcOut: 1, kind: "remove", reason: "user", confidence: 1 },
@@ -858,14 +861,77 @@ describe("src-anchored splits pass through the recut remap untouched (cut-review
         { src: 6, id: "srconly" },
       ],
     });
-    const { doc: remapped } = remapOverridesThroughRecut(doc, oldMap, newMap);
+    const { doc: remapped, reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
     const byId = Object.fromEntries(remapped.splits.map((s) => [s.id, s]));
-    // Legacy at 5 → the 1s head cut shifts it to 4.
+    // The 1 s head cut shifts both `at`s from 5 to 4.
     expect(byId.legacy!.at).toBe(4);
-    // Source-anchored entries do not move — resolveSplitPoints re-derives
-    // their output instant fresh at each application (the cleanup.kept rule).
-    expect(byId.dual).toEqual({ at: 5, src: 5, id: "dual" });
+    expect(byId.dual).toEqual({ at: 4, src: 5, id: "dual" });
+    // A src-only split has no `at` to move and gains none.
     expect(byId.srconly).toMatchObject({ src: 6, id: "srconly" });
     expect(byId.srconly!.at).toBeUndefined();
+    expect(reports).toEqual([]);
+  });
+
+  it("an {at, src} split gets `remapPoint`'s too-close report like a legacy one (R7-5 S4)", () => {
+    const oldMap = new TimeMap([{ srcIn: 0, srcOut: 10, kind: "keep" }]);
+    const newMap = new TimeMap([
+      { srcIn: 0, srcOut: 0.6, kind: "remove", reason: "user", confidence: 1 },
+      { srcIn: 0.6, srcOut: 10, kind: "keep" },
+    ]);
+    const doc = OverrideDocSchema.parse({ splits: [{ at: 0.7, src: 0.7, id: "s" }] });
+    const { reports } = remapOverridesThroughRecut(doc, oldMap, newMap);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatch(/^split "s" is now 0\.100s — too close to the start/);
+  });
+
+  // The FE Loop clock (take-looks.fixtures.ts), with and without one cut.
+  const cutOver = (start: number, end: number) =>
+    new TimeMap(subtractRangesFromCutlist(SPANS.map((s) => ({ srcIn: s.srcIn, srcOut: s.srcOut, kind: "keep" as const })), [{ start, end }]));
+
+  for (const [name, split, cut] of [
+    ["the graphic split fc1", { at: 14.015, src: 16.5, id: "fc1" }, [16, 17]],
+    ["the take split", { at: 37.412, src: 45.0, id: "t1" }, [44.5, 45.5]],
+  ] as const) {
+    it(`${name}: a cut over its \`src\` leaves \`at\` as it is, silently; the restore puts it back exactly (R8-1, R9-2)`, () => {
+      const fe = feMap();
+      const cutMap = cutOver(cut[0], cut[1]);
+      expect(cutMap.toOutput(split.src)).toBeNull();
+      const doc = OverrideDocSchema.parse({ splits: [split] });
+
+      // Row 1: `src` removed on the new map — `at` unchanged, no report
+      // (`resolveSplitPoints`' inert line is the report).
+      const cutRun = remapOverridesThroughRecut(doc, fe, cutMap);
+      expect(cutRun.doc.splits[0]).toEqual(split);
+      expect(cutRun.reports).toEqual([]);
+
+      // Row 2: removed on the old map, kept on the new — `at` from `src`,
+      // rounded to the millisecond, never `remapPoint` of the stale `at`.
+      const restoreRun = remapOverridesThroughRecut(cutRun.doc, cutMap, fe);
+      expect(restoreRun.doc.splits[0]).toEqual(split);
+      expect(restoreRun.reports).toEqual([]);
+    });
+  }
+
+  it("the same cut-then-restore through `applyUserCuts`, as produce runs it", () => {
+    const fe = feMap();
+    const cutlist: Segment[] = SPANS.map((s) => ({ srcIn: s.srcIn, srcOut: s.srcOut, kind: "keep" }));
+    const split = { at: 14.015, src: 16.5, id: "fc1" };
+    const cut = { startSec: 0, endSec: 0, src: { startSec: 16, endSec: 17 } };
+    const doc = OverrideDocSchema.parse({ splits: [split], cuts: [cut] });
+    const run3 = applyUserCuts(doc, cutlist, fe, fe);
+    expect(run3.doc.splits[0]).toEqual(split);
+    const restored = applyUserCuts({ ...run3.doc, cuts: [] }, cutlist, fe, run3.map);
+    expect(restored.doc.splits[0]).toEqual(split);
+    expect(restored.reports).toEqual([]);
+  });
+
+  it("a restore with no prior `at` image is not invented — at-only and src-only keep today's paths", () => {
+    const fe = feMap();
+    const cutMap = cutOver(16, 17);
+    const doc = OverrideDocSchema.parse({ splits: [{ src: 16.5, id: "srconly" }, { at: 30, id: "legacy" }] });
+    const restored = remapOverridesThroughRecut(doc, cutMap, fe);
+    expect(restored.doc.splits[0]).toEqual(doc.splits[0]);
+    // Legacy `at` 30 on the cut clock is 1 s later on the restored one.
+    expect(restored.doc.splits[1]!.at).toBeCloseTo(31, 9);
   });
 });

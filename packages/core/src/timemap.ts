@@ -1,5 +1,9 @@
 import type { Segment, Word } from "./schema";
 
+/** How far outside a kept span an instant may fall and still map into it:
+ * float-ulp overshoot at an edge, never a real cut. */
+const EDGE_EPS = 1e-9;
+
 export interface KeptSpan {
   srcIn: number;
   srcOut: number;
@@ -45,16 +49,24 @@ export class TimeMap {
     this.outputDuration = out;
   }
 
-  /** Output time for a source instant, or null when the instant was cut. */
-  toOutput(tSrc: number): number | null {
-    // Exact containment first — a tolerance must never steal an instant that
-    // exactly belongs to another span (removed segments can be arbitrarily short).
+  /**
+   * The kept span a source instant belongs to, in `toOutput`'s order:
+   * exact containment first (a tolerance must never steal an instant that
+   * exactly belongs to another span — removed segments can be arbitrarily
+   * short); then the nearest span within `EDGE_EPS` (float-ulp overshoot at
+   * an edge); then, for an instant inside a removed region, the next kept
+   * span, where `toOutputClamped` and so `mapWord` clamp a clipped word's
+   * start. Null past the last span.
+   *
+   * One lookup for `toOutput` and the editor's When row floor
+   * (graphic-editor-modal §5, `keptSpanStartOf`), so the span a word is
+   * timed in and the span its timing pin is floored at cannot disagree at
+   * an edge.
+   */
+  spanOf(tSrc: number): KeptSpan | null {
     for (const sp of this.spans) {
-      if (tSrc >= sp.srcIn && tSrc <= sp.srcOut) return sp.outIn + (tSrc - sp.srcIn);
+      if (tSrc >= sp.srcIn && tSrc <= sp.srcOut) return sp;
     }
-    // Then tolerate float-ulp overshoot at edges: clamp into the nearest span
-    // only when the instant is within EPS of it.
-    const EPS = 1e-9;
     let best: KeptSpan | null = null;
     let bestDist = Infinity;
     for (const sp of this.spans) {
@@ -64,11 +76,22 @@ export class TimeMap {
         best = sp;
       }
     }
-    if (best && bestDist <= EPS) {
-      const clamped = Math.min(Math.max(tSrc, best.srcIn), best.srcOut);
-      return best.outIn + (clamped - best.srcIn);
-    }
-    return null;
+    if (best && bestDist <= EDGE_EPS) return best;
+    return this.spans.find((sp) => sp.srcIn > tSrc) ?? null;
+  }
+
+  /** Output time for a source instant, or null when the instant was cut. */
+  toOutput(tSrc: number): number | null {
+    const sp = this.spanOf(tSrc);
+    // `spanOf`'s next-span step is for instants in a removed region, which
+    // are cut here: only a span the instant is in, or within EPS of, maps.
+    if (sp === null) return null;
+    // The distance as `spanOf` measures it, not shifted edges (`srcIn - EPS`
+    // rounds differently), so the EPS boundary is exactly where it was.
+    const dist = tSrc < sp.srcIn ? sp.srcIn - tSrc : tSrc > sp.srcOut ? tSrc - sp.srcOut : 0;
+    if (dist > EDGE_EPS) return null;
+    const clamped = Math.min(Math.max(tSrc, sp.srcIn), sp.srcOut);
+    return sp.outIn + (clamped - sp.srcIn);
   }
 
   /**

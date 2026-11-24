@@ -1,0 +1,21 @@
+{
+  "id": "s1",
+  "idea": "A crowd of small figures each types one line into a chat box, and one answer pops back to each.",
+  "spokenLine": "Most people use AI very regularly.",
+  "durationSec": 2.73,
+  "versions": [
+    {
+      "n": 1,
+      "result": "ok",
+      "kitVersion": 1,
+      "promptVersion": 1,
+      "said": "Three rows of small figures type into chat boxes; an answer bubble pops back to each.",
+      "idea": "A crowd of small figures each types one line into a chat box, and one answer pops back to each.",
+      "durationSec": 2.73
+    }
+  ],
+  "draft": 1,
+  "nextVersion": 2,
+  "notes": [],
+  "runs": [{ "version": 1, "provider": "claude-cli", "calls": 1, "seconds": 40 }]
+}

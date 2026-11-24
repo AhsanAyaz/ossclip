@@ -307,6 +307,117 @@ describe.skipIf(!hasFfmpeg)("produce --script, end to end with the mock provider
     expect(reportTxt).toContain("placed 3 of 3 (1 lengthened) · skipped 0 · reported 0");
   }, 120_000);
 
+  it("an editor-added graphic is a cue on a script run and is no cue's outcome (editor-added-graphics §2)", async () => {
+    // An added card over "to show you" (8-10), words no cue's line names.
+    // The cue report answers for the script's own cues only: the same
+    // outcome for each, whatever assembly does to their times.
+    const root = join(dir, "wd-script-added");
+    const scriptPath = join(dir, "script", "added.script.md");
+    writeFileSync(
+      scriptPath,
+      [
+        "🎬 Title card: welcome back",
+        "🗣️ Hello everyone, welcome back.",
+        "",
+        "🎬 [StatCard] One number: the clean edit",
+        "🗣️ This raw take becomes a clean edit automatically.",
+        "",
+      ].join("\n"),
+    );
+    await run(root, scriptPath);
+    const work = workdirOf(root);
+    const reportOf = () =>
+      (JSON.parse(readFileSync(join(work, "script-report.json"), "utf8")).outcomes as {
+        cueId: string;
+        status: string;
+        component?: string;
+      }[]).map((o) => [o.cueId, o.status, o.component]);
+    const before = reportOf();
+    expect(before.map((o) => o[1])).toEqual(["placed", "placed"]);
+
+    writeFileSync(
+      join(work, "overrides.json"),
+      JSON.stringify({
+        addedScenes: [
+          { id: "added-1", component: "TitleCard", props: { title: "Something cool" }, srcStart: 6.7278, srcEnd: 7.8954 },
+        ],
+      }),
+    );
+    await run(root, scriptPath);
+    const props = JSON.parse(readFileSync(join(work, "render-props.json"), "utf8"));
+    expect((props.baseSceneCues as { id: string }[]).some((c) => c.id === "added-1")).toBe(true);
+    expect("addedSceneIssues" in props).toBe(false);
+    expect(reportOf()).toEqual(before);
+  }, 240_000);
+
+  it("16:9 script: an editor-added graphic gets the same layout on the planning run and on the Render replay", async () => {
+    // The script placement runs only with --script, which the Render strips;
+    // a plan scene keeps its rect through production.json, but an added one
+    // is rebuilt from the doc on every run (editor-added-graphics §2). So
+    // the placement must leave it alone, or the cue the editor showed after
+    // the planning run is not the one Render draws.
+    const root = join(dir, "wd-script-added-16x9");
+    const scriptPath = join(dir, "script", "added-16x9.script.md");
+    writeFileSync(
+      scriptPath,
+      [
+        "🎬 Title card: welcome back",
+        "🗣️ Hello everyone, welcome back.",
+        "",
+        "🎬 [StatCard] One number: the clean edit",
+        "🗣️ This raw take becomes a clean edit automatically.",
+        "",
+      ].join("\n"),
+    );
+    setReplayArgv(["produce", "take.mp4", "--script", scriptPath, "--aspect", "16:9"]);
+    await run(root, scriptPath, { aspect: "16:9" });
+    const work = workdirOf(root);
+    writeFileSync(
+      join(work, "overrides.json"),
+      JSON.stringify({
+        addedScenes: [
+          { id: "added-1", component: "TitleCard", props: { title: "Something cool" }, srcStart: 6.7278, srcEnd: 7.8954 },
+        ],
+      }),
+    );
+    type Placed = { id: string; layout: string; graphicRect?: unknown };
+    const addedCue = () => {
+      const cue = (JSON.parse(readFileSync(join(work, "render-props.json"), "utf8")).baseSceneCues as Placed[]).find(
+        (c) => c.id === "added-1",
+      );
+      return cue ? { layout: cue.layout, graphicRect: cue.graphicRect ?? null } : undefined;
+    };
+    await run(root, scriptPath, { aspect: "16:9" });
+    const planned = addedCue();
+    // TitleCard's default `pip-bubble`, through the ordinary landscape remap
+    // only — which keeps a backdrop in a script project (§163) — and no rect.
+    expect(planned).toEqual({ layout: "pip-bubble", graphicRect: null });
+
+    const scenesPath = join(work, REVIEWED_SCENES_BASENAME);
+    writeFileSync(scenesPath, reviewedScenesText(readFileSync(join(work, "production.json"), "utf8"))!);
+    const prior = process.env.OSSCLIP_REPLAY_WORKDIR;
+    process.env.OSSCLIP_REPLAY_WORKDIR = work;
+    try {
+      await produce(join(dir, "take.mp4"), {
+        cleanup: "standard",
+        libraryDir,
+        render: false,
+        mezzanine: false,
+        youtube: false,
+        confirmRepairs: false,
+        transcript: join(dir, "transcript.json"),
+        workdir: root,
+        provider: "mock",
+        aspect: "16:9",
+        scenes: scenesPath,
+      });
+    } finally {
+      if (prior === undefined) delete process.env.OSSCLIP_REPLAY_WORKDIR;
+      else process.env.OSSCLIP_REPLAY_WORKDIR = prior;
+    }
+    expect(addedCue()).toEqual(planned);
+  }, 360_000);
+
   it("G6: without --script, no script code runs and nothing script-shaped is written", async () => {
     const root = join(dir, "wd-plain");
     await run(root);

@@ -7,6 +7,7 @@ import { generateScenes } from "../src/producer/scene-props";
 import type { Transcript } from "../src/schema";
 import type { SceneComponentId } from "../src/scene-schema";
 import {
+  BulletListProps,
   ChatMockProps,
   FlowDiagramProps,
   REVEAL_PROP_KEYS,
@@ -30,6 +31,8 @@ const VALID = {
   ChatMock: { messages: [{ from: "user", text: "hi" }] },
   TerminalMock: { windows: [{ title: "t", lines: ["$ run"] }] },
   StrikethroughReveal: { lines: [{ text: "NOT THIS", struck: true }] },
+  // Joined the reveal system in graphic-editor-modal §1.
+  BulletList: { items: ["A", "B"] },
 } as const;
 
 const SCHEMAS = {
@@ -37,9 +40,10 @@ const SCHEMAS = {
   ChatMock: ChatMockProps,
   TerminalMock: TerminalMockProps,
   StrikethroughReveal: StrikethroughRevealProps,
+  BulletList: BulletListProps,
 } as const;
 
-describe("reveal props on the four item-revealing components", () => {
+describe("reveal props on the item-revealing components (FlowDiagram, ChatMock, TerminalMock, StrikethroughReveal, BulletList)", () => {
   for (const [id, schema] of Object.entries(SCHEMAS)) {
     const valid = VALID[id as keyof typeof VALID];
 
@@ -91,6 +95,7 @@ describe("llmPropsSchema", () => {
     ["ChatMock", "messages"],
     ["TerminalMock", "windows"],
     ["StrikethroughReveal", "lines"],
+    ["BulletList", "items"],
   ] as const) {
     it(`hides the reveal props of ${id} from the LLM but keeps its content props`, () => {
       const text = JSON.stringify(z.toJSONSchema(llmPropsSchema(id)));

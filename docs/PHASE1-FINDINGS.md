@@ -930,6 +930,8 @@ A failure is now never cached; only a completed pass is. Verified on the real wo
 
 Selecting a scene drew the blue dashed box with resize handles, but the only MOVE surface was an invisible 10px strip along the top edge — dragging the boundary the selection visibly draws did nothing. Now every edge of the boundary is a move grip with the move cursor; the body stays click-through on purpose (element selection inside the box depends on it). The audit for the same gap found one more: the PiP bubble had numeric x/y (R14 §52) but no direct manipulation — dragging it panned the video INSIDE the bubble. Plain drag now moves the BUBBLE (with the move cursor announcing it); ⌥-drag keeps the framing pan, consistent with ⌥ meaning "pan" everywhere else on this stage. Both drags coalesce to one undo step, like every other gesture.
 
+**Correction (2026-11-20).** The ⌥-drag framing pan never worked. The stage's mousedown listener returns on ⌥ before it reaches the pip branch, because ⌥-drag is the view pan (§55b), so in a pip scene nothing on the stage could pan the framing. Even the Inspector's `dx`/`dy`, which did reach the render, only slid the already-cropped picture inside the bubble's mask: the backdrop showed through, and which part of the camera frame the bubble showed never changed. Now **Shift-drag** on the bubble pans the picture inside it (plain drag still moves the bubble), and under `pip-bubble` the same stored `video.dx/dy` are read as a crop window (`pipPanFor`, stage.ts). The pan first moves `object-position` across the cover excess, then becomes a translate held so the footage always covers the bubble. The picture follows the pan pixel for pixel until it reaches the footage's edge, then stops. With a portrait take in the portrait bubble there is no excess sideways, so a horizontal pan needs a zoom above 1. A user scale below 1 keeps the old translate, because it already shows backdrop on purpose. Every other layout is unchanged.
+
 # Round 22 — launch execution (2026-07-29)
 
 ## 108. The repo shipped its assets, its name and its package metadata
@@ -1975,3 +1977,232 @@ Whisper closed the flubbed line with a period, so the marker was a sentence of i
 *   The later take is kept. The editor can restore the cut; it cannot swap the takes.
 *   The first `--script` run of an existing project after this change plans again (one LLM call), because the plan cache is keyed on the kept words.
 *   `report.txt` prints the section only when the cutlist honoured the cuts. The older "retakes collapsed" block has no such gate; that is unchanged.
+
+## 167. An LLM draws a shot as React code: Phase A of the storyboard, and its gate (2026-11-20)
+
+**Why it exists.** A script run places clips the author made elsewhere, and pattern components cover the shots that repeat. A shot that fits no pattern (a character acting a line out) was still drawn by hand in a chat. Design: `docs/designs/storyboard-drawn-scenes.md`. Phase A builds one thing: `ossclip draw` (experimental) asks an LLM for one React scene file from a one-sentence idea, checks it, renders three stills and a small preview, and redraws it from a typed note. No planner and no editor panel yet.
+
+**The pieces.**
+
+*   **Static check** (`packages/core/src/draw/static-check.ts`, pure). An allow-list: imports (`react`, `@ossclip/scenes/draw`, eight names from `remotion`), JSX elements (`div`, `span`, SVG drawing elements, kit parts, components declared in the file), and a list of rejected names and URL-like strings. `url(#id)` is allowed, because gradients, clips and masks need it and a fragment cannot load anything.
+*   **Drawing kit** (`@ossclip/scenes/draw`): time, theme, frame size and safe area as hooks; the seconds-based motion helpers; theme-reading wrappers of the shared parts; `Asset` for the author's images. The safe area is `{x, y, width, height}`, not left/top/right/bottom, because `top` is a rejected name.
+*   **Type check** (`apps/cli/src/draw/typecheck.ts`): the one scene file against the kit's source. About 1 s.
+*   **Render** (`packages/renderer/src/drawn/`): one bundle per scene version, stills, a quarter-size preview, a ProRes 4444 clip.
+*   **Draw call** (`packages/core/src/draw/`): prompt, two worked examples, at most two repairs, redraw from notes.
+*   **Files** under `<workdir>/storyboard/<shot>/`: `v<n>.tsx`, stills, preview, `history.json`.
+
+**Facts found while building.**
+
+*   **A scene file outside the repository renders through a bundle** when the bundle's resolve rule points at the renderer's own modules and aliases the kit. So each version gets its own bundle, and one bad scene cannot affect another.
+*   **The editor server trusts every loopback origin, and the render page is one.** Without a guard, drawn code could call the editor's write endpoints. The guard is a content security policy written into the bundle's `index.html`: a scene's `fetch`, `<img>`, `new Image()` and CSS `url()` reached a probe server 4 times without it and 0 times with it. Remotion's browser options offer no switch for this.
+*   **The static check is a filter, not a sandbox.** A name built from string pieces (`[]["con"+"structor"]`) passes it. The policy is the guard; the filter keeps honest code inside the rules and gives the LLM a line number to repair.
+*   **Remotion's own timeout is not a time limit.** With 15 s set, a scene stuck in a loop was given up on after 27.7 s. The still render now opens the browser itself, runs its own timer per step and closes the browser when it fires.
+*   **A preview's background must go into the props the composition is selected with.** Passed only to the render call, the preview came out black.
+*   **The first render of a worked example found a fault no check had:** the goldfish's tail was cut at the edge of its viewBox. The examples were only checked as text until then.
+*   **The browser tests do not run in CI.** They need the headless browser and ffmpeg, so the network block is proven on the author's machine only.
+
+**The gate.** The design said: draw five shots that fit no pattern; the rest is built only if three are usable after at most two notes each. The shots came from the author's next video (a 68-second vertical short), with the plugin's logo as the only asset.
+
+| Shot | Idea (short) | Calls | Draw | Checks | Author's verdict |
+|---|---|---|---|---|---|
+| self-grading | a robot stamps A+ on its own exam | 1 | 257 s | 9 s | usable at first draft |
+| elephant-draft | an elephant writes a plan, three thought bubbles | 1 | 207 s | 17 s | usable at first draft |
+| goldfish-review | three goldfish inspect a document with magnifiers | 1 | 180 s | 10 s | usable at first draft |
+| writer-not-reviewer | elephant "writes", goldfish "reviews", a line between | 1 | 108 s | 13 s | usable at first draft |
+| plugin-open | a box opens and the logo rises out | 1 | 159 s | 8 s | not judged yet |
+
+*   Provider: the Claude command line, its default model for the editorial tier. No other provider was tried, so which providers can return a whole scene is still unknown.
+*   All five passed every check on the first reply: no repair call, no note. **The gate passed at four of four judged**, against a bar of three of five after notes.
+*   Per version: type check 1.0 to 1.3 s, bundle 5 to 6 s, three stills 1.4 to 1.6 s, preview 6 to 12 s. The LLM's writing is 92% to 97% of the time.
+*   Notes and redraw were not needed, so they are tested only with the mock provider.
+
+**Limits.**
+
+*   One video, one subject, one provider, five shots. The subject (an elephant, goldfish, a robot) is easy to draw from simple shapes.
+*   The author judged stills and small previews, not clips in the video.
+*   The LLM drew blind: it never saw its own frames. Two small faults passed for that reason: a dashed line that does not show in a still, and fish that cover part of the document's text.
+*   Drawings sit left of centre in a vertical frame, because the kit's safe area keeps the right side free for platform buttons. The author chose to keep this.
+*   An asset that takes its colours from CSS variables has none as an image file; the logo's colours were filled in by hand.
+*   A changed asset does not reach existing stills: only a draw renders stills, and a draw is an LLM call. Phase B's approval renders without one.
+*   The type check needs React's types at run time. That was run only inside this repository, not from a packed install.
+
+## 168. The storyboard's plan table: Phase B1, and its first real run (2026-11-20)
+
+**What was built.** `ossclip produce <input> --storyboard [--assets <dir>] [--intent <text>]` cuts the video, asks an LLM once for a list of shots, stores the list in `storyboard.json` and stops at the editor. The editor has a Storyboard panel for a project that has that file: drop, restore, reword, move a shot to the transcript selection, add a shot from the selection, and plan again. Nothing is drawn in this phase.
+
+**Facts found while building.**
+
+*   **A shot is anchored to transcript word indices, and the editor selects caption words.** A caption word keeps the source start of the transcript word it was built from, so the panel maps a selection back by matching starts within 1 ms. A selection that holds a word made by a caption rewrite is refused whole, not guessed.
+*   **The transcript clears its selection on any click outside it**, and the Storyboard button is outside it. The app keeps the last selection that was not empty.
+*   **"Plan again" plans on the cut as edited in the editor**, not on the automatic cut. Shots the author reworded, added or drew are kept and block their spans.
+*   **Edits are refused while "Plan again" runs.** The plan saves the table it loaded plus the merge, so an edit saved during the call would be overwritten.
+*   **An eleventh top-bar control made the save status wrap at 1280 px.** The bar grew 14 px while an element was being dragged, the stage shrank, and the element landed short of the pointer. Top-bar buttons and the status no longer wrap; the workdir label shortens instead.
+*   **The e2e browser now runs without an audio device.** After the one spec that plays media, WSLg's PulseAudio server stops answering for a while. The next page's `new AudioContext()` (Remotion makes one at Player mount) then blocked the page thread for 20 s per call, and the next test timed out at "Loading production". Attaching a debugger before the block made it disappear, so it was found with a wrapper around the constructor. This is a fault of the test machine, not of the editor.
+*   **Remotion's still render closes its page without waiting when a scene throws.** Closing the browser at the same moment gave an unhandled "Target closed" error under load. The drawn-still render now waits for the page to close first.
+
+**The first real run.** The author's next video: a 68-second vertical short, 227 words, with the plugin's logo as the only asset.
+
+| Measure | Value |
+|---|---|
+| Provider | the Claude command line |
+| LLM time, transcript repair and plan together | 31 s |
+| Whole run | 46 s |
+| Shots planned | 5 |
+| Video covered by shots | 37 s of 68 s (55%; the limit is 60%) |
+| Shots changed by the limits | 4, each moved 2 to 4 words later because it touched the shot before it |
+| Shots the author kept / reworded / dropped / added | 5 / 0 / 0 / 0 |
+
+*   **The planner put the shots back to back.** The gaps are 0.1 to 0.3 s, so the speaker is hidden from 12.9 s to 51.1 s. The author accepted this plan. Whether it holds for a longer video is not known.
+*   **Four of five shots touched their neighbour** in the planner's reply. The limits repaired it, but the prompt does not yet say that a shot must end before the next one starts.
+*   **A storyboard run no longer matches library overlays.** The author's library matched "Google" and popped a logo over the plan on this run. Overlays added in the editor still apply.
+*   **"Plan again" in the editor uses the machine's default provider.** `ossclip edit` has no flag to choose one, so on the author's machine it is not the provider the first plan used.
+
+**Limits.**
+
+*   One video and one provider. The table was judged by reading it; no shot from it is drawn yet.
+*   "Plan again" has run only with a stand-in provider.
+*   The editor's clock counts a word as kept if its start, middle or end is kept; the server's counts the middle only. A word on a cut edge can differ between the two.
+
+## 170. Adding a template graphic from the editor (2026-11-21)
+
+**What.** The author selects words in the transcript, presses **Graphic…**, picks one of 11 template types, types its text and presses Add. The entry is stored in `overrides.json` `addedScenes` (design: `docs/designs/editor-added-graphics.md`). Produce converts every entry into a `Scene` on every run kind, so Render, a storyboard sync run and a re-plan all keep it.
+
+**Real run.** On a copy of the author's EGM short (four approved storyboard shots), one TitleCard entry over the opening words was rendered through the editor's Render. The cue landed at 0–1.7 s in `pip-bubble` with the author's title, no `addedSceneIssues`, and the frame at 1.0 s shows the card over the speaker bubble. The first 1.7 s of source were a cleanup cut, so the card started at the first kept word, as a plan graphic would.
+
+**Decisions worth keeping.**
+
+*   **The doc is the only source.** Produce drops every `added-` scene from the scene list before it appends the doc's entries, because the Render replay reads `scenes-reviewed.json`, which holds the last run's scenes. Without the drop, a deleted graphic came back on the next Render.
+*   **Placed on their own words.** Added scenes go through their own `assembleScenes` call. In one shared call, a hidden plan scene or a plan block's unpinned window pushed an added graphic off its words on Render while the preview showed it in place (final review I1).
+*   **Give way, never push.** After overrides and the hidden drop, `dropOverlappingAdded` drops an added cue that overlaps a visible plan graphic and reports it in `render-props.json` `addedSceneIssues`. The editor runs the same function, so preview and Render agree. A storyboard shot approved over an added graphic's words therefore wins, and the added graphic appears in the Inspector's not-shown list with Remove.
+*   **Loose schema.** `addedScenes` entries are validated one by one at conversion, not by `OverrideDocSchema`, so a stale entry cannot make `overrides.json` fail to parse for every reader.
+*   **Raw props check.** Conversion parses props with the component's schema directly, without registry defaults; the add form's Add button uses the same check, so a graphic Add accepts is never skipped later.
+*   **Ids never reused.** The mint skips ids in the doc, in `baseSceneCues` and in `addedSceneIssues`; a reused id would preview a stale cue or inherit an old reason.
+
+**Limits.**
+
+*   A build without this feature strips `addedScenes` on its next produce run (a plain `z.object` drops unknown keys, and produce writes `overrides.json`).
+*   Adding a graphic splits a plain take and renumbers later takes of that clip, so a framing edit on a later take can move to a neighbour. A storyboard approve already does this.
+*   With no clock (no kept spans), the add-time overlap check uses the words' own span without the duration floor.
+*   `TerminalMock` and `ScreenshotFrame` are not offered in the picker.
+*   When one half of a split added graphic is covered, the not-shown list names the whole entry.
+
+## 171. The graphic editor: list items that land on their words (2026-11-22)
+
+**What.** A bullet list (and a flow, strikethrough, chat or card row) brings each item in when its word is spoken. Design: `docs/designs/graphic-editor-modal.md`. Two parts:
+
+*   **BulletList joined the reveal system.** It used a fixed 7-frame stagger and had no `revealItemTexts` case, so the matcher never timed its items (the author's screenshot: three bullets within half a second). New plans time them on their words. Two guards keep every stored BulletList on the old stagger (AG1): `plannedCue` emits `reveal` only with `itemWords`, and a swap to BulletList returns no `reveal`.
+*   **The graphic editor modal** replaces the add popover and opens from the Inspector ("Edit text & timing…"). Per item: pinned (the author chose the word), auto (matched from the item's text on every resolve), or unplaced. Pins are stored as `scenes[id].itemPins` in source seconds with the item's text; the start is the existing timing pin.
+
+**Decisions worth keeping.**
+
+*   **One resolve, one clock, one shape.** `resolveItemTimings` runs on the live clock in both pipelines, with roots built from the unsplit cues after the first `applyOverrides` and the resolve after the last. Resolving before the split (draft 4) let a split half with its own component swap inherit a `reveal` the editor never gave it; produce now has the editor's shape. A pure parity harness (`apps/editor/test/item-timing-parity.test.ts`) runs both orderings, including under a veto.
+*   **This reverses reveal-timing §7** ("edits do not re-run the matcher") for graphics with the `itemPins` marker only.
+*   **Block window from stored source data** (timing pin by form, added entry span, anchor words), never from a cue's output times: output limits such as `minScene`, the 15 s cap and seams differ between clocks.
+*   **The modal shows what renders.** An unedited plan graphic's rows come from its baked `itemAtSec`; estimates come from the renderer's own `revealFrames`.
+
+**Real run.** On a copy of the author's EGM short, a bullet list over "biggest issues with AI … they forget the context" was added through the modal with item 2 pinned to "context", saved and rendered. render-props: `itemAtSec [null, 7.72]`, `reveal: synced`. Frames: at 7.4 s ("they forget the") only "Hallucination" shows; at 7.9 s ("context") "Forgetting context" has entered. Item 1 matched no word and was placed by the renderer from the block start.
+
+**Bugs found on the way.**
+
+*   **Clip-edge word list off by one.** A split repair straddling a `--clip` start made produce's `transcript.words` one word shorter than the server's replayed list, so every anchor index (and the sound-effect lane) was one word off. `captionWordsDiffer` now compares word stamps too, so produce records its own list. Workdirs produced before the fix keep the shifted list until their next produce run. The comment at `packages/core/src/added-scenes.ts:31-33` saying the two index spaces differ on `--clip` is stale.
+*   **Right-edge drag at the cut's start did nothing.** `pinTiming` rounded a pin edge to the millisecond into the removed head (first kept span at source 1.69919 s → 1.699), and the pin was dropped as inert. Edges now round toward kept material. `splits[].src` (⌘B) and `cuts[].src` round the same way and are not fixed.
+*   **Backward shift-click collapsed the transcript selection to one word** (real mouse only: the native selection made by the shift-click was converted as a drag, then the click moved the focus onto the anchor). Found in the real run below.
+*   **The author's false overlap refusal** (a later selection refused as overlapping an early bullet list) was not reproduced; regression tests cover the reported sequence.
+
+**Limits.**
+
+*   The matcher's light stemming does not join "Hallucination" to the spoken "hallucinate", so that item shows unplaced until pinned.
+*   Edit shows the add form's fields only: a planner bullet list's `title` and a ChatMock `keyword` are not editable in the modal; a ChatMock with a keyword offers no add or delete.
+*   Clearing an optional field on a plan graphic brings back the planner's value.
+*   Older builds strip `itemPins` when they save.
+*   Editor tests are not typechecked by `pnpm typecheck` (the editor tsconfig includes `src` only); the full suite needs `--maxWorkers=2` on a 7 GB machine.
+
+## 172. Split take pieces keep their own framing (2026-11-23)
+
+**Field report.** After ⌘B on a take, reframing one piece sometimes moved another, and a framing set earlier sometimes vanished or landed on other footage after a re-render. The FE Loop short (published 2026-11-22) shipped with output 58.5–60.8 s at 1× although the author had framed it at 2.2×.
+
+**Causes** (design: `docs/designs/take-framing-identity.md`, seven review rounds):
+
+*   A split half is keyed `${root}@${splitId}`, and plain take roots are ordinals of the take clip starts. A cut in front renamed the half and orphaned its edit (`take-2@66055` became `take-3@66055`).
+*   A half inherited its root's `video`/`pip` field by field (R16 §68), so reframing the first piece moved every piece without its own value.
+*   The editor numbered takes from span starts only; produce also counts kept/dismissed cleanup edges. With a baked veto the two disagreed (FE Loop: produce's `take-10` starts at 161.291, the editor's did not).
+*   A src-anchored split's `at` was never refreshed, so the editor split 0.317 s away from the render.
+
+**Fix.**
+
+*   Produce writes `takeClipStarts` into render-props; the editor numbers takes from it (`editorTakeClipStarts`), falling back to span starts for older render-props.
+*   ⌘B on a plain take copies the target's own framing into the new half and flags the split `ownFraming`; a flagged take half no longer inherits `video`/`pip`.
+*   Produce re-keys take-half entries to the root their split actually landed in (`splitCuesWithLanding` → `rekeyTakeHalves`), materializes legacy take splits' framing and flags them (output unchanged), and refreshes a landed take split's `at` unless the old or new point lies in a graphic window.
+
+**Field check** on a copy of FE Loop (`~/ossclip-work/fe-loop/work-framing-test`, `produce --no-render`):
+
+*   notes: `split 66055 now owns its framing`, `edit for take-2@66055 re-keyed to take-3@66055 — its split now falls in take-3`, `split 66055 moved to 58.467s on this cut`; no dropped or parked lines;
+*   `take-3@66055` (58.467–60.764) resolves to `{scale 2.2, dx -664.8}`; `take-2` (17.95–21.716) unchanged at `{scale 2.2, dx 814.4}`;
+*   splits 20752, 24518, 167648, 176577 untouched; `takeClipStarts` includes 161.291 and `take-10` starts there.
+
+**Limits** (phase 2, `docs/designs/take-framing-phase-2.md`):
+
+*   A framed whole take (not a half) still drifts after a cut in front — phase 2 R1–R4 (source-span re-key).
+*   Graphic splits still render at a stale `at` after a cut in front (produce's first pass uses `atSplitPoints`); skipped and inert splits can still preview differently in the editor; graphic halves still inherit framing. All three change output in more cases than the bug and are left for the author.
+*   An older build strips `ownFraming` and `takeClipStarts`.
+
+## 173. Take looks attached to source time (2026-11-23)
+
+**Why.** ossclip derives takes each run as the gaps graphics leave and names them by position (`take-2`, `take-2-1`, `take-2@split`). A take's look (`video`, `pip`, `layout`, `captionY`, `captionScale`) was keyed by that name, so a cut in front, a graphic change or a kept cleanup range renumbered takes and moved or dropped their looks (§172 patched only split halves; phase-2 re-keying drafts kept finding new identity cases). The author's direction: attach looks to footage, the way NLE clips carry their effects. Design: `docs/designs/take-looks-by-source.md` (six review rounds).
+
+**What.**
+
+*   `doc.takeLooks`: source-time ranges with a look. Every plain take piece shows the look with the largest source overlap; on migrated docs that is the only source of those five fields on takes.
+*   Produce migrates a legacy doc once (marker: `takeLooks` present), on the current run's pieces, after phase 1's half re-key: each piece's id-keyed values become a look on its footage; the take keys are stripped. Output identical.
+*   The editor in look mode addresses a piece by its source extent (carved lead and tail no longer collide), writes looks over the piece's hull, and refuses id-keyed look writes. Legacy docs behave exactly as before.
+
+**Field check** (`~/ossclip-work/fe-loop/looks-field-check.sh`, copy `work-looks-test`, `--no-render`), 0 failures:
+
+*   run 1: phase-1 notes, `moved the look of 2 take piece(s) onto source time`; `takeLooks` = `[20.752, 24.518] → {scale 2.2, dx 814.4}`, `[66.055, 68.353] → {scale 2.2, dx -664.8}`; every other take's `video` unchanged; the 58.467 s piece framed;
+*   run 2 after a 2 s source cut in `take-0`: takes renumber (`take-3@66055` becomes `take-4@66055`), and both framings stay on their footage, at 15.950 s and 56.467 s; no migration note; no dropped or parked lines.
+*   Headless browser: the Inspector shows `take-4@66055` at 2.2× / dx −664.8; setting zoom 1.5 on `take-5` and saving wrote `takeLooks [71.006, 81.061] → {scale 1.5}` and no id key.
+
+**Limits.**
+
+*   A piece spanning two looks shows the larger one (after deleting a graphic between differently-looked pieces, or a cut joining them); ⌘B separates them.
+*   Material restored at a piece's edge shows the look it had before it was cut.
+*   Existing drift is frozen, not repaired, at migration.
+*   An older build drops `takeLooks`; with the take fields already stripped, takes render unframed after a downgrade.
+*   `scale`, `dx` and `dy` are one undo/coalesce unit.
+*   Still deferred: graphic splits render at a stale `at` after a cut in front; editor parity for skipped and inert splits (FE Loop 20752 still previews as a piece); graphic halves owning their speaker inset framing.
+
+## 174. Each split cuts once, in one place (2026-11-24)
+
+**Why.** A ⌘B split stores `{at, src}`. `at` (output time) went stale after any cut in front, because only legacy splits were re-anchored. Produce's pass 1 cut graphics at that stale `at`, and pass 2 then cut the same split again at `toOutput(src)`: a drifted split was cut twice, and today's code even made two cues named `shot-s1@fc2`. The editor's take pass also used `at`, so it showed splits the render skips (FE Loop 20752). Design: `docs/designs/split-positions-by-source.md` (eight review rounds; the exact-preservation route was abandoned for this simpler one, with the author accepting a one-time change).
+
+**What.**
+
+*   `at` follows cuts for every split (three branches: `src` cut → `at` kept; `src` restored → `at = toOutput(src)`; else remapped).
+*   Pass 1 skips splits whose `src` is cut; a landing counts only if a piece of the host survives the hidden and overlap drops; pass 2 takes only the splits that did not land.
+*   After both passes, each split's two anchors are reconciled to where it cut (a graphic split gets `src` from `at`; a take split gets `at` from its source point, never into a graphic window). Phase 1's step 7 is gone.
+*   The editor follows the same rules on the last render's clock; `finishOnClock` also drops hidden halves.
+
+**Field check** (`~/ossclip-work/fe-loop/splits-field-check.sh`, copy `work-splits-test`), 0 failures:
+
+*   run 1 with splits fc1 `{14.015, 16.5}` and drifted fc2 `{16.0, 14.0}` in `shot-s1`: `shot-s1` [10.085, 14.015], `@fc1` [14.015, 16.000], exactly one `@fc2` [16.000, 17.950]; notes `split fc2 cuts only shot-s1 now (it used to cut shot-s1 too)` and `split 66055 anchors reconciled`; fc2 `src` 18.485, 66055 `at` 58.467;
+*   run 2 with no edit: `overrides.json` byte-identical, same cues, no notes;
+*   run 3 after a 2 s source cut in front: fc1 `at` 12.015, fc2 `at` 14.000, cues there;
+*   headless editor: all 18 Timeline blocks match render-props ids and starts; no `@20752` block.
+*   `looks-field-check.sh` still passes, updated for reconciliation and for the author's own `take-3` framing (2.104× / dx 687.2, set 2026-11-23), which migrated onto source 29.304–66.055.
+
+**Usage context** (PostHog, project OSSClip): of 500 first runs since 2026-08-11, 293 came from CI and about 150 from the author's machines. Over the last 30 days, about 12 outside installs ran `produce`, rendering roughly 90 videos. That is why a one-time output change was accepted and this ships as 0.2.0.
+
+**Release note (0.2.0).** Splits and take looks now follow source time. The first render of an existing project can change once, and every change is named in the log:
+
+*   a drifted graphic split is cut once instead of twice;
+*   a take split whose old position sat inside a graphic stops splitting its take;
+*   take looks move onto source ranges;
+*   split anchors are reconciled.
+
+Older ossclip versions cannot read migrated projects (`takeLooks`, split anchors).
+
+**Limits.**
+
+*   `reclampPinnedTiming` is produce-only, as before.
+*   A user cut made live but not yet rendered previews on the old clock.
+*   Ghosts of hidden take halves still use `at`, so they can sit at a slightly wrong window before the first upgraded render.

@@ -23,10 +23,16 @@ import {
   analyze,
   applyOverrides,
   applyRepairs,
+  applyTakeLooks,
   captionWordsDiffer,
   saveConfigPatch,
   isParkedOverrideKey,
+  isPlainTakeKey,
   parkedOverrideBaseKey,
+  rekeyTakeHalves,
+  reconcileSplitAnchors,
+  migrateTakeLooks,
+  ownFramingSplitIds,
   remapSceneOverrides,
   assembleScenes,
   buildCaptionLines,
@@ -67,6 +73,9 @@ import {
   detectSilences,
   dropHiddenCues,
   splitThenDropHidden,
+  pass1SplitPoints,
+  survivingLandings,
+  doubleCutNotes,
   emptyOverrideDoc,
   type OverrideDoc,
   extractAudio,
@@ -75,7 +84,7 @@ import {
   createOpenAiCompatibleProvider,
   openaiTranscriptionsUrl,
   fillPlainCues,
-  splitCues,
+  splitCuesWithLanding,
   landscapeLayoutFor,
   landscapeLayoutAfterRouting,
   scriptLandscapePlacement,
@@ -120,6 +129,8 @@ import {
   carveKeptTakes,
   resolveSplitPoints,
   resolveSrcTimingPins,
+  itemTimingRoots,
+  resolveItemTimings,
   applyUserCuts,
   pruneHidesInsideCuts,
   loadConfig,
@@ -291,6 +302,17 @@ import {
   type ResolvedScriptClip,
   type ScriptCue,
   type SkippedCue,
+  // Approved storyboard shots as clip scenes, and their production.json
+  // record (§169; storyboard design §8, §9).
+  approvedClipScenes,
+  productionStoryboardOf,
+  type ProductionStoryboard,
+  // Editor-added graphics (editor-added-graphics §2): the doc's entries as
+  // scenes, and the id rule every scene pass below uses to step around them.
+  addedSceneToScene,
+  dropOverlappingAdded,
+  isAddedKey,
+  sceneKeyRoot,
 } from "@ossclip/core";
 import { recordRecentProject } from "./edit";
 import { clipImportLine, importClip } from "./clip-import";
@@ -315,6 +337,7 @@ import {
   scriptRetakesHonoured,
   scriptSourcePath,
   storedScriptFrom,
+  storedStoryboardFrom,
   type CueOutcome,
   type PlannedScriptClip,
 } from "./script-mode";
@@ -360,6 +383,12 @@ import { RenderTimelineHUD, StageAnimator, printProductionCompleteBanner } from 
 import { reconcileCaptionEdits } from "./caption-report";
 import { overridesWriteLine, writeOverrideDoc } from "./overrides-write";
 import { recordedProduceArgs } from "./replay-argv";
+import { assertAssetsDir } from "./storyboard/storyboard-store";
+import {
+  formatStoryboardReport,
+  runStoryboardPlan,
+  storyboardLine,
+} from "./storyboard/storyboard-run";
 import {
   formatOverlayAccounting,
   priorOverlayPlan,
@@ -681,6 +710,24 @@ export function priorScript(work: string): ProductionScript | undefined {
 }
 
 /**
+ * The `storyboard` record the workdir's LAST run wrote, or undefined (§169;
+ * storyboard design §9). `priorScript`'s twin, for a `--scenes` replay: the
+ * editor's Render strips `--storyboard`, so the record it carries forward is
+ * the only thing that says the project's clip scenes are approved shots —
+ * for the §163 backdrop rule (`isScriptProject`) and for `ossclip kit`,
+ * which finds each clip's original through it.
+ */
+export function priorStoryboard(work: string): ProductionStoryboard | undefined {
+  let text: string;
+  try {
+    text = readFileSync(join(work, "production.json"), "utf8");
+  } catch {
+    return undefined;
+  }
+  return storedStoryboardFrom(text);
+}
+
+/**
  * The workdir's `overrides.json`, parsed — or the empty doc when there is
  * none. Hand-editable user data, so an invalid file is refused rather than
  * silently reset. One reader for both callers: the cut application (the
@@ -863,6 +910,13 @@ export interface ProduceOptions {
    * flag's parser; read and validated before any transcription.
    */
   script?: string;
+  /**
+   * `--storyboard` (storyboard design §1, §168): plan a table of drawn shots
+   * in one call, store it in `storyboard.json`, and stop before rendering.
+   */
+  storyboard?: boolean;
+  /** `--assets <dir>`, absolute: the images a storyboard shot may use. Only with `storyboard`. */
+  assets?: string;
   /** Run the producer brain to plan scenes. */
   produce?: boolean;
   intent?: string;
@@ -1771,16 +1825,17 @@ export function configuredBaseTheme(
 
 /**
  * The run's look: a typed `--look` beats the config's `look`, and neither
- * means "default". Unlike the config `theme` (one warning, then the
- * defaults), a bad config look THROWS naming the key (plan Task 1): a look is
+ * means `fallback`: "default", except in a `--storyboard` run, which passes
+ * "explainer" (storyboard design §1; §168). Unlike the config `theme` (one
+ * warning, then the defaults), a bad config look THROWS naming the key (plan Task 1): a look is
  * one deliberate choice, not a palette of independent tokens, and quietly
  * rendering the default look would spend a whole render on the video the
  * user configured away from. The config is only read when the flag is
  * absent, so a broken file key never blocks an explicit `--look`.
  */
-export function resolveLook(flag: Look | undefined, config: unknown): Look {
+export function resolveLook(flag: Look | undefined, config: unknown, fallback: Look = "default"): Look {
   if (flag !== undefined) return flag;
-  if (config === undefined) return "default";
+  if (config === undefined) return fallback;
   const parsed = LookSchema.safeParse(config);
   if (!parsed.success) {
     throw new Error(
@@ -2701,9 +2756,15 @@ export function layoutSlotAspects(frame: {
  * without a produce run.
  */
 export function orphanEditLine(id: string): string {
-  return isParkedOverrideKey(id)
-    ? `  ⚠ edit for ${parkedOverrideBaseKey(id)} is parked — its words are not in this plan`
-    : `  ⚠ edit for ${id} dropped — the plan no longer has that scene`;
+  if (!isParkedOverrideKey(id)) return `  ⚠ edit for ${id} dropped — the plan no longer has that scene`;
+  const base = parkedOverrideBaseKey(id);
+  // A parked TAKE HALF was parked by `rekeyTakeHalves`, not the scene remap
+  // (take-framing-identity P2): its words never left the plan — its split
+  // landed in a piece that already had its own edit. Saying "its words are
+  // not in this plan" would send the author looking for the wrong problem.
+  return base.includes("@") && isPlainTakeKey(base)
+    ? `  ⚠ edit for ${base} is parked — its split moved to a piece that already has an edit`
+    : `  ⚠ edit for ${base} is parked — its words are not in this plan`;
 }
 
 async function preflight(bin: string, hint: string): Promise<void> {
@@ -2872,6 +2933,35 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     throw new Error("--clip-window replays a --clip run's plan — pass --produce or --scenes too.");
   }
 
+  // ---- `--storyboard` (storyboard design §1 "Flags", §168): checked where
+  // and for the reason the script checks below are — every one of these is
+  // the author's to fix, and finding it after transcription costs minutes.
+  // Before them, so `--storyboard --script x` names the conflict rather than
+  // whatever is wrong with x.
+  // Exclusive with `--script` and `--scenes` (each is the whole plan) and
+  // with `--clip` (its window is chosen by the beat-sheet call a storyboard
+  // run never makes). The editor's Render strips `--storyboard` when it pins
+  // `--scenes` (renderReplayArgs).
+  const storyboardRun = opts.storyboard === true;
+  if (storyboardRun) {
+    if (opts.script !== undefined) {
+      throw new Error("--storyboard and --script cannot be combined: each one is the whole plan.");
+    }
+    if (opts.scenes) {
+      throw new Error("--storyboard and --scenes cannot be combined: each one is the whole plan.");
+    }
+    if (opts.clip !== undefined) {
+      throw new Error("--storyboard and --clip cannot be combined: a storyboard plans the whole take.");
+    }
+  }
+  if (opts.assets !== undefined) {
+    if (!storyboardRun) {
+      throw new Error("--assets only means something with --storyboard: they are the images its shots may use.");
+    }
+    // Before the repair pass's LLM call as well as the planner's.
+    assertAssetsDir(opts.assets);
+  }
+
   // ---- `--script` (explainer spec §1.6, §158): read and checked FIRST ------
   // Before the hash, the audio extract and transcription: every error a
   // script can carry on its own — an unreadable file, more than 40 cues, an
@@ -3001,9 +3091,19 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // resolved once and used for BOTH resolveTheme's base and props.baseTheme
   // below — the editor's reset must land on the user's global colors and the
   // run's look, not the factory's.
-  const look = resolveLook(opts.look, cfg.look);
+  // A storyboard run defaults to the explainer look (storyboard design §1,
+  // "What else the run does"); a typed --look or the config's still wins.
+  const look = resolveLook(opts.look, cfg.look, storyboardRun ? "explainer" : "default");
   if (look !== "default") {
-    console.log(`▸ look: ${look}${opts.look === undefined ? " (from config; --look overrides)" : ""}`);
+    console.log(
+      `▸ look: ${look}${
+        opts.look !== undefined
+          ? ""
+          : cfg.look !== undefined
+            ? " (from config; --look overrides)"
+            : " (the storyboard default; --look overrides)"
+      }`,
+    );
   }
   const { theme: configBaseTheme, warning: themeWarning } = configuredBaseTheme(cfg.theme, look);
   if (themeWarning) console.log(themeWarning);
@@ -3083,10 +3183,15 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // read and `scriptRecord`): they must agree on what counts as a replay.
   const scenesPinned = Boolean(opts.scenes);
   const storedScript = scenesPinned ? priorScript(work) : undefined;
+  // A storyboard project counts too (storyboard design §8; §169), by the same
+  // flag-or-stored-record rule, read here for the same reason.
+  const storedStoryboard = scenesPinned ? priorStoryboard(work) : undefined;
   const scriptProject = isScriptProject({
     scriptFlag: scriptRun !== undefined,
     scenesPinned,
     storedScript,
+    storyboardFlag: storyboardRun,
+    storedStoryboard,
   });
   // The script retake pass's cues (§166), from the same read and for the
   // same reason: a replay learns whether its scenes were planned with the
@@ -3916,6 +4021,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   /** The script-plan cache key this run's plan lives under — the `--sfx` call's
    * `beatKey` in script mode, where there is no beat-sheet key. */
   let scriptPlanKey: string | undefined;
+  /** A `--storyboard` run's "storyboard plan:" block for report.txt (§168),
+   * built in the planning branch, where the effective cut's clock exists. */
+  let storyboardReport: string | undefined;
+  /** A `--storyboard` run's production.json record of its approved shots
+   * (§169), built in the planning branch from the same table its clip scenes
+   * come from. Undefined when nothing is approved: no field is written. */
+  let storyboardRunRecord: ProductionStoryboard | undefined;
   /**
    * The `--sfx` plan: the level it was planned at and the placements that
    * survived `normalizeSfxPlan`, stored on production.json and resolved to
@@ -4171,7 +4283,55 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     // plan, and pairing a cached scene list with a different sheet's hook
     // would caption the video with copy for a plan it is not showing.
     const beatCache = join(work, `beatsheet-${hitKey}.json`);
-    if (scriptRun) {
+    if (storyboardRun) {
+      // ---- Storyboard mode (storyboard design §1 step 2, §2; §168) ---------
+      // FIRST, before the script branch and the beat sheet: a storyboard run
+      // makes no beat-sheet, script-plan or scene-props call. Its only scenes
+      // are the shots the author approved in the editor, set below (§169).
+      // Planned on the EFFECTIVE cut, the script branch's (§158): the
+      // automatic cutlist after the author's cleanup vetoes and editor cuts,
+      // by the same functions.
+      const storyboardCutlist = scriptPlanCutlist({
+        words: transcript.words,
+        cutlist,
+        doc: await readOverrideDoc(join(work, "overrides.json")),
+        priorMap: await readPriorMap(join(work, "render-props.json")),
+      });
+      const storyboardCut = cutWordIndices(transcript.words, storyboardCutlist);
+      // The shots' clock is the effective cut's, for the runtime as for the
+      // word times: the limits measure screen time in the video that renders.
+      const storyboardMap = new TimeMap(storyboardCutlist);
+      const wordTimes = keptWordTimes(transcript.words, storyboardCut, storyboardMap);
+      const result = await phases.time("llm", () =>
+        runStoryboardPlan(
+          {
+            workdir: work,
+            words: transcript.words,
+            cut: storyboardCut,
+            wordTimes,
+            outputDurationSec: storyboardMap.outputDuration,
+            frame,
+            intent: opts.intent,
+            assetsDir: opts.assets,
+            provider: provider!,
+            providerName,
+            fallbackName: llmFallbackName,
+            llmModel: opts.llmModel,
+          },
+          { answeredBy: actualProvider, log: (line) => console.log(line) },
+        ),
+      );
+      console.log(storyboardLine(result));
+      storyboardReport = formatStoryboardReport(result, (i) => wordTimes[i] ?? null);
+      // One ClipScene per kept, approved shot of the table just loaded or
+      // planned (§169; storyboard design §8). Into `scenes` and nowhere else:
+      // from here they meet the one assembly every scene list meets, which
+      // starts each at its first kept word, pushes it past an overlap and
+      // drops it when all its words are cut. With nothing approved both are
+      // empty, as before: no scenes, no record.
+      scenes = approvedClipScenes(result.storyboard);
+      storyboardRunRecord = productionStoryboardOf(result.storyboard);
+    } else if (scriptRun) {
       // ---- Script mode (explainer spec §1.2–1.3, §158) -------------------
       // Its own branch FIRST, and its own cache file, so the beat-sheet cache
       // above is never read or written by a script run (G6) — the keys are
@@ -4749,6 +4909,18 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // this catches the residue where the producer read through a mishearing the
   // repair pass missed ("Orchestration Tax" over a caption reading "text").
   // Word count and timings are untouched, so scene anchors stay valid.
+  //
+  // Editor-added graphics leave the list FIRST, whatever put them there
+  // (editor-added-graphics §2, produce step 1): the doc is their only
+  // source, and they are appended from it below. A `--scenes` replay parses
+  // scenes-reviewed.json, written from production.json, which holds every
+  // scene of the last run — kept, a deleted or undone graphic would come
+  // back on the next Render. Stripped HERE rather than at the append so the
+  // replay's stale copy never reaches `reconcileCopy` either: a planning run
+  // has no added scene at this point, and a caption re-spelled from the
+  // author's own text on Render alone would differ from what the editor
+  // showed (an added graphic's text is the author's, §2 step 5).
+  scenes = scenes.filter((s) => !isAddedKey(s.id));
   if (scenes.length > 0) {
     const reconciled = reconcileCopy(transcript, scenes);
     transcript = reconciled.transcript;
@@ -4765,6 +4937,47 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // see dictionary.ts). `rawTranscript` stays untouched on purpose:
   // production.json stores the RAW words that `analysis`/`cutlist` index.
   transcript = canonicalizeDictionaryCasing(transcript, dictionary);
+
+  // ---- The user's edit layer: loaded here, before the landscape remap ----
+  // Read for `addedScenes` just below and for `cuts` further down (see the
+  // comment there). Hoisted from that spot: nothing between here and the
+  // cut application reads or writes overrides.json, so both see one doc.
+  const overridesPath = join(work, "overrides.json");
+  let overrideDoc = await readOverrideDoc(overridesPath);
+
+  // Editor-added graphics (editor-added-graphics §2, produce steps 2-3),
+  // appended in every run kind — planner, script, storyboard and the
+  // `--scenes` replay — as a storyboard run appends its approved shots, so
+  // the landscape remap, production.json and every pass that reads `scenes`
+  // see them. They are ASSEMBLED apart from the plan scenes, though (see
+  // the assembly below, fix-wave I1). AFTER the transcript rewrites above,
+  // so the anchors index the final words; BEFORE the landscape remap, so it
+  // applies to them as to any scene. `transcript.words` is this run's index
+  // space (a `--clip` run's slice, which keeps source stamps:
+  // `sliceTranscript`), and its `start` is source seconds — the clock the
+  // entry's span is in. A skipped entry is reported, never thrown (AG3):
+  // one stale graphic must not take the run down with it. A repeated id
+  // (only a hand edit makes one) keeps its first entry: two scenes under one
+  // id would share every edit and every cue lookup (fix-wave M1).
+  const addedSceneIssues: { id: string; reason: string }[] = [];
+  const addedEntries = overrideDoc.addedScenes ?? [];
+  if (addedEntries.length > 0) {
+    const sourceWords = transcript.words.map((w) => ({ srcStart: w.start }));
+    const seenAddedIds = new Set<string>();
+    for (const entry of addedEntries) {
+      if (seenAddedIds.has(entry.id)) {
+        addedSceneIssues.push({ id: entry.id, reason: "duplicate id" });
+        continue;
+      }
+      seenAddedIds.add(entry.id);
+      const converted = addedSceneToScene(entry, sourceWords);
+      if ("scene" in converted) scenes.push(converted.scene);
+      else addedSceneIssues.push({ id: entry.id, reason: converted.skipped });
+    }
+    for (const issue of addedSceneIssues) {
+      console.log(`  ⚠ added graphic ${issue.id} not shown: ${issue.reason}`);
+    }
+  }
 
   // Landscape keeps the frame whole (R15): the split-screen layouts are
   // vertical-format answers, and applying them to 16:9 crops the picture into
@@ -4794,6 +5007,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     if (scriptRun) {
       let centred = 0;
       for (const [k, sc] of scenes.entries()) {
+        // Not an editor-added graphic (editor-added-graphics §2: the preview
+        // and the replay must agree). This runs only with --script, which
+        // the editor's Render strips; a plan scene keeps its rect through
+        // production.json, but an added one is rebuilt from the doc on every
+        // run, so placed here it was centred on the planning run and not on
+        // the Render. It gets the ordinary landscape remap above, every run.
+        if (isAddedKey(sc.id)) continue;
         const placed = scriptLandscapePlacement(sc);
         if (placed === sc) continue;
         scenes[k] = placed;
@@ -4825,7 +5045,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // the face behind a transparent clip. Nor does it count as the previous
       // layout — the variety rule is about cards repeating, and a clip between
       // two cards is not one of them. ClipScene is the one `fullFrame`
-      // component, so no run without `--script` reaches this line.
+      // component, so only a `--script` or `--storyboard` run (an approved
+      // shot, §169) or a replay of one reaches this line.
       if (SCENE_REGISTRY[sc.component].fullFrame) continue;
       // A planned slot (the script placement above, or one a `--scenes`
       // replay carries in from production.json) is a full-bleed decision
@@ -4834,6 +5055,13 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       // the script placement plans a rect, so no run without `--script` (or
       // a replay of one) has a scene here.
       if (sc.graphicRect) continue;
+      // An editor-added graphic keeps its layout and is not counted either
+      // (editor-added-graphics §2 step 4). Added scenes are appended after
+      // every plan scene, so they come LAST in this array-order walk: the
+      // skip keeps the added graphic's own layout stable — cycled, its
+      // preview layout would differ from the next run's. It does not protect
+      // its plan neighbours; they are visited before it and never see it.
+      if (isAddedKey(sc.id)) continue;
       let want = sc.layout;
       if (STACK_COMPONENTS.has(sc.component) && want === "lower-third") want = "split-right";
       if (want === prevLayout) {
@@ -4860,9 +5088,8 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // exception: it changes `map` itself, and every downstream consumer of
   // `map` below this point (assembly, captions, the zoom plan, render-props)
   // must see the POST-cut timeline, so the file has to be read and the cut
-  // applied before any of that runs.
-  const overridesPath = join(work, "overrides.json");
-  let overrideDoc = await readOverrideDoc(overridesPath);
+  // applied before any of that runs. (Read above, before the landscape
+  // remap, where the editor-added graphics join the scene list.)
   // ---- Cleanup choices: the user's veto over the AUTOMATIC cutlist (cut
   // review step 3) ------------------------------------------------------
   // Applied here — the same load `cuts` rides, before `applyUserCuts` — and
@@ -4920,8 +5147,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // (remapped when the frames differed), so `map.toSource(at)` is exact.
   // Gated on `priorMap` like the cuts resolution: with no prior render-props
   // the frame `at` was drawn against is unknowable, and a guessed src would
-  // be a wrong anchor forever. `at` stays verbatim — the historical record,
-  // per SplitSchema.
+  // be a wrong anchor forever. `at` stays verbatim HERE: `applyUserCuts`
+  // has already moved it onto this clock (split-positions-by-source D1), and
+  // the one pass that rewrites it afterwards is `reconcileSplitAnchors`
+  // below, onto where its split actually cut (R7-4).
   let splitSrcResolved = false;
   if (priorMap !== null) {
     const withSrc = overrideDoc.splits.map((s) => {
@@ -4966,8 +5195,45 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     );
   }
 
-  const { cues: assembled, dropped, shortened } = assembleScenes(scenes, transcript, map);
+  // Two assemblies (fix-wave I1): the plan scenes exactly as before added
+  // graphics existed, and the added graphics on their own. Assembled
+  // together, assembly pushed an added graphic past a HIDDEN plan scene or
+  // past a plan block's planned window that a pin had since moved — the
+  // edits are applied after assembly — while the editor's add check, which
+  // reads the cues the author sees (hidden dropped, pins applied), had let
+  // it through: the render put it somewhere the preview never showed.
+  // Alone, each gets the window the editor's one-scene preview gives it
+  // (§4). One call for all of them: the add check refused any overlap among
+  // them, so it is the same as one call each. What a later change made
+  // overlap (a shot approved over the same words, an unhide) is settled
+  // after the edit layer, where `dropOverlappingAdded` drops the added one
+  // and never moves the plan one (AG2). Merged in time order — assembly's
+  // own output order, which routing, the fill and the overrides expect.
+  const planAssembly = assembleScenes(
+    scenes.filter((s) => !isAddedKey(s.id)),
+    transcript,
+    map,
+  );
+  const addedAssembly = assembleScenes(
+    scenes.filter((s) => isAddedKey(s.id)),
+    transcript,
+    map,
+  );
+  // `sort` is stable: a plan cue keeps its place ahead of an added one that
+  // starts on the same second, as the old single assembly ordered them.
+  const assembled = [...planAssembly.cues, ...addedAssembly.cues].sort((a, b) => a.startSec - b.startSec);
+  const dropped = [...planAssembly.dropped, ...addedAssembly.dropped];
+  const shortened = [...planAssembly.shortened, ...addedAssembly.shortened];
   for (const d of dropped) console.log(`  ⚠ scene ${d.id} dropped: ${d.reason}`);
+  // An added graphic assembly dropped (every word cut, too short after the
+  // clamp) has no block for the editor to select, so it joins the issues
+  // with assembly's own reason (editor-added-graphics §2 "Issues", §7) —
+  // the drop line above reaches only the console.
+  for (const d of dropped) {
+    if (!isAddedKey(d.id)) continue;
+    addedSceneIssues.push({ id: d.id, reason: d.reason });
+    console.log(`  ⚠ added graphic ${d.id} not shown: ${d.reason}`);
+  }
 
   // The cue report (explainer spec §1.6): what became of every cue in the
   // script, against the plan as assembled on this run's final cut. Written
@@ -4980,7 +5246,10 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       aligned: scriptAlignment.aligned,
       skipped: scriptAlignment.skipped,
       moments: fullSheet?.moments ?? [],
-      scenes,
+      // The script's own scenes: an editor-added graphic answers for no cue
+      // (editor-added-graphics §2 step 5), and one holding a cue's last
+      // word would report that cue placed with the author's card.
+      scenes: scenes.filter((s) => !isAddedKey(s.id)),
       timed: assembled,
       dropped,
       shortened,
@@ -5215,9 +5484,20 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // are now output seconds, and letting one of those reach the sanctioned
   // overrides.json write would spend the source anchor and put the pin back
   // on a clock the next re-cut moves.
-  const pinnedDoc = resolveSrcTimingPins(overrideDoc, map);
+  // `let` (take-framing-identity P2): rebuilt below once `rekeyTakeHalves`
+  // has re-keyed take halves, so the final override pass reads the new keys.
+  let pinnedDoc = resolveSrcTimingPins(overrideDoc, map);
   for (const r of pinnedDoc.reports) console.log(`  ⚠ ${r}`);
   const { cues: editedCues } = applyOverrides(routed.cues, pinnedDoc.doc);
+  // Word-timed list items (graphic-editor-modal §4 "Produce"): each marked
+  // root's component, merged props and block window, read HERE off the
+  // unsplit list — the editor builds its roots with the same function at
+  // the same step — and resolved after the second override pass below.
+  // `overrideDoc`, the raw re-anchored doc, never `pinnedDoc.doc`: there a
+  // src timing pin is already output seconds and would read as a legacy
+  // pin (`blockWindow`). `transcript.words` is the word list the editor
+  // serves as `sfxPlan.words`, `--clip` slice included (clip-edge-repair).
+  const itemRoots = itemTimingRoots(editedCues, overrideDoc, transcript.words, map, map);
   // Scenes the user deleted in the editor drop here — their windows become
   // plain takes in the fill below, which is Task C's payoff for Task A.
   // `splitThenDropHidden`, not a bare `dropHiddenCues`: this runs before
@@ -5225,10 +5505,38 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // whole pre-split window — both the half it names and the half a stored
   // split (R16 §61) had already carved off — before that split ever got a
   // chance to separate them (PLAN 2026-08-04 Task 1, bug 3).
-  const { cues: visibleCues, hidden: hiddenIds } = splitThenDropHidden(editedCues, overrideDoc);
+  // Pass 1 of two (split-positions-by-source D2): the graphic pass, at each
+  // split's `at` on this clock, minus the inert ones (`pass1SplitPoints`,
+  // R8-2). Where each landed (`landedHost`) decides, after the overlap drop
+  // below, which splits pass 2 never sees.
+  const {
+    cues: shownCues,
+    hidden: hiddenIds,
+    landedHost: pass1LandedHost,
+  } = splitThenDropHidden(editedCues, overrideDoc, pass1SplitPoints(overrideDoc.splits, map));
   if (hiddenIds.length > 0) {
     console.log(`▸ ${hiddenIds.length} scene(s) hidden by the edit layer: ${hiddenIds.join(", ")}`);
   }
+  // An added graphic a visible plan graphic now covers gives way (fix-wave
+  // I1, AG2): assembled apart from the plan (above), nothing pushed it, so a
+  // later change — a storyboard shot approved over the same words, an
+  // unhide, a drag — can leave the two overlapping. HERE, on the list the
+  // author sees (edits and pins applied, hidden cues gone), the editor's
+  // preview runs the same function at the same step, so the render drops
+  // exactly the blocks the preview did. Before the pinned re-clamp, as the
+  // preview has none. Reported by entry id (a split half's root), once.
+  const overlapDrop = dropOverlappingAdded(shownCues);
+  const visibleCues = overlapDrop.cues;
+  for (const d of overlapDrop.dropped) {
+    const id = sceneKeyRoot(d.id);
+    if (!addedSceneIssues.some((i) => i.id === id)) addedSceneIssues.push({ id, reason: d.reason });
+    console.log(`  ⚠ added graphic ${id} not shown: ${d.reason}`);
+  }
+  // A graphic landing counts only while a piece it cut is still shown —
+  // after BOTH drops (split-positions-by-source R7-2, R8-4). A split whose
+  // graphic halves are all hidden, or dropped for overlap, made nothing
+  // anyone sees, so it goes to pass 2 and cuts the take under them.
+  const pass1Surviving = survivingLandings(pass1LandedHost, visibleCues);
   // Config theme as the BASE (F6): overrides.json > config theme >
   // defaultTheme. The same `configBaseTheme` feeds props.baseTheme below.
   const theme = resolveTheme(configBaseTheme, overrideDoc);
@@ -5269,9 +5577,14 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     const b = map.toOutput(r.srcOut);
     return [...(a !== null ? [a] : []), ...(b !== null ? [b] : [])];
   });
+  // Bound, not inlined (take-framing-identity P0): the same list goes into
+  // render-props below, so the editor numbers its takes from exactly the
+  // starts this fill used — span starts alone would give a different
+  // `take-N` to the same footage once a range is kept.
+  const takeClipStarts = [...map.spans.map((s) => s.outIn), ...keptEdgeStarts];
   const filled0 = fillPlainCues(reclamped, {
     outputDurationSec: map.outputDuration,
-    clipStarts: [...map.spans.map((s) => s.outIn), ...keptEdgeStarts],
+    clipStarts: takeClipStarts,
   });
   // Revived material as a first-class block — same carve the editor previews
   // with (`carveKeptTakes`'s one-implementation-two-callers doc), so
@@ -5281,26 +5594,118 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   for (const r of carveReports) console.log(`  ⚠ ${r}`);
   // User splits (R16 §61) — after the fill so takes split like scenes, and
   // before the final override pass so edits on the `id@<split id>` halves land
-  // (the suffix is the split's own minted id, §137, not its time). A
-  // split whose ROOT was a graphic scene already happened once inside
-  // `splitThenDropHidden` above (PLAN 2026-08-04 Task 1) — re-running it here
-  // is a no-op for that scene (the split point sits exactly on the joint
-  // between the two halves, matching neither), so this call stays the one
-  // that actually cuts TAKE ids, which don't exist until the fill just ran.
-  // Resolved onto THIS run's clock: `src` (the recut-immune anchor) wins,
-  // src-less legacy entries pass their re-anchored `at` through, and a src
-  // sitting in removed material is inert with a report (resolveSplitPoints'
-  // doc owns the posture).
-  const resolvedSplits = resolveSplitPoints(overrideDoc.splits, map);
+  // (the suffix is the split's own minted id, §137, not its time).
+  // Pass 2 of two (split-positions-by-source D2): every split that did NOT
+  // land in the graphic pass above, and only those. A graphic landing is
+  // never cut again — before this, a split whose `at` and `src` had drifted
+  // apart cut its graphic at `at` and then a second time here at
+  // `toOutput(src)`, minting two cues of one name. Resolved onto THIS run's
+  // clock: `src` (the recut-immune anchor) wins, src-less legacy entries
+  // pass their re-anchored `at` through, and a src sitting in removed
+  // material is inert with a report (resolveSplitPoints' doc owns the
+  // posture). This call is the one that cuts TAKE ids, which don't exist
+  // until the fill just ran.
+  const notLandedInPass1 = overrideDoc.splits.filter((s) => !pass1Surviving.has(s.id));
+  const resolvedSplits = resolveSplitPoints(notLandedInPass1, map);
   for (const r of resolvedSplits.reports) console.log(`  ⚠ ${r}`);
-  const split = splitCues(filled, resolvedSplits.points);
+  // `splitLanded`, not the spec's `landed`: this function already binds
+  // `landed` further down (the transcript repairs that applied).
+  const { cues: split, landed: splitLanded } = splitCuesWithLanding(filled, resolvedSplits.points);
+  // The one-time change, named (D5, R7-1): a graphic split that pass 2
+  // would ALSO have cut, somewhere else, before this design. Dry-run over
+  // the same `filled` list pass 2 just cut; silent once the reconcile below
+  // has written `src` onto `at`.
+  for (const n of doubleCutNotes(overrideDoc.splits, pass1Surviving, pass1LandedHost, filled, map)) {
+    console.log(`  ▸ ${n}`);
+  }
+  // Take halves re-keyed by where their split LANDED (take-framing-identity
+  // P2): a cut in front renumbers the root, so the half above may carry a
+  // different root than its edit's key — the FE Loop half rendered as
+  // `take-3@66055` while its framing sat orphaned on `take-2@66055`. Legacy
+  // take splits migrate to own framing here.
+  //
+  // This late position is safe: pass 1's `remapSceneOverrides` reads only
+  // anchored graphic cues, and the first `applyOverrides` and
+  // `splitThenDropHidden` run on graphic cues, where a plain-take key
+  // matches nothing — so nothing above read the keys this moves.
+  const takeRekey = rekeyTakeHalves(overrideDoc, splitLanded);
+  for (const n of takeRekey.notes) console.log(`  ▸ ${n}`);
+  overrideDoc = takeRekey.doc;
+  const splitHalvesChanged = takeRekey.changed;
+  // Each split's idle anchor written onto the one that cut
+  // (split-positions-by-source R7-4, R8-3): a graphic landing's `src` onto
+  // its `at`, a take landing's `at` onto its cut. This subsumes phase 1's
+  // step 7 (D4). The graphic windows are pass 1's, BEFORE hidden ones drop —
+  // the list `splitThenDropHidden` received — so no `at` is written into or
+  // out of any graphic (R6-B1, R7-B1). `splitLanded` is pass 2's landing,
+  // taken before the final hidden drop below (R7 S1). After the re-key, so
+  // its doc is the one reconciled; before `migrateTakeLooks` and the
+  // `pinnedDoc` rebuild, which then read the final splits.
+  const splitReconcile = reconcileSplitAnchors(
+    overrideDoc,
+    pass1Surviving,
+    splitLanded,
+    resolvedSplits.points,
+    editedCues.map((c) => ({ startSec: c.startSec, endSec: c.endSec })),
+    map,
+  );
+  for (const n of splitReconcile.notes) console.log(`  ▸ ${n}`);
+  overrideDoc = splitReconcile.doc;
+  const splitsReconciled = splitReconcile.changed;
+  // Rebuilt from the re-keyed doc so the final override pass below joins on
+  // the new keys (`resolveItemTimings` and `dropHiddenCues` read
+  // `overrideDoc`, reassigned just above). Its reports already printed: the
+  // re-key moves entries whole but changes no `timing` value, so they would
+  // only repeat.
+  pinnedDoc = resolveSrcTimingPins(overrideDoc, map);
   if (overrideDoc.splits.length > 0) {
     console.log(`▸ ${overrideDoc.splits.length} scene split(s) from the edit layer`);
   }
   // `pinnedDoc.doc` again, not `overrideDoc`: this pass is on the SAME clock
   // as the first (the split above does not move time), and a src pin that
   // reached here unresolved would be ignored rather than applied.
-  const { cues: mergedCues, orphans: rawOrphans } = applyOverrides(split, pinnedDoc.doc);
+  const { cues: overriddenCues, orphans: rawOrphans } = applyOverrides(split, pinnedDoc.doc);
+  // A legacy doc's take looks move onto source time ONCE, here
+  // (take-looks-by-source L3): after the cut remap, `resolveSplitPoints`,
+  // `rekeyTakeHalves` and the splits, so the pieces are this run's pieces
+  // on this run's map and always exist (N3, N4). From the re-keyed
+  // `overrideDoc`, not `pinnedDoc.doc` — the doc written back — read
+  // against the cues the merge just produced. It checks the marker itself
+  // and hands a migrated doc back untouched (R4-S9), so it runs every time;
+  // adopted before the look pass and every later read of `overrideDoc`,
+  // the write below included.
+  const migration = migrateTakeLooks(
+    overrideDoc,
+    overriddenCues,
+    map,
+    ownFramingSplitIds(overrideDoc.splits),
+  );
+  for (const n of migration.notes) console.log(`  ▸ ${n}`);
+  overrideDoc = migration.doc;
+  const takeLooksMigrated = migration.changed;
+  // Take looks from SOURCE time (take-looks-by-source L2), right after this
+  // last override pass — and only for a migrated doc: absent `takeLooks` is
+  // the legacy marker (L3), and a legacy doc keeps its id-keyed look fields
+  // exactly as `applyOverrides` just merged them (N1, Review Focus 1). On
+  // THIS run's map, so a piece shows the look of the footage it plays here,
+  // and SET semantics, so a carve's or split's copied framing cannot leak.
+  // The editor runs the same pass in both memo paths (App.tsx).
+  const lookedCues =
+    overrideDoc.takeLooks !== undefined
+      ? applyTakeLooks(overriddenCues, overrideDoc.takeLooks, map)
+      : overriddenCues;
+  // After this LAST override pass, as the editor resolves after its own: a
+  // split half's own component swap has happened, so `withSwappedReveal`
+  // met the same cue in both pipelines. Resolved before the split, a
+  // reveal-less root's swapped half inherited a resolved `reveal` here and
+  // none in the preview (build ruling 2026-11-22, item-timing-parity).
+  // Reclamp, fill, carve and split above never touch `reveal`. A project
+  // without `itemPins` gets the very same list back (AG1).
+  const itemTimed = resolveItemTimings(lookedCues, overrideDoc, transcript.words, map, itemRoots);
+  // One line per note, as override orphans print: a pin that turned auto,
+  // a graphic with no block to time.
+  for (const n of itemTimed.notes) console.log(`  ⚠ ${n}`);
+  const mergedCues = itemTimed.cues;
   // Halves of a TAKE the user deleted after splitting: a take id only exists
   // once the fill above runs, so its `id@<split id>` half couldn't have been seen by
   // `splitThenDropHidden` earlier (that pass only ever saw graphic scenes).
@@ -5340,7 +5745,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   // ignore warnings — and it never looked at copy the user typed themselves.
   // `checkGrounding` already merges a scene's `overrides` slot; nothing was
   // filling it from `overrides.json`.
-  const scenesAsRendered = scenes.map((s) => {
+  //
+  // Editor-added graphics are left out (editor-added-graphics §2 step 5):
+  // the check catches copy the PLANNER invented, and an added graphic's
+  // text is the author's own, typed in the editor.
+  const scenesAsRendered = scenes.filter((s) => !isAddedKey(s.id)).map((s) => {
     const edit = overrideDoc.scenes[s.id]?.props;
     return edit && Object.keys(edit).length > 0
       ? { ...s, overrides: { ...s.overrides, ...edit } }
@@ -5697,7 +6106,11 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     overlayPlan = priorOverlayPlan(work);
     if (overlayPlan) console.log(`▸ overlays carried forward (${overlayPlan.placements.length})`);
   } else {
-    const library = loadLibrary();
+    // A storyboard run matches nothing (author's call, §168): its drawn shots
+    // are the graphics, and a matched logo popped over one. Overlays the
+    // author adds in the editor still apply below; only the automatic
+    // matching is off.
+    const library = storyboardRun ? [] : loadLibrary();
     if (library.length > 0) {
       const at = transcript.words.map((w) => map.mapWord(w));
       // Output-time starts on the kept words (ruling R12): two names 3s apart
@@ -5842,7 +6255,9 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
   const priorSuggestions = priorOverlayPlan(work)?.suggestions;
   let logoSuggestions: LogoSuggestion[] | undefined = priorSuggestions;
   let logoFinderLine: string;
-  if (provider && opts.produce === true && !opts.scenes) {
+  // Not in a storyboard run (storyboard design §1: it plans no template
+  // graphics, and logo chips are overlays on a plan it does not make).
+  if (provider && opts.produce === true && !opts.scenes && !storyboardRun) {
     // Where the LLM failed is the one thing the skip line has to say apart
     // from everything else, so the call is marked rather than guessed from
     // the error's text.
@@ -5927,7 +6342,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     logoFinderLine =
       priorSuggestions && priorSuggestions.length > 0
         ? formatLogoFinderLine({ suggestions: priorSuggestions })
-        : formatLogoFinderLine({ skipped: "no LLM provider" });
+        : formatLogoFinderLine({ skipped: storyboardRun ? "a storyboard run plans no overlays" : "no LLM provider" });
   }
   console.log(`▸ ${logoFinderLine}`);
   // Plan presence (plan ruling): `overlays` is written when there are
@@ -5981,6 +6396,17 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
       })()
     : opts.scenes
       ? priorScript(work)
+      : undefined;
+  // The storyboard record (ProductionStoryboardSchema; §169, storyboard design
+  // §1 "Later runs", §9), by the script record's rule: this run's on a
+  // `--storyboard` run; on a `--scenes` replay, the last run's, carried
+  // forward, because the editor's Render and the kit refresh strip
+  // `--storyboard` and this record is then the only trace of the approved
+  // shots. Any other run writes none. Read BEFORE the write below.
+  const storyboardRecord: ProductionStoryboard | undefined = storyboardRun
+    ? storyboardRunRecord
+    : opts.scenes
+      ? priorStoryboard(work)
       : undefined;
   const production: Production = {
     version: 1,
@@ -6039,6 +6465,7 @@ export async function produce(inputArg: string, opts: ProduceOptions): Promise<P
     ...(captionThemeRes.theme !== "default" ? { captionTheme: captionThemeRes.theme } : {}),
     ...(captionChoreography ? { captionChoreography } : {}),
     ...(scriptRecord ? { script: scriptRecord } : {}),
+    ...(storyboardRecord ? { storyboard: storyboardRecord } : {}),
   };
   await writeFile(join(work, "production.json"), JSON.stringify(production, null, 2));
 
@@ -6159,6 +6586,9 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
 `)
         .join("");
   }
+  // A storyboard run's table (§168), in place of the graphics accounting it
+  // has no plan for: each kept shot and each change the limits made.
+  if (storyboardReport) report += storyboardReport;
   // The SFX accounting, the graphics block's contract exactly (§118b): ONE
   // formatter feeds the console line printed above and this one, so the two
   // can never say different things about the same run. The drops are listed
@@ -6906,6 +7336,10 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
   const props = {
     videoFileName: basename(renderVideo),
     spans: [...map.spans],
+    // The take fill's clip starts (take-framing-identity P0) — written
+    // ALWAYS, even with no kept edges, so presence tells the editor an
+    // upgraded produce wrote these props (`editorTakeClipStarts`).
+    takeClipStarts,
     captionLines,
     sceneCues,
     theme,
@@ -7065,6 +7499,14 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
       ? { baseCaptionTheme: captionThemeRes.baseTheme }
       : {}),
     ...(captionChoreography ? { captionChoreography } : {}),
+    // Editor-added graphics this run did not show — skipped at conversion,
+    // dropped by assembly, or dropped for overlapping a visible graphic
+    // (`dropOverlappingAdded`) — with the reason (editor-added-graphics §2
+    // "Issues"). The editor lists them for removal (§7) and does not
+    // preview them (§4). Written only when non-empty, the absent-means-none
+    // contract of the keys above: a project with no added graphic keeps a
+    // render-props.json byte-identical to a pre-feature one.
+    ...(addedSceneIssues.length > 0 ? { addedSceneIssues } : {}),
   };
   await writeFile(join(work, "render-props.json"), JSON.stringify(props, null, 2));
 
@@ -7124,9 +7566,50 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
   // re-resolve (and re-announce) it every run. It does NOT spend the `.bak`
   // — backfilling adds an anchor, it rewrites no value a user would need to
   // recover.
-  if (cutResult.changed || captionKeysReanchored || hidesPruned || sceneKeysRemapped || splitSrcResolved) {
+  // `splitHalvesChanged` joins for the same reason (take-framing-identity
+  // P2): a re-keyed, parked or migrated take half is right in memory and
+  // wrong on disk. It does NOT spend the `.bak` — the move rewrites keys
+  // and copies framing, nothing to recover.
+  // `takeLooksMigrated` joins for the same reason (take-looks-by-source L3,
+  // S5): the looks on source time and the stripped take keys are right in
+  // memory and wrong on disk, and the marker must reach disk or every run
+  // would migrate again. True once per project, even for `takeLooks: []`.
+  // It does NOT spend the `.bak` (L3 "Rollback limit", the existing
+  // posture): the move changes where the looks are stored, not what any
+  // piece shows, and the `.bak` stays the pre-cut save it exists to be.
+  // `splitsReconciled` joins for the same reason (split-positions-by-source
+  // R7-4, R8-3): an anchor written onto where its split cut is right in
+  // memory and wrong on disk, and the D5 note would repeat every run until
+  // it lands. It does NOT spend the `.bak` (`refreshBackup` unchanged,
+  // R7-4): the value it replaces is the stale anchor the run just named,
+  // printed with its new one. When the same run also changed the cut, the
+  // refresh copies the file from BEFORE this run, so the drifted original
+  // is in the `.bak` then (r8 m24).
+  if (
+    cutResult.changed ||
+    captionKeysReanchored ||
+    hidesPruned ||
+    sceneKeysRemapped ||
+    splitSrcResolved ||
+    splitHalvesChanged ||
+    takeLooksMigrated ||
+    splitsReconciled
+  ) {
     await writeOverrideDoc(overridesPath, overrideDoc, { refreshBackup: cutResult.changed });
-    console.log(overridesWriteLine(cutResult.changed));
+    // Every gate operand, so the line names why this run wrote (take-looks-
+    // by-source final review, Minor 1) — the gate above decides WHETHER.
+    console.log(
+      overridesWriteLine({
+        cutChanged: cutResult.changed,
+        captionKeysReanchored,
+        hidesPruned,
+        sceneKeysRemapped,
+        splitSrcResolved,
+        splitHalvesChanged,
+        takeLooksMigrated,
+        splitsReconciled,
+      }),
+    );
   }
 
   // Resolved HERE — above the --no-render exit rather than at the thumbnail
@@ -7254,6 +7737,10 @@ ${formatCueReport(scriptOutcomes)} (FINDINGS §158)
     // The SOURCE script, even on a Re-plan from the workdir copy: its folder
     // is where `clip:` paths resolve (recordedProduceArgs has the why).
     script: scriptSource,
+    // §168. `--assets` is the absolute folder, the script pin's rule: the
+    // editor replays this argv from another cwd.
+    storyboard: storyboardRun,
+    assets: opts.assets,
   });
   // produce is the ONLY command that may write command.json — edit.ts's §129
   // heal prepends the "produce" literal to any record that doesn't start

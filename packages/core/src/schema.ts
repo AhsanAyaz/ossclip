@@ -1,5 +1,6 @@
 import { z } from "zod/v4";
 import { CaptionChoreographySchema, CaptionThemeIdSchema } from "./captions";
+import { ShotIdSchema } from "./draw/shot-record";
 
 /** A single transcribed word, in SOURCE time (seconds). */
 export const WordSchema = z.object({
@@ -310,6 +311,37 @@ export const ProductionScriptSchema = z.object({
 });
 export type ProductionScript = z.infer<typeof ProductionScriptSchema>;
 
+/**
+ * The approved storyboard shots a production was planned with (storyboard
+ * design §9, "The storyboard record in production.json"; §169), beside the
+ * script record and shaped for the same three readers: `produce` builds one
+ * clip scene per shot from it on a replay, `ossclip kit` finds a shot clip's
+ * ProRes original through `clip` (it knew only the script record's clips
+ * before), and the §163 backdrop rule treats a project carrying it as a
+ * script project. `storyboard.json` stays the author's record; this is the
+ * copy the production was built from, so a pinned replay does not depend on
+ * the storyboard file still saying the same thing.
+ *
+ * Word indices are raw transcript indices, as the shot's are. `clip` and
+ * `src` are workdir-relative (the original under `storyboard/<id>/`, the
+ * VP9 preview copy under `clips/`). Optional with no default: a run without
+ * `--storyboard` writes a production.json byte-identical to what it always
+ * wrote (plan Global Constraints).
+ */
+export const ProductionStoryboardSchema = z.object({
+  shots: z.array(
+    z.object({
+      id: ShotIdSchema,
+      startWord: z.number().int().nonnegative(),
+      endWord: z.number().int().nonnegative(),
+      clip: z.string().min(1),
+      src: z.string().min(1),
+      durationSec: z.number().positive(),
+    }),
+  ),
+});
+export type ProductionStoryboard = z.infer<typeof ProductionStoryboardSchema>;
+
 /** The single source of truth for a production. Every pipeline stage is a pure function over this. */
 export const ProductionSchema = z.object({
   version: z.literal(1),
@@ -351,7 +383,10 @@ export const ProductionSchema = z.object({
    * Mishearing corrections applied before captions, scene copy and grounding.
    * Kept as a diff rather than a second transcript so the production stays
    * reproducible: `applyRepairs(transcript, repairs.filter(r => r.applied))`
-   * reconstructs exactly what was rendered.
+   * reconstructs what was rendered — a FALLBACK only: `captionWords` below
+   * takes precedence wherever it is recorded, and the replay is not exact
+   * for a `--clip` window starting inside a split repair (a time-sliced raw
+   * list re-splits the word; clip-edge-repair.test.ts).
    */
   repairs: z
     .array(
@@ -373,8 +408,9 @@ export const ProductionSchema = z.object({
    * a replay re-decides gates the user overrode, the copy repairs index the
    * repaired space, and casing is recorded nowhere — so the editor showed and
    * keyed caption edits on words the render never had, and those edits were
-   * dropped as stale. Absent when no word changed (byte-identical to a
-   * pre-field production.json), and on projects written before it.
+   * dropped as stale. Absent when no word's text or stamps changed
+   * (byte-identical to a pre-field production.json), and on projects written
+   * before it.
    */
   captionWords: z.array(WordSchema).optional(),
   analysis: AnalysisSchema.optional(),
@@ -458,6 +494,8 @@ export const ProductionSchema = z.object({
   captionChoreography: CaptionChoreographySchema.optional(),
   /** Present on a `--script` run and carried by its replays (`ProductionScriptSchema`). */
   script: ProductionScriptSchema.optional(),
+  /** Present on a `--storyboard` run with an approved shot, and carried by its replays (`ProductionStoryboardSchema`). */
+  storyboard: ProductionStoryboardSchema.optional(),
   render: RenderSettingsSchema,
 });
 export type Production = z.infer<typeof ProductionSchema>;
