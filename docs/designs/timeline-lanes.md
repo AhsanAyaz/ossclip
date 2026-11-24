@@ -1,7 +1,7 @@
 # Timeline lanes: footage on V1, graphics on V2
 
 *   **Author:** Muhammad Ahsan Ayaz (drafted with Claude)
-*   **Status:** Draft 3 (2026-11-24), revised after review rounds 1 (design, code accuracy, build readiness, scope) and 2 (design, code accuracy, build readiness). The reports are `~/ossclip-work/egm-short/timeline-lanes-review-r{1,2}.md`. Approach B chosen by the author. Changes are listed at the end.
+*   **Status:** Draft 4 (2026-11-24), revised after review rounds 1 (design, code accuracy, build readiness, scope), 2 (design, code accuracy, build readiness) and 3 (code accuracy, build readiness). The reports are `~/ossclip-work/egm-short/timeline-lanes-review-r{1,2,3}.md`. Approach B chosen by the author. Changes are listed at the end.
 *   **Builds on:** FINDINGS §97 (take filmstrips), the precision-editing design (drag readout, snapping), take-looks-by-source R6-4 (look-mode piece selection), `docs/designs/editor-added-graphics.md`.
 *   **Mockup:** `~/ossclip-work/mockups/timeline-lanes/index.html` (v2) and `v2.png`. Local only. Every value the build needs is copied into this doc. If the doc and the mockup disagree, the doc wins.
 
@@ -23,7 +23,7 @@ This design splits the track into two lanes. **V2** (top) holds graphic blocks. 
 *   **Graphic block.** A cue with `kind !== "plain"`. A cue with no `kind` is a graphic (`scene-schema.ts:147-158`). This is the same test as `stored()` (`apps/editor/src/timing.ts:65-66`).
 *   **Take block.** A cue with `kind === "plain"`. This includes revived `take-kept-*` pieces (`cue.kept`) and carved look-mode pieces that share an id.
 *   **Footage strip.** One full-width, non-interactive background element in V1. It shows wherever no take block sits: under graphics, in slivers shorter than `MIN_PLAIN_SEC` (`fill.ts:32, 83`), under hidden split halves, and in veto holes. Nothing is computed to place it.
-*   **Picture hidden.** `layout === "graphic-only"`, the one layout whose video slot has `opacity: 0` (`packages/scenes/src/stage.ts:811-823`, `layoutSlots`).
+*   **Picture hidden.** `layout === "graphic-only"`, the one layout whose video slot has `opacity: 0` (`packages/scenes/src/stage.ts:811-828`, `layoutSlots`).
 *   **Live cues.** The `cues` prop, `live.sceneCues` (`apps/editor/src/App.tsx:3733`).
 
 ## Goals
@@ -57,7 +57,7 @@ This design splits the track into two lanes. **V2** (top) holds graphic blocks. 
 Inside B, the build has two shapes:
 
 *   **B1. One track container, lanes as vertical offsets (chosen).** The `track` div (`trackRef`) keeps its role and its width. It grows taller. Each block's `top` and `height` come from its lane. All seek and drag maths divides by the track's width (`seekTrack`, `Timeline.tsx:720-728`, and the drag handlers), and nothing in the timeline hit-tests vertically (`clientY` only places context menus). So every block gesture keeps working unchanged. Cut bands, seams and the playhead are already children of the track, so they span both lanes.
-*   **B2. Separate lane containers.** Rejected: each gesture would need a new width reference, and six e2e sites find the track as the playhead's parent (§8).
+*   **B2. Separate lane containers.** Rejected: each gesture would need a new width reference, and six e2e sites find the track as the playhead's parent (§2).
 
 ## Design
 
@@ -99,9 +99,9 @@ B1 relies on these, and the plan must keep them:
 *   **Style, selected.** Today's `2px solid #5b8cff` border and `#1c2333` background, with `backgroundImage` left out.
 *   **Cursor.** `grab`. The handles keep `ew-resize`.
 *   **Label.** Two spans inside today's `blockLabel` span:
-    *   The component name (`cue.component`), in `#FBCFE8` with `textTransform: "none"`. Component names are CamelCase, and uppercase would render `BULLETLIST`.
-    *   The cue id, with `marginLeft: 6`, `opacity: 0.6` and `fontWeight: 400`, keeping `blockLabel`'s uppercase.
-    *   Without a component, only the id span is rendered, at full opacity.
+    *   The component name (`cue.component`), with `fontWeight: 600` and `textTransform: "none"`. Its colour is `#FBCFE8`, or `#dbe4ff` when the block is selected. Component names are CamelCase, and uppercase would render `BULLETLIST`.
+    *   The cue id, with `marginLeft: 6` and `opacity: 0.6`, keeping `blockLabel`'s weight and uppercase.
+    *   The schema requires `component` on graphics (`scene-schema.ts:291-295`). A missing one falls back to the id span alone only as a type guard; no test covers it.
     *   `blockLabel`'s ellipsis still clips the whole line on narrow blocks.
 *   **Grips.**
     *   Each existing `edgeHandle` div (10 px hit zone, `EDGE_HIT`, `:248`) gets `className="ossclip-edge"`. It also gets one child `<span className="ossclip-grip" />` with inline position only: `position: absolute`, `top: 5`, `bottom: 5`, `width: 3`, `borderRadius: 2`, `pointerEvents: "none"`, and `left: 2` on the start handle or `right: 2` on the end handle.
@@ -125,9 +125,9 @@ B1 relies on these, and the plan must keep them:
 *   **Hatch, for picture-hidden graphics only.** For a graphic cue where `pictureHidden(cue.layout)` holds, the iteration's Fragment adds one element after the block:
     *   **Id:** `data-testid="timeline-hatch-<cue.id>"` and `data-piece-start={cue.startSec.toFixed(3)}`. Both come from the cue, not the drag preview, so the element keeps its identity during a drag (round 2, S3).
     *   **Position:** the V1 box. `left` and `width` come from the same preview-aware `startSec`/`endSec` locals as the block (`:1586-1589`), so the hatch slides with a dragged card. The window it leaves shows plain footage strip until the commit.
-    *   **Box style:** `position: absolute`, `boxSizing: "border-box"`, `borderRadius: 4`, `border: 1px dashed #2f2f3a`, `backgroundImage: repeating-linear-gradient(135deg, #15151b 0 6px, #1b1b22 6px 12px)`, `zIndex: 2`, `pointerEvents: "none"`.
-    *   **Why z 2:** above unselected take blocks (1), so a dragged hatch paints over the neighbouring take instead of sliding under it (the R11 Task 1 bug, `:1636-1641`). It stays below cut bands and the selected block (3).
-    *   **Label:** one span with `blockLabel`'s font, padding, `nowrap` and ellipsis, in `#5f5f6a`, `fontWeight: 400`, `textTransform: "none"`. The text is `audio only` when the cue's `video.volume` is absent or not 0, and `muted` when it is 0.
+    *   **Box style:** `position: absolute`, `display: "flex"`, `alignItems: "center"`, `overflow: "hidden"`, `boxSizing: "border-box"`, `borderRadius: 4`, `border: 1px dashed #2f2f3a`, `backgroundImage: repeating-linear-gradient(135deg, #15151b 0 6px, #1b1b22 6px 12px)`, `zIndex: 2`, `pointerEvents: "none"`.
+    *   **Why z 2:** above unselected take blocks (1), so a dragged hatch paints over the neighbouring take instead of sliding under it (the R11 Task 1 bug, `:1636-1641`). It stays below cut bands and the selected block (3). The plan also changes the stacking comment at `Timeline.tsx:1640-1641` from "ghost 2", which no longer exists, to "hatch 2".
+    *   **Label:** one span with `blockLabel`'s font, padding, `nowrap` and ellipsis, in `#5f5f6a`, `fontWeight: 400`, `textTransform: "none"`. The box's `overflow: hidden` clips the label on a short graphic, so it never spills onto the next take. The text is `audio only` when the cue's `video.volume` is absent or not 0, and `muted` when it is 0.
     *   **Not hatched:**
         *   a graphic with any other layout. Its picture plays, and a muted one already shows MUTE on V2;
         *   take blocks (Non-goals).
@@ -196,9 +196,10 @@ The drag readout floats above the track (`dragReadout`) and is not affected.
     *   **Checked, ruler-relative and safe:** `interactions.spec.ts:52, 139, 819, 1178`; `added-graphics.spec.ts:74`; `overlays.spec.ts:162, 170`; `sfx-preview.spec.ts:33`; `sliver-cut.spec.ts:81`.
     *   Unit tests mock x only.
 *   **Vertical space.**
-    *   The stage is height-bound on portrait projects (`App.tsx:2582-2585`), so it loses exactly the track's 33 px. On landscape it loses nothing. That is the intended cost.
-    *   The real risk is the timeline falling below the fold on a short screen, or a vertical scroll appearing. New e2e step 5 checks both.
-    *   The comment at `playwright.config.ts:153` ("stage ≈676px") is updated with the new figure.
+    *   The editor shell is `100vh` with `overflow: hidden`, the main row has `minHeight: 0`, and the stage area is `inset: 0; overflow: auto` (`App.tsx:3888-3901`).
+    *   So a taller timeline shrinks the stage area. It never pushes the timeline below the fold.
+    *   The stage is height-bound on portrait projects (`App.tsx:2582-2585`), so it loses exactly the track's 33 px. On landscape it loses nothing. That is the intended cost, and no test can fail on it, so there is no viewport step (round 3, S1).
+    *   The comment at `playwright.config.ts:153` ("stage ≈676px") becomes "stage ≈643px", that is 676 minus 33.
 
 ## Files
 
@@ -220,33 +221,39 @@ The drag readout floats above the track (`dragReadout`) and is not affected.
 
 | id | window | kind | layout | component | other |
 | --- | --- | --- | --- | --- | --- |
-| `take-0` | [0, 2] | plain | full-bleed | | |
-| `scene-a` | [2, 6] | graphic | pip-bubble | BulletList | |
-| `scene-b` | [6.05, 10] | graphic | graphic-only | TitleCard | `video: { volume: 0 }` |
-| `scene-c` | [10, 13] | graphic | graphic-only | StatCard | no `video` |
+| `take-0` | [0, 2] | plain | full-bleed | | `video: { volume: 0.5 }` |
+| `scene-a` | [2, 6] | graphic | pip-bubble | BulletList | `pinned: true`, `props: {}` |
+| `scene-b` | [6.05, 10] | graphic | graphic-only | TitleCard | `video: { volume: 0 }`, `props: {}` |
+| `scene-c` | [10, 13] | graphic | graphic-only | StatCard | no `video`, `props: {}` |
 | `take-1` | [13, 20] | plain | graphic-only | | |
+
+The `Harness` at `Timeline.test.ts:91` hard-codes `selection: null`. It gains an optional `selection` prop for assertion 16.
 
 Assertions:
 
 1.  `scene-a`, `scene-b` and `scene-c` have `data-lane="graphics"`, `style.top === "3px"` and `style.height === "28px"`.
 2.  The takes have `data-lane="footage"`, `style.top === "38px"` and `style.height === "36px"`.
 3.  The track's `style.height === "77px"`.
-4.  `scene-a`'s block has `title === "scene-a"`. Its first label span's text is `BulletList`, and the second's is `scene-a`.
+4.  `scene-a`'s block has `title === "scene-a"`. Its first label span's text is `BulletList`, with `style.textTransform === "none"` and `style.fontWeight === "600"`. Its second span's text is `scene-a`, with `style.opacity === "0.6"` and `style.marginLeft === "6px"`.
 5.  Each graphic has two `.ossclip-edge > .ossclip-grip`. The takes have none.
 6.  No grip has an inline `opacity`.
 7.  Cursors: `grab` on graphics and `default` on takes.
-8.  A graphic's PIN badge has `right: 8px`. The take volume badge has `right: 3px`.
-9.  `timeline-lane-divider` and `timeline-footage` exist, with `pointerEvents === "none"`. The footage strip has `boxSizing === "border-box"`, `left === "0px"` and `right === "0px"`.
+8.  Badges:
+    *   `scene-a`'s PIN badge has `style.right === "8px"`.
+    *   `volume-badge-scene-b` (text `MUTE`) has `style.right === "8px"`.
+    *   `volume-badge-take-0` (text `50%`) has `style.right === "3px"`.
+9.  `timeline-lane-divider` and `timeline-footage` exist, with `pointerEvents === "none"`. The footage strip has `boxSizing === "border-box"` and `style.top === "38px"`. Its `left` and `right` are set: jsdom reads React's numeric `0` back as `"0"` (`project-picker.test.ts:87`), so assert `"0"` or `"0px"`.
 10. There are exactly two hatches:
     *   `timeline-hatch-scene-b`, with text `muted`;
     *   `timeline-hatch-scene-c`, with text `audio only`.
 
-    Both have `pointerEvents === "none"` and `zIndex === "2"`. `scene-a` and `take-1` have none.
-11. `take-1` still shows its label text and its filmstrip style, unchanged.
+    Both have `pointerEvents === "none"`, `zIndex === "2"`, `style.top === "38px"` and `style.height === "36px"`. Each hatch's `style.left` and `style.width` equal its block's. Their `data-piece-start` values are `"6.050"` and `"10.000"`. `scene-a` and `take-1` have none.
+11. `take-1` still shows its label text `take-1`, and no element covers it in the DOM: no hatch test id contains `take-1`. The filmstrip itself is not visible in jsdom, because the harness passes neither `toSourceSec` nor `videoSrc`. It is on the by-eye list.
 12. With no graphic cues, the divider and the footage strip still render.
 13. The playhead's parent is the track, and the track is the ruler's next element sibling.
 14. `pictureHidden` returns true only for `graphic-only`. The test walks `LayoutSchema.options` and checks each against `layoutSlots(l).video.opacity === 0` from `@ossclip/scenes/geometry` (the import `overlayBox.ts:2` already uses). So the predicate is tested against the renderer's own table.
 15. The existing suites pass unchanged.
+16. With `selection` set to `scene-a`, its block has an empty `backgroundImage` and a `2px solid` border. Unselected, its border is `1px solid` with the pink colour, which jsdom reports as `rgb(244, 114, 182)`.
 
 ### E2E (`interactions.spec.ts`, new `describe("timeline lanes")`)
 
@@ -257,6 +264,8 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
 *   "Selected": `timing-range` is visible (`:203`).
 *   "Did not seek": `playheadFrac` changed by less than 0.02.
 *   "Seeked": `playheadFrac` changed by 0.02 or more.
+
+**Timing and isolation.** Steps 1, 2 and 4 are separate `test()`s, each on a fresh `page.goto("/")` and `settle(page)`. "Before" is read after the ruler park. "Seeked" is checked with `expect.poll`, because the seek lands asynchronously.
 
 **Steps:**
 
@@ -276,19 +285,17 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
     4.  Record the boxes of `timeline-block-scene-0` and `timeline-hatch-scene-0`.
     5.  Press at the block's 0.3 width, at its y centre. Move +40 px in 4 steps.
     6.  With the mouse still down, assert that the hatch's x delta equals the block's x delta (±1 px). Snapping may make that delta differ from 40.
-    7.  Still down, assert that `elementFromPoint` at (the hatch's new right edge − 3, V1 y centre) has `closest('[data-testid^="timeline-hatch-"]')` equal to the hatch. That point is over the next take, so the hatch paints over it.
+    7.  With the mouse still down, check paint order with computed z, the pattern at `interactions.spec.ts:474-478`. `elementFromPoint` cannot work here, because it never returns a `pointer-events: none` element (round 3, B1).
+        *   The hatch's box now overlaps the next take block's box (`timeline-block-take-0-1`, or whichever take follows scene-0 in the fixture; the plan names it).
+        *   The hatch's computed `zIndex` (2) is greater than that take's (1).
     8.  Release. Press `Meta+z` twice, to undo the move and the layout change. Assert scene-0 has no hatch.
-5.  **The viewport.**
-    1.  Set `test.use({ viewport: { width: 1366, height: 768 } })` in a nested describe.
-    2.  Assert the `timeline-scroller` box's bottom is ≤ 768.
-    3.  Zoom to 8×, `selectBlockAt` the first block, then press `Meta+ArrowRight` three times.
-    4.  Assert that every ancestor of `timeline-scroller` has `scrollTop === 0`.
 
 ### By eye (the author, FE Loop project)
 
 *   a hatch under a `graphic-only` graphic;
 *   a selected graphic, with no pink showing through the selection colour;
-*   label truncation on short graphics at zoom 1×;
+*   label truncation on short graphics, and on short hatches, at zoom 1×;
+*   take filmstrips still showing in V1;
 *   grips on narrow blocks;
 *   the 640×560 landscape run (`landscape.spec.ts`).
 
@@ -297,9 +304,32 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
 1.  No lane labels (§6).
 2.  V2 is always drawn, even with no graphics.
 3.  The footage strip is flat, with no frames under graphics. Under a `graphic-only` graphic it is hatched and labelled `audio only` or `muted`. Takes set to `graphic-only` get no hatch.
-4.  Presses on empty lane space seek (§5). Graphics are selected on V2 only.
+4.  Presses on empty lane space seek (§5). Graphics are selected on V2 only. **Confirmed by the author, 2026-11-24.**
 5.  The SFX, overlay and marker rows stay above the ruler.
 6.  Graphic blocks are labelled by component name, with the id dimmed after it.
+
+## Changes from draft 3
+
+*   **Round 3, B1.** E2E step 4.7 checks paint order with computed z, not `elementFromPoint`.
+*   **S1.** The viewport step is removed. Risks explains why the layout cannot push the timeline off screen, and gives the config comment its figure.
+*   **S2.** The fixture renders the PIN badge and both volume badges, and assertion 8 checks all three.
+*   **S3.** Assertion 11 checks only what jsdom can see. The filmstrip check moves to the by-eye list.
+*   **S4.** The hatch box is flex with `overflow: hidden`, so its label clips.
+*   **S5.** The `left`/`right` assertion accepts jsdom's `"0"`.
+*   **S6.** Assertion 10 checks the hatch's position and `data-piece-start`.
+*   **Minor.**
+    *   M1, M2: label weight, selected colour and style assertions.
+    *   M3: `props: {}` in the fixture.
+    *   M4: the no-component branch is a type guard only.
+    *   M5: the stale "ghost 2" comment.
+    *   M6, M7: citations.
+    *   M8: assertion 16 and the `selection` prop on `Harness`.
+    *   M9: timing and isolation.
+    *   M12: draft-1 entries marked as superseded.
+    *   M13: the config comment.
+*   **Not applied.**
+    *   M10: the build follows the existing `zoom-in` control. With the viewport step gone, no 8× step remains.
+    *   M11: z decides the stacking, so child order needs no test.
 
 ## Changes from draft 2
 
@@ -335,9 +365,9 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
 *   **S1.** Every pixel and colour value is in the doc. The mockup is updated to v2.
 *   **S2.** The labels are dropped (§6). The gutter could not line up, and the sticky version covers block labels.
 *   **S3.** The hatch label follows `video.volume`. The `ClipScene` behaviour is stated.
-*   **S6.** `pictureHidden` is used for take blocks too.
+*   **S6.** `pictureHidden` is used for take blocks too. *(Superseded in draft 3: take blocks get no hatch.)*
 *   **S7.** The DOM invariants are in §2.
 *   **S8.** The tests have a fixture, jsdom-checkable assertions, and numbered e2e steps.
 *   **S9.** The hatch follows `dragPreview`. Selection adds nothing to V1. The thumbnail refetch on commit already happens today.
 *   **S10.** The fixed-y test list, the file list and a numeric viewport check are in the doc.
-*   **Minor.** The citations are fixed (M1). The divider renders first (M2). The lane boxes are named (M3). The grip is a pointer-inert child (M4). The badge offset is set (M5). The cursors are set (M6). `isGraphic` is shared with `stored()` (M7). The overlap source is stated (M8, M9). Vertical scroll is in the viewport check (M10). C's rejection gives a reason (M11).
+*   **Minor.** The citations are fixed (M1). The divider renders first (M2). The lane boxes are named (M3). The grip is a pointer-inert child (M4). The badge offset is set (M5). The cursors are set (M6). `isGraphic` is shared with `stored()` (M7; *superseded in draft 3: no `isGraphic`, and `timing.ts` is unchanged*). The overlap source is stated (M8, M9). Vertical scroll is in the viewport check (M10). C's rejection gives a reason (M11).
