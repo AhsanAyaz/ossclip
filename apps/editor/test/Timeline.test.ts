@@ -1361,7 +1361,6 @@ describe("Timeline — lanes (timeline-lanes §1-§7)", () => {
     expect(a.title).toBe("scene-a");
     expect(a.style.containerType).toBe("inline-size");
     const label = labelOf("scene-a");
-    expect(label).not.toBeNull();
     const parts = [...label.children] as HTMLElement[];
     expect(parts).toHaveLength(2);
     expect(parts[0]!.textContent).toBe("scene-a");
@@ -1425,6 +1424,14 @@ describe("Timeline — lanes (timeline-lanes §1-§7)", () => {
     expect(labelOf("scene-a").style.paddingRight).toBe("76px");
   });
 
+  it("keeps the label's 8px right padding when a badge goes away on a mounted block", async () => {
+    await render();
+    expect(labelOf("scene-a").style.paddingRight).toBe("44px");
+    const unpinned = lanesCues.map((c) => (c.id === "scene-a" ? { ...c, pinned: false } : c));
+    await render({ cues: unpinned });
+    expect(labelOf("scene-a").style.paddingRight).toBe("8px");
+  });
+
   it("an unselected graphic is pink; selected, it takes today's blue look (assertion 16)", async () => {
     await render();
     const a = byId("timeline-block-scene-a");
@@ -1439,6 +1446,7 @@ describe("Timeline — lanes (timeline-lanes §1-§7)", () => {
     expect(sel.style.border).toMatch(/2px solid/);
     expect(sel.style.backgroundImage).toBe("");
     expect((labelOf("scene-a").children[0] as HTMLElement).style.color).toMatch(/#dbe4ff|rgb\(219, 228, 255\)/i);
+    expect((labelOf("scene-a").children[1] as HTMLElement).style.color).toMatch(/#9fb0d8|rgb\(159, 176, 216\)/i);
     expect(edges()).toHaveLength(2);
     for (const e of edges()) expect(e.classList.contains("is-selected")).toBe(true);
   });

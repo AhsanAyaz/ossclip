@@ -1757,7 +1757,12 @@ export const Timeline: React.FC<TimelineProps> = ({
                         className="ossclip-lane-label"
                         style={{
                           ...blockLabel,
-                          ...(graphicBadges > 0 ? { paddingRight: graphicBadges === 2 ? 76 : 44 } : {}),
+                          // Always the longhand, never toggled on top of
+                          // `blockLabel`'s `padding` shorthand: when a badge
+                          // goes away React clears the dropped longhand and
+                          // does not re-apply the shorthand, so the label
+                          // would lose its 8 px right padding (task 2 review).
+                          paddingRight: graphicBadges === 2 ? 76 : graphicBadges === 1 ? 44 : 8,
                         }}
                       >
                         <span
@@ -2126,7 +2131,8 @@ const block: React.CSSProperties = {
   position: "absolute",
   borderRadius: 4,
   boxSizing: "border-box",
-  cursor: "pointer",
+  // No cursor here: each block sets its own inline (grab on graphics,
+  // default on takes — timeline-lanes §3, §4).
   display: "flex",
   alignItems: "center",
   overflow: "hidden",
