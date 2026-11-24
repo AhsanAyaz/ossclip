@@ -286,7 +286,7 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
     5.  Press at the block's 0.3 width, at its y centre. Move +40 px in 4 steps.
     6.  With the mouse still down, assert that the hatch's x delta equals the block's x delta (±1 px). Snapping may make that delta differ from 40.
     7.  With the mouse still down, check paint order with computed z, the pattern at `interactions.spec.ts:474-478`. `elementFromPoint` cannot work here, because it never returns a `pointer-events: none` element (round 3, B1).
-        *   The hatch's box now overlaps the next take block's box (`timeline-block-take-0-1`, or whichever take follows scene-0 in the fixture; the plan names it).
+        *   The hatch's box now overlaps the next take block's box (`timeline-block-take-0`, the take between scene-0 and scene-2 at 5.09-12.1 s; the sliver before scene-0 is under `MIN_PLAIN_SEC` and gets no take, so the first take piece keeps the bare name, `fill.ts:93-99`).
         *   The hatch's computed `zIndex` (2) is greater than that take's (1).
     8.  Release. Press `Meta+z` twice, to undo the move and the layout change. Assert scene-0 has no hatch.
 
