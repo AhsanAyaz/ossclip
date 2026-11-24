@@ -1,7 +1,7 @@
 # A background colour per graphic
 
 *   **Author:** Muhammad Ahsan Ayaz (drafted with Claude)
-*   **Status:** Approved by the author (2026-11-24; calls 1-4 confirmed). Draft 2, revised after review round 1 (`~/ossclip-work/egm-short/backdrop-color-review-r1.md`: code accuracy, build readiness, design). Direction chosen by the author: a per-graphic override (option A), not the project-wide `bg` made easier to find (option B).
+*   **Status:** Approved by the author (2026-11-24; calls 1-4 confirmed). Draft 3, revised after review rounds 1 (code accuracy, build readiness, design) and 2 (code accuracy, build readiness): `~/ossclip-work/egm-short/backdrop-color-review-r{1,2}.md`. Direction chosen by the author: a per-graphic override (option A), not the project-wide `bg` made easier to find (option B).
 *   **Builds on:** FINDINGS §163 (backdrops in 16:9 and the kit clip's solid background), §175 (timeline lanes, where the hatch shows `graphic-only`).
 
 --------------------------------------------------------------------------------
@@ -87,11 +87,17 @@ It resolves the colour with the same morph cues and neighbours as `backdropOpaci
 *   the stage backdrop at `:206`, whose opacity is unchanged;
 *   the contain-fit slot fill at `:227`.
 
-At `:227`, a `pip-bubble` graphic with `sourceFit: "contain"` would otherwise fill the inside of its bubble with `theme.bg` while the backdrop around the bubble used the new colour (round 1, S6). For layouts without a backdrop, `backdropColorAt` returns `theme.bg`, so the contain fill stays exactly as today.
+At `:227`, a `pip-bubble` graphic with `sourceFit: "contain"` would otherwise fill the inside of its bubble with `theme.bg` while the backdrop around the bubble used the new colour (round 1, S6). For a layout without a backdrop, outside any fade window, `backdropColorAt` returns `theme.bg`, so the contain fill there stays exactly as today. Inside a fade window next to a coloured backdrop graphic, the contain fill takes that graphic's colour for the 0.35 s fade, the same colour as the backdrop fading behind it. Two adjacent backdrop colours meet at the boundary with a snap. Both are accepted: one rule for both fills is simpler than gating the contain fill separately (round 2, SF5).
 
 **Kit clip:** `sceneClipBackground` (`renderer/src/scene-clip.ts:66-72`) returns `color: backdropColorAt([p.cue], frame / p.settings.fps, p.theme.bg)`, the same call shape it already uses for opacity (round 1, M1). The kit's reuse key already hashes the whole cue (`kit-plan.ts:139-147`), so a changed colour re-renders the clip and a clip without the field keeps its key.
 
-**Editor preview:** the Player renders the same composition, so it needs no extra work.
+**Editor preview:** the Player renders the same composition from the override-applied cues (`App.tsx:1462`, `:1580`, `:1758`), so it needs no extra work. The graphic editor modal's preview is not covered (round 1, M9).
+
+**Needs nothing (round 1, M10):**
+*   `remapOverridesThroughRecut` remaps time values only, and a colour is not one.
+*   The kit notes need nothing.
+*   The cover is out of scope: it paints `theme.bg` itself.
+*   Scene stills inherit the change, because they render the composition.
 
 ### 4. Editor
 
@@ -103,7 +109,7 @@ At `:227`, a `pip-bubble` graphic with `sourceFit: "contain"` would otherwise fi
 *   **Inspector:** directly under the layout control (`Inspector.tsx:1742-1795`), shown when §2 holds and the selected cue is a graphic:
     *   **A row labelled `Background`.** It holds one `<input type="color" data-testid="backdrop-color">`, styled like `ThemeField`'s swatch (`Inspector.tsx:672-697`). It is a separate small element, not `ThemeField`, which hard-wires `theme-${id}` (round 1, S3).
     *   **Value shown:** `cue.backdropColor ?? resolvedTheme.bg`. `cue` is the selected cue after overrides, so a split half shows the colour it inherits from its root (round 1, S2).
-        *   The browser's colour input needs 6-digit hex. If that value fails `HexColorSchema.safeParse` (a hand-written theme `bg` such as `#000`), the swatch shows `#000000`.
+        *   No fallback code is needed. A colour input sanitises its value itself: browsers and jsdom turn a value that is not 6-digit hex into `#000000` and lowercase the rest (round 2, SF3).
     *   **`onChange`:** parses the value with `HexColorSchema.safeParse`, so the Inspector is the parse boundary (round 1, S4). On success it dispatches `patchBackdropColor` with the `backdropColor:<sceneId>` coalesce key.
     *   **A `Reset` link** (`data-testid="backdrop-color-reset"`) shows only when the selected scene's OWN doc entry has `backdropColor`. An inherited colour on a split half shows no Reset. Reset dispatches `clearBackdropColor`.
 
@@ -149,16 +155,18 @@ At `:227`, a `pip-bubble` graphic with `sourceFit: "contain"` would otherwise fi
     | plain take | [0, 4] | full-bleed | — |
     | graphic A | [4, 8] | graphic-only | `#ff0000` |
     | graphic B | [8, 12] | graphic-only | `#00ff00` |
-    | graphic C | [12, 16] | full-bleed | — |
-    | plain take | [16, 20] | full-bleed | — |
+    | graphic C | [12, 16] | full-bleed | `#123456` (stored, ignored) |
+    | graphic D | [16, 20] | graphic-only | `#0000ff` |
 
-    `morphCues` drops the plain takes, so A's fade-in starts from nothing, and C is the morph neighbour after B.
+    `morphCues` drops the plain take, so A's fade-in starts from nothing. C is the morph neighbour after B and before D. C stores a colour that rule 1 must ignore, because C draws no backdrop (round 2, SF2).
     *   **6 s:** `#ff0000`. Rule 1: A draws the backdrop.
     *   **4.1 s:** `#ff0000`. Rule 1, inside A's fade-in from nothing.
     *   **7.99 s:** `#ff0000`, and **8.01 s:** `#00ff00`. The snap at the A/B boundary (call 2).
     *   **12.1 s:** `#00ff00`. Rule 2: C is active, does not draw the backdrop, and is inside its fade-in window, so it takes the colour of `prev` (B), which does (call 3).
-    *   **2 s:** `#000000`. Rule 3: there is no active morph cue.
-    *   **14 s:** `#000000`. C is active and outside its fade window.
+    *   **11.8 s:** `#00ff00`. Rule 1, inside B's own fade-out.
+    *   **15.9 s:** `#0000ff`. Rule 2 with `next`: C is in its fade-out window, and D draws the backdrop (round 2, SF1).
+    *   **2 s and 3.9 s:** `#000000`. Rule 3: the plain take is filtered out, so there is no active morph cue. 3.9 s would wrongly give A's colour if the `morphCues` filter were missing (round 2, SF1).
+    *   **14 s:** `#000000`. C is active, outside its fade windows, and its stored `#123456` is ignored.
     *   **With no `backdropColor` anywhere,** every sample returns `themeBg`.
 *   **Kit clip.**
     *   `sceneClipBackground` returns the override colour for a `graphic-only` cue with `backdropColor`, `theme.bg` without it, and `null` for `full-bleed` whether or not the field is set.
@@ -170,7 +178,9 @@ At `:227`, a `pip-bubble` graphic with `sourceFit: "contain"` would otherwise fi
     *   A clear of an absent key returns the same state object, with no undo entry.
 *   **Inspector.**
     *   The `Background` row shows for a selected `graphic-only` graphic and a `pip-bubble` graphic. It does not show for a `full-bleed` graphic or a take.
-    *   Its swatch value is `resolvedTheme.bg` when no colour is set, and `#000000` when the theme `bg` is `#000`.
+    *   Its swatch value equals `resolvedTheme.bg.toLowerCase()` when no colour is set. The colour input lowercases its value.
+    *   **Harness.** `Inspector.test.ts`'s harness needs a `resolvedTheme` prop and an `initialScenes` type that accepts `backdropColor`.
+    *   **The "no row for a take" case** uses a take whose layout is `graphic-only`, so the test fails if the `kind` gate is missing (round 2, SF4).
     *   A `change` event on the swatch dispatches `patchBackdropColor`.
     *   Reset is present only when the scene's own entry has a colour. Clicking it clears the colour.
     *   A split half that inherits its root's colour shows that colour and no Reset.
@@ -184,11 +194,19 @@ At `:227`, a `pip-bubble` graphic with `sourceFit: "contain"` would otherwise fi
 
 The author confirmed calls 1-4 on 2026-11-24.
 
+## Changes from draft 2
+
+*   **SF1, SF2.** The fixture gains graphic D and a colour on C. The new samples at 3.9, 11.8 and 15.9 s test the `morphCues` filter, rule 2 with `next`, and the layout gate in rule 1.
+*   **SF3.** The swatch's `#000000` fallback is dropped, because the input sanitises its value itself. The tests compare lowercase.
+*   **SF4.** The Inspector harness needs are listed, and the take case uses `graphic-only`.
+*   **SF5.** The contain-fit fill's colour in fade windows is stated and accepted.
+*   **M9, M10.** The preview citations and the "needs nothing" answers are added.
+
 ## Changes from draft 1
 
 *   **S1.** The `backdropColorAt` fixture now exercises all three rules and the `morphCues` filter.
 *   **S2.** The Inspector shows `cue.backdropColor` (which covers inherited colours), and Reset follows the scene's own entry.
-*   **S3 and M11.** The colour is set with a swatch only. There is no text field, and the swatch shows `#000000` for a theme `bg` that is not 6-digit hex.
+*   **S3 and M11.** The colour is set with a swatch only, with no text field. *(Draft 3 dropped the `#000000` fallback: the input sanitises its value itself.)*
 *   **S4.** One `HexColorSchema` is used by both schemas and by the Inspector.
 *   **S5.** `idKeyedLookTarget` is left alone, with the reason given.
 *   **S6.** The contain-fit fill uses `backdropColorAt` too.
