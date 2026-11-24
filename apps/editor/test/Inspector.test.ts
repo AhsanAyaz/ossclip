@@ -2457,6 +2457,8 @@ describe("Inspector — the Background colour of a graphic that paints the backd
       selection: { sceneId: "take-0", elementId: null },
       cue: { ...takeCue, layout: "graphic-only" },
     });
+    // Positive control: the panel rendered, so the null below is the gate.
+    expect(q("layout-select")).not.toBeNull();
     expect(q("backdrop-color")).toBeNull();
   });
 

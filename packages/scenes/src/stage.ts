@@ -1328,8 +1328,9 @@ export function captionAnchorAt(
 }
 
 /**
- * The layouts whose stage fades the solid theme background in behind the
- * graphic. One predicate for the full render's fade (`backdropOpacityAt`)
+ * The layouts whose stage fades the solid backdrop in behind the graphic: the
+ * graphic's own `backdropColor`, or `theme.bg` when it sets none
+ * (backdrop-color §3). One predicate for the full render's fade (`backdropOpacityAt`)
  * and the kit clip (§163, design 6), which draws that background itself
  * because it has no stage, and drops the flat panel there (`slotBackdrop`).
  * Core's kit-plan.ts restates it for the report's notes and the reuse key.

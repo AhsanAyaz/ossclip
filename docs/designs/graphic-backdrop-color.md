@@ -111,7 +111,7 @@ At `:227`, a `pip-bubble` graphic with `sourceFit: "contain"` would otherwise fi
     *   **Value shown:** `cue.backdropColor ?? resolvedTheme.bg`. `cue` is the selected cue after overrides, so a split half shows the colour it inherits from its root (round 1, S2).
         *   No fallback code is needed. A colour input sanitises its value itself: browsers and jsdom turn a value that is not 6-digit hex into `#000000` and lowercase the rest (round 2, SF3).
     *   **`onChange`:** parses the value with `HexColorSchema.safeParse`, so the Inspector is the parse boundary (round 1, S4). On success it dispatches `patchBackdropColor` with the `backdropColor:<sceneId>` coalesce key.
-    *   **A `Reset` link** (`data-testid="backdrop-color-reset"`) shows only when the selected scene's OWN doc entry has `backdropColor`. An inherited colour on a split half shows no Reset. Reset dispatches `clearBackdropColor`.
+    *   **A `Reset` button** (house `reset-pip` style) (`data-testid="backdrop-color-reset"`) shows only when the selected scene's OWN doc entry has `backdropColor`. An inherited colour on a split half shows no Reset. Reset dispatches `clearBackdropColor`.
 
 ## Edge cases
 

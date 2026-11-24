@@ -52,8 +52,9 @@ export function sceneClipMetadata(p: SceneClipProps): {
  * draws nothing behind the scene and so stays byte-identical to the kit's
  * clips before it.
  *
- * In the full render these two layouts stand the graphic on the stage's
- * `theme.bg`, which VideoStage fades in over the 0.35 s ease as the footage
+ * In the full render these two layouts stand the graphic on the stage's solid
+ * backdrop, the graphic's `backdropColor` or `theme.bg` (backdrop-color §3),
+ * which VideoStage fades in over the 0.35 s ease as the footage
  * shrinks away; without it a clip would be the graphic alone, and a card row
  * on transparent pixels over the speaker is not the scene the author chose.
  * The same `backdropOpacityAt` on the one rebased cue (it starts at 0), at
