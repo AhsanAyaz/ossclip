@@ -700,6 +700,17 @@ describe("backdropColorAt (backdrop-color §3)", () => {
     expect(backdropColorAt(pair, 4.1, themeBg)).toBe("#000000");
   });
 
+  it("rule 2 borrows only from a next neighbour that draws the backdrop", () => {
+    // The mirror of the prev case: P fades out into Q, which stores a colour
+    // but is full-bleed; without the drawsSolidBackdrop(next) gate the
+    // fade-out would read Q's #ff0000.
+    const pair = [
+      at("P", "graphic", "full-bleed", 0, 4),
+      at("Q", "graphic", "full-bleed", 4, 8, "#ff0000"),
+    ];
+    expect(backdropColorAt(pair, 3.9, themeBg)).toBe("#000000");
+  });
+
   it("is themeBg at every sample when no cue carries a colour", () => {
     const plain = cues.map(({ backdropColor: _drop, ...rest }) => rest);
     for (const [t] of expected) expect(backdropColorAt(plain, t, themeBg), `t=${t}`).toBe(themeBg);

@@ -2238,3 +2238,42 @@ Older ossclip versions cannot read migrated projects (`takeLooks`, split anchors
 **Verification.** 6735 vitest tests and 112 editor e2e tests pass; typecheck and build are clean. The author checked it by eye on FE Loop on 2026-11-24 and reported "All good".
 
 **Release.** Editor-only. No version bump of its own; it ships with the next release.
+
+## 176. Per-graphic backdrop colour (2026-11-24)
+
+**Why.** The author wanted to pick the colour behind a `graphic-only` graphic. Until now the only colour there was `theme.bg`: one value for the whole project, reachable in the Inspector only with nothing selected. Design: `docs/designs/graphic-backdrop-color.md` (draft 3, two review rounds); the author chose a per-graphic override (option A) over surfacing the project `bg` (option B).
+
+**What.**
+
+*   `backdropColor` is an optional scene override, parsed by one `HexColorSchema` (`/^#[0-9a-fA-F]{6}$/`) that the override schema, the cue schema and the Inspector all share. `#fff`, `red` and `rgb(...)` are rejected, never coerced.
+*   `backdropColorAt` resolves the colour by three rules: the active cue's own colour when it draws the backdrop (rule 1); otherwise, inside a fade window, the colour of `prev` or `next`, but only if that neighbour draws the backdrop (rule 2); otherwise `themeBg` (rule 3). It shares one private resolver with `backdropOpacityAt`, whose values were recorded before the extraction and pinned by a test.
+*   VideoStage uses it in two places: the stage backdrop and the contain-fit slot fill, so a `pip-bubble` with `sourceFit: "contain"` does not show `theme.bg` inside its bubble.
+*   The kit clip's background uses it too. Its reuse key already hashes the whole cue, so a changed colour re-renders the clip and a cue without the field keeps its key.
+*   The Inspector shows a Background swatch, with a Reset button, for `graphic-only` and `pip-bubble` graphics. It is gated by `drawsSolidBackdrop`, not core's `isBackdropLayout`, which includes `full-bleed` and means something else.
+*   Reducer: `patchBackdropColor` coalesces on `backdropColor:<sceneId>`, so one drag of the colour wheel is one undo step; `clearBackdropColor` on a scene with no colour returns the same state, with no undo step.
+
+**The author's calls (confirmed 2026-11-24).**
+
+1.  `pip-bubble` is included: it paints the same backdrop.
+2.  Adjacent backdrop graphics with different colours snap at their boundary; there is no cross-fade.
+3.  A fading backdrop keeps the colour of the graphic it belongs to.
+4.  The colour stays stored when the layout changes to one without a backdrop, and does nothing there.
+
+**Accepted limits.**
+
+*   Under call 4, a colour stored on a `full-bleed` graphic changes the kit reuse key, so it costs one kit re-render with identical pixels.
+*   The contain-fit fill takes a neighbouring backdrop graphic's colour during the 0.35 s fade.
+*   A split half with its own colour snaps mid-graphic.
+*   Downgrade, then save: an older editor's zod strips the key, and the colour is lost.
+*   Contrast is the author's call; there is no check.
+
+**Found in review.**
+
+*   A core test for the absent key pinned only an empty doc, so it never reached the merge spread; 47be576 fixed it.
+*   Rule 2's neighbour gates are now tested on both sides: `prev` at 4.1 s and `next` at 3.9 s, each against a full-bleed neighbour that stores a colour. Both tests fail with their gate removed.
+
+**Verification.** 6760 vitest tests in 326 files pass under `--maxWorkers=2` (drawn-render "(c)" included, this run); typecheck and build are clean. The author checked it by eye on FE Loop on 2026-11-24 and reported "all good".
+
+**Separate follow-up.** `packages/renderer/test/drawn-render.test.ts` "(c)" is load-sensitive: its 5 s margin includes browser start-up, so it can fail under full-suite load on the 7 GB machine. It passes alone. Not fixed here.
+
+**Release.** Ships in the next release (0.2.0) with timeline lanes; no version bump of its own.
