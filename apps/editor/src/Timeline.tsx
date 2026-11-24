@@ -263,7 +263,6 @@ const PAGE_EDGE_PX = 8;
  * scroll — one page per deliberate return to the edge. */
 const PAGE_COOLDOWN_MS = 300;
 
-/** Tick labels drop the decimal — a ruler mark is a landmark, not a readout. */
 /** Lane geometry (timeline-lanes §1). One track container, lanes as vertical
  * offsets (approach B1): every seek and drag divides by the track's WIDTH and
  * nothing hit-tests vertically, so moving a block into its lane is all a
@@ -283,6 +282,7 @@ export function pictureHidden(layout: Layout | undefined): boolean {
   return layout === "graphic-only";
 }
 
+/** Tick labels drop the decimal — a ruler mark is a landmark, not a readout. */
 const tickFmt = (sec: number): string => {
   const s = Math.max(0, Math.round(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -1617,6 +1617,13 @@ export const Timeline: React.FC<TimelineProps> = ({
               // Look mode resolves the selected PIECE (R6-4), so the tail's
               // block lights without the lead's that shares its id.
               const isSelected = lookPiece !== undefined ? lookPiece === cue : selection?.sceneId === cue.id;
+              // Badges on a graphic sit at `top: 3` across a vertically
+              // centred label, so the label reserves their width and its
+              // ellipsis cuts before them — the id survives longest
+              // (timeline-lanes §3, UI review r2 S1).
+              const volume = cue.video?.volume;
+              const hasVolumeBadge = volume !== undefined && volume !== 1;
+              const graphicBadges = isPlain ? 0 : (hasVolumeBadge ? 1 : 0) + (cue.pinned ? 1 : 0);
               const thumb =
                 isPlain && toSourceSec
                   ? takeThumbs[toSourceSec((cue.startSec + cue.endSec) / 2).toFixed(1)]
@@ -1637,6 +1644,10 @@ export const Timeline: React.FC<TimelineProps> = ({
                     data-testid={`timeline-block-${cue.id}`}
                     data-piece-start={cue.startSec.toFixed(3)}
                     data-lane={isPlain ? "footage" : "graphics"}
+                    // On the block, not the label: the label ignores the
+                    // pointer, and a block under 40 px hides it entirely
+                    // (timeline-lanes §3).
+                    title={isPlain ? undefined : cue.id}
                     onMouseDown={(e) => {
                       e.stopPropagation();
                       e.preventDefault();
@@ -1668,6 +1679,10 @@ export const Timeline: React.FC<TimelineProps> = ({
                       // index.css. Take labels ellipsise as today, so takes get
                       // no container (timeline-lanes §3, §4).
                       ...(isPlain ? {} : { containerType: "inline-size" as const }),
+                      // The cursor says what a press does: a graphic moves, a
+                      // take only scrubs — its window is derived and can't
+                      // move (timeline-lanes §3, §4; problem 2).
+                      cursor: isPlain ? "default" : "grab",
                       left: `${left}%`,
                       width: `${width}%`,
                       // Explicit stacking (PLAN R11 Task 1) — paint order used to
@@ -1682,20 +1697,32 @@ export const Timeline: React.FC<TimelineProps> = ({
                       // into its own take by carveKeptTakes) reads as its own
                       // state at a glance: dashed violet over a faint tint,
                       // the kept-band family. Selection still wins the border.
+                      // Graphics are pink, a colour nothing else on the
+                      // timeline uses, so they never read as footage
+                      // (timeline-lanes §3, problem 1).
                       border: isSelected
                         ? "2px solid #5b8cff"
                         : cue.kept !== undefined
                           ? "1px dashed #B78CFF"
                           : isPlain
                             ? "1px solid #22222a"
-                            : "1px solid #2A2A33",
+                            : "1px solid #F472B6",
                       backgroundColor: isSelected
                         ? "#1c2333"
                         : cue.kept !== undefined
                           ? "#1a1524"
                           : isPlain
                             ? "#131318"
-                            : "#1A1A21",
+                            : "#2c1828",
+                      // Longhand, never the `background` shorthand: selection
+                      // adds and removes `backgroundImage` per render, and
+                      // React warns when a longhand is removed under a set
+                      // shorthand (same reasoning as `overlayChip`). Selected
+                      // drops the gradient so the blue panel reads flat, as
+                      // today (timeline-lanes §3).
+                      ...(!isPlain && !isSelected
+                        ? { backgroundImage: "linear-gradient(#3a1f33, #2c1828)" }
+                        : {}),
                       // The filmstrip (R20 §97): the take's own frame repeated
                       // across the block, dimmed under a gradient so the label
                       // stays readable. Missing thumb → the flat panel above.
@@ -1710,36 +1737,89 @@ export const Timeline: React.FC<TimelineProps> = ({
                         : {}),
                     }}
                   >
-                    <span
-                      style={
-                        isPlain
-                          ? thumb
+                    {isPlain ? (
+                      <span
+                        style={
+                          thumb
                             ? { ...blockLabel, color: "#D8D8DE", textShadow: "0 1px 2px rgba(0,0,0,0.9)" }
                             : { ...blockLabel, color: "#55555f" }
-                          : blockLabel
-                      }
-                    >
-                      {cue.kept !== undefined ? "KEPT" : cue.id}
-                    </span>
+                        }
+                      >
+                        {cue.kept !== undefined ? "KEPT" : cue.id}
+                      </span>
+                    ) : (
+                      // Id first: it is what tells graphics apart, and most
+                      // are ClipScene, so a component-first label read
+                      // "ClipScene ClipScene" with the ids clipped away
+                      // (timeline-lanes §3, option A). Solid colours, not
+                      // opacity — 0.6 opacity measured only 4.8:1.
+                      <span
+                        className="ossclip-lane-label"
+                        style={{
+                          ...blockLabel,
+                          ...(graphicBadges > 0 ? { paddingRight: graphicBadges === 2 ? 76 : 44 } : {}),
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontWeight: 600,
+                            textTransform: "none",
+                            color: isSelected ? "#dbe4ff" : "#FBCFE8",
+                          }}
+                        >
+                          {cue.id}
+                        </span>
+                        {/* ClipScene is the common case and says nothing;
+                            absent is a type guard only (the schema requires
+                            a component). */}
+                        {cue.component && cue.component !== "ClipScene" ? (
+                          <span
+                            style={{
+                              marginLeft: 6,
+                              textTransform: "none",
+                              color: isSelected ? "#9fb0d8" : "#C9A3BA",
+                            }}
+                          >
+                            {cue.component}
+                          </span>
+                        ) : null}
+                      </span>
+                    )}
                     {/* Non-default gain reads at a glance where time lives
                         (field report 2026-08-31); the control itself is the
-                        Inspector's Audio slider. */}
-                    {cue.video?.volume !== undefined && cue.video.volume !== 1 ? (
-                      <span data-testid={`volume-badge-${cue.id}`} style={pinBadge}>
-                        {cue.video.volume === 0 ? "MUTE" : `${Math.round(cue.video.volume * 100)}%`}
+                        Inspector's Audio slider. On a graphic, badges sit at
+                        `right: 8`, clear of the end grip (timeline-lanes §3);
+                        a take has no grip and keeps `right: 3`. */}
+                    {hasVolumeBadge ? (
+                      <span
+                        data-testid={`volume-badge-${cue.id}`}
+                        style={isPlain ? pinBadge : { ...pinBadge, right: 8 }}
+                      >
+                        {volume === 0 ? "MUTE" : `${Math.round(volume * 100)}%`}
                       </span>
                     ) : null}
-                    {!isPlain && cue.pinned ? <span style={pinBadge}>PIN</span> : null}
+                    {!isPlain && cue.pinned ? <span style={{ ...pinBadge, right: 8 }}>PIN</span> : null}
                     {!isPlain ? (
                       <>
+                        {/* Visible grips say the edges trim (timeline-lanes
+                            §3, problem 2). Colour and opacity live in
+                            index.css only, so hover and selection can
+                            restyle them; `is-selected` keeps pink out of the
+                            blue selection. */}
                         <div
+                          className={isSelected ? "ossclip-edge is-selected" : "ossclip-edge"}
                           onMouseDown={beginEdgeDrag(cue, "start")}
                           style={{ ...edgeHandle, left: 0, cursor: "ew-resize" }}
-                        />
+                        >
+                          <span className="ossclip-grip" style={{ ...grip, left: 2 }} />
+                        </div>
                         <div
+                          className={isSelected ? "ossclip-edge is-selected" : "ossclip-edge"}
                           onMouseDown={beginEdgeDrag(cue, "end")}
                           style={{ ...edgeHandle, right: 0, cursor: "ew-resize" }}
-                        />
+                        >
+                          <span className="ossclip-grip" style={{ ...grip, right: 2 }} />
+                        </div>
                       </>
                     ) : null}
                   </div>
@@ -2383,6 +2463,17 @@ const edgeHandle: React.CSSProperties = {
   top: 0,
   bottom: 0,
   width: EDGE_HIT,
+};
+
+/** Position only — colour and opacity come from `.ossclip-grip` in
+ * index.css, so hover and selection can restyle it (timeline-lanes §3). */
+const grip: React.CSSProperties = {
+  position: "absolute",
+  top: 5,
+  bottom: 5,
+  width: 3,
+  borderRadius: 2,
+  pointerEvents: "none",
 };
 
 /** 1px landmark at the drag's current snap target (accent yellow, matching

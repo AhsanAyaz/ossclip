@@ -68,6 +68,23 @@
   border-color: #3a3a48;
 }
 
+/* Timeline graphic-block grips (timeline-lanes §3). Colour and opacity live
+   here, never inline, so hover and selection can restyle them — an inline
+   value would beat these rules. `is-selected` sits on both edge handles of a
+   selected block so no pink shows inside the blue selection. */
+.ossclip-grip {
+  background: #F472B6;
+  opacity: .8;
+}
+
+.ossclip-edge:hover > .ossclip-grip {
+  opacity: 1;
+}
+
+.ossclip-edge.is-selected > .ossclip-grip {
+  background: #dbe4ff;
+}
+
 .ossclip-picker-row:focus {
   outline: none;
   background: #23232e;
