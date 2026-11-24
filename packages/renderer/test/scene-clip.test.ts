@@ -95,6 +95,22 @@ describe("sceneClipBackground (§163, design 6: the solid and bubble backdrops)"
     }
   });
 
+  it("carries the cue's own backdropColor, and theme.bg without one (backdrop-color §3)", () => {
+    const base = card("graphic-only");
+    const coloured = { ...base, cue: { ...base.cue, backdropColor: "#ff0000" } };
+    expect(sceneClipBackground(coloured, 60)).toEqual({ color: "#ff0000", opacity: 1 });
+    expect(sceneClipBackground(base, 60)).toEqual({ color: "#3A4A5C", opacity: 1 });
+  });
+
+  it("stays null for full-bleed whether or not the cue stores a colour", () => {
+    const base = card("full-bleed");
+    const coloured = { ...base, cue: { ...base.cue, backdropColor: "#ff0000" } };
+    for (const frame of [0, 60, 119]) {
+      expect(sceneClipBackground(base, frame)).toBeNull();
+      expect(sceneClipBackground(coloured, frame)).toBeNull();
+    }
+  });
+
   it("reads time as frame ÷ the clip's fps", () => {
     const p = { ...card("graphic-only"), settings: { ...settings, fps: 60 } };
     // Frame 12 at 60 fps is 0.2 s, the same instant as frame 6 at 30.

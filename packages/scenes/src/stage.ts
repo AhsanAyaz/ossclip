@@ -1342,20 +1342,65 @@ function backdropTarget(layout: Layout): number {
   return drawsSolidBackdrop(layout) ? 1 : 0;
 }
 
-/** Opacity of the solid stage backdrop (theme.bg) behind the demoted video slot. */
-export function backdropOpacityAt(allCues: readonly SceneCue[], tSec: number): number {
+/**
+ * The active morph cue at t, with the window and neighbours every eased
+ * backdrop quantity derives from. One resolver so the backdrop's opacity and
+ * its colour cannot disagree about which cue is fading where
+ * (backdrop-color §3, round 1 M1). Null when no morph cue is active.
+ */
+function backdropFadeAt(
+  allCues: readonly SceneCue[],
+  tSec: number,
+): {
+  cue: SceneCue;
+  T: number;
+  prev: SceneCue | null;
+  next: SceneCue | null;
+  sinceStart: number;
+  untilEnd: number;
+} | null {
   const cues = morphCues(allCues);
   const cue = activeCueAt(cues, tSec);
-  if (!cue) return 0;
-  const target = backdropTarget(cue.layout);
-  const T = Math.min(LAYOUT_TRANSITION_SEC, (cue.endSec - cue.startSec) / 2);
-  const prev = activeCueAt(cues, cue.startSec - 1e-3);
-  const next = activeCueAt(cues, cue.endSec + 1e-3);
-  const from = prev ? backdropTarget(prev.layout) : 0;
-  const to = next ? backdropTarget(next.layout) : 0;
-  const sinceStart = tSec - cue.startSec;
-  const untilEnd = cue.endSec - tSec;
-  if (sinceStart < T) return lerp(from, target, easeInOut(sinceStart / T));
-  if (untilEnd < T) return lerp(target, to, easeInOut(1 - untilEnd / T));
+  if (!cue) return null;
+  return {
+    cue,
+    T: Math.min(LAYOUT_TRANSITION_SEC, (cue.endSec - cue.startSec) / 2),
+    prev: activeCueAt(cues, cue.startSec - 1e-3),
+    next: activeCueAt(cues, cue.endSec + 1e-3),
+    sinceStart: tSec - cue.startSec,
+    untilEnd: cue.endSec - tSec,
+  };
+}
+
+/** Opacity of the solid stage backdrop behind the demoted video slot. */
+export function backdropOpacityAt(allCues: readonly SceneCue[], tSec: number): number {
+  const f = backdropFadeAt(allCues, tSec);
+  if (!f) return 0;
+  const target = backdropTarget(f.cue.layout);
+  const from = f.prev ? backdropTarget(f.prev.layout) : 0;
+  const to = f.next ? backdropTarget(f.next.layout) : 0;
+  if (f.sinceStart < f.T) return lerp(from, target, easeInOut(f.sinceStart / f.T));
+  if (f.untilEnd < f.T) return lerp(target, to, easeInOut(1 - f.untilEnd / f.T));
   return target;
+}
+
+/**
+ * Colour of that backdrop at t: the graphic it belongs to (backdrop-color §3).
+ *
+ * The active cue wins whenever it draws the backdrop — even inside its own
+ * fade windows, so adjacent coloured graphics snap at their boundary rather
+ * than cross-fade (call 2; a cross-fade would need a second fill layer). Only
+ * a cue that draws NO backdrop borrows a neighbour's colour, and only while
+ * the backdrop is fading in from `prev` or out to `next`: otherwise the fade
+ * would jump to themeBg the instant the graphic ended (call 3). A colour
+ * stored on a cue that draws no backdrop is never read (round 2, SF2).
+ * Everywhere else themeBg, where the opacity is 0 and the value unseen.
+ */
+export function backdropColorAt(allCues: readonly SceneCue[], tSec: number, themeBg: string): string {
+  const f = backdropFadeAt(allCues, tSec);
+  if (!f) return themeBg;
+  if (drawsSolidBackdrop(f.cue.layout)) return f.cue.backdropColor ?? themeBg;
+  if (f.sinceStart < f.T && f.prev && drawsSolidBackdrop(f.prev.layout)) return f.prev.backdropColor ?? themeBg;
+  if (f.untilEnd < f.T && f.next && drawsSolidBackdrop(f.next.layout)) return f.next.backdropColor ?? themeBg;
+  return themeBg;
 }
