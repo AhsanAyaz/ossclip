@@ -35,13 +35,13 @@
     - Id label `#FBCFE8`, or `#dbe4ff` when selected.
     - Component label `#C9A3BA`, or `#9fb0d8` when selected.
   - **Selected (unchanged):** `2px solid #5b8cff`, bg `#1c2333`, no image.
-  - **Footage strip:** `#1a1a21`, `1px solid #26262e`.
-  - **Hatch:** `repeating-linear-gradient(45deg, #15151b 0 5px, #2a2a33 5px 10px)`, border `1px solid #26262e`. Label `#9A9AA3` on a `#15151bcc` pill. Text `audio only`, or `hidden · muted` at volume 0.
+  - **Footage strip:** `#1a1a21`, `1px solid #2e2e38`.
+  - **Hatch:** `repeating-linear-gradient(45deg, #15151b 0 5px, #2a2a33 5px 10px)`, border `1px solid #26262e`. Label `#9A9AA3` on a `#15151bcc` pill. Text `audio only`, or `no picture · muted` at volume 0.
   - **Dashed borders** mean KEPT only.
   - **Divider:** `#22222a`.
   - **Grip:** `#F472B6`, or `#dbe4ff` on a selected block (`.is-selected`).
 - **Container queries:** blocks and hatches get `containerType: "inline-size"`. `index.css` hides `.ossclip-lane-label` under 40 px and `.ossclip-hatch-label` under 56 px.
-- **Cut strikes:** two lines, `top` 13 and 52, derived from the lane constants (spec §6a).
+- **Cut strikes:** two lines, `top` 12 and 51, derived from the lane constants (spec §6a).
 - **Inline styles:** use longhand properties (`backgroundColor` / `backgroundImage`), never the `background` shorthand next to them (`Timeline.tsx:2149-2151`). Grip opacity lives in CSS only.
 - **Comments:** explain why, and cite `timeline-lanes §N`.
 - **Machine:** 7 GB RAM. Run one heavy command at a time. The full suite is `pnpm test --maxWorkers=2 --minWorkers=1`.
@@ -95,7 +95,7 @@
      - `left` and `right` each `"0"` or `"0px"` (jsdom reads React's numeric 0 as `"0"`);
      - a border matching `/1px solid/`.
   5. Exactly two `[data-testid^="timeline-hatch-"]`:
-     - `timeline-hatch-scene-b`, with `textContent === "hidden · muted"` and `dataset.pieceStart === "6.050"`;
+     - `timeline-hatch-scene-b`, with `textContent === "no picture · muted"` and `dataset.pieceStart === "6.050"`;
      - `timeline-hatch-scene-c`, with `"audio only"` and `"10.000"`.
 
      Each has:
@@ -108,7 +108,7 @@
   8. `getByTestId("playhead").parentElement` is the track. The track is `ruler.nextElementSibling`.
   9. For each `l of LayoutSchema.options`, `pictureHidden(l) === (layoutSlots(l).video.opacity === 0)`. `LayoutSchema` comes from `@ossclip/core/browser`, and `layoutSlots` from `@ossclip/scenes/geometry`.
   10. Two plain cues `{ id: "take-1", startSec: 13 }` and `{ id: "take-1", startSec: 16 }` both render: two `timeline-block-take-1` elements with distinct `data-piece-start` (Review Focus 4).
-  11. With Harness `cuts: [{ startSec: 7, endSec: 8 }]`, the cut band (`timeline-cut-7-8`) contains exactly two strike divs, with `style.top` `"13px"` and `"52px"` (spec §6a).
+  11. With Harness `cuts: [{ startSec: 7, endSec: 8 }]`, the cut band (`timeline-cut-7-8`) contains exactly two strike divs, with `style.top` `"12px"` and `"51px"` (spec §6a).
   12. **Dragged hatch (spec assertion 18).** Reuse the drag pattern at `Timeline.test.ts:930-966`, mocking `getBoundingClientRect` to 100 px per second over 20 s.
       - Dispatch `mousedown` on `scene-c`'s block, then a `window` `mousemove` of +40 px, without `mouseup`.
       - Assert that `timeline-hatch-scene-c`'s `style.left` equals the block's and has changed from its pre-drag value.
@@ -130,7 +130,7 @@
     - the V1 box;
     - box style per spec §4: 45° stripes, a solid `#26262e` border, flex, `overflow: hidden`, `containerType: "inline-size"`, z 2, `pointerEvents: none`;
     - one label span, `className="ossclip-lane-label ossclip-hatch-label"`, styled as `blockLabel`, then `color: #9A9AA3`, `fontWeight: 400`, `textTransform: "none"`, `background: "#15151bcc"`, `borderRadius: 2`, `marginLeft: 4`, `padding: "0 4px"`;
-    - text `cue.video?.volume === 0 ? "hidden · muted" : "audio only"`.
+    - text `cue.video?.volume === 0 ? "no picture · muted" : "audio only"`.
   - Rewrite the stacking comment to the Global Constraints levels ("ghost 2" becomes "hatch 2").
 
 - [ ] **Step 4: Run** the step-2 command, then the whole `Timeline.test.ts`. Expected: PASS, and every pre-existing suite unchanged.
@@ -169,6 +169,7 @@
   - Cursors: graphic `style.cursor === "grab"`, take `"default"`.
   - Badges:
     - the span with text `PIN` inside `timeline-block-scene-a` has `style.right === "8px"`;
+    - `scene-a`'s and `scene-b`'s label spans have `style.paddingRight === "44px"` (one badge each), and `scene-c`'s has none;
     - `volume-badge-scene-b` (`MUTE`) has `"8px"`;
     - `volume-badge-take-0` (`50%`) has `"3px"`.
   - Unselected `scene-a`: `style.border` matches `/1px solid (#f472b6|rgb\(244, 114, 182\))/i`, and `backgroundImage` contains `linear-gradient`.
@@ -189,7 +190,7 @@
     - Omit the component span when `cue.component` is `"ClipScene"` or absent.
   - **`title={cue.id}`:** set it on graphic block divs.
   - **Cursor:** `grab` on graphics, `default` on takes.
-  - **Badges:** PIN and volume badges on graphics spread `{ ...pinBadge, right: 8 }`. Takes keep `pinBadge`.
+  - **Badges:** PIN and volume badges on graphics spread `{ ...pinBadge, right: 8 }`. Takes keep `pinBadge`. The graphic label span gets `paddingRight` of 44 with one badge, 76 with two, and none with no badge (spec §3).
   - **Edge handles:** each gets `className={isSelected ? "ossclip-edge is-selected" : "ossclip-edge"}` and the child `<span className="ossclip-grip" style={{ position: "absolute", top: 5, bottom: 5, width: 3, borderRadius: 2, pointerEvents: "none", left|right: 2 }} />`.
 
 - [ ] **Step 4: Run** the whole `Timeline.test.ts`, then `pnpm typecheck`. Expected: PASS.
@@ -271,7 +272,7 @@
   - a selected graphic shows no pink, including its grips;
   - the cut band's two strike lines sit one in each lane;
   - label truncation on short graphics and short hatches;
-  - grips on narrow blocks;
+  - grips on narrow blocks, including a pinned graphic at 1024 wide with its id fully visible left of PIN;
   - take filmstrips still in V1;
   - the 640×560 landscape run.
 

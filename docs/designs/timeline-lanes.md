@@ -1,9 +1,9 @@
 # Timeline lanes: footage on V1, graphics on V2
 
 *   **Author:** Muhammad Ahsan Ayaz (drafted with Claude)
-*   **Status:** Approved by the author (2026-11-24), with all six calls confirmed. Draft 6. Revised after review rounds 1 (design, code accuracy, build readiness, scope), 2 (design, code accuracy, build readiness), 3 (code accuracy, build readiness) and 4 (build readiness). The reports are `~/ossclip-work/egm-short/timeline-lanes-review-r{1,2,3,4}.md`. Draft 6 applies the UI design-loop round 1 (Impeccable assessments A and B, and the EGM panel at `~/ossclip-work/egm-short/timeline-lanes-ui-review-r1.md`). The author chose label option A on 2026-11-24. Approach B chosen by the author. Changes are listed at the end.
+*   **Status:** Approved by the author (2026-11-24), with all six calls confirmed. Draft 7. Revised after review rounds 1 (design, code accuracy, build readiness, scope), 2 (design, code accuracy, build readiness), 3 (code accuracy, build readiness) and 4 (build readiness). The reports are `~/ossclip-work/egm-short/timeline-lanes-review-r{1,2,3,4}.md`. Draft 6 applies the UI design-loop round 1 (Impeccable assessments A and B, and the EGM panel at `~/ossclip-work/egm-short/timeline-lanes-ui-review-r1.md`). The author chose label option A on 2026-11-24. Draft 7 applies UI design-loop round 2 (`timeline-lanes-ui-review-r2.md`). Approach B chosen by the author. Changes are listed at the end.
 *   **Builds on:** FINDINGS §97 (take filmstrips), the precision-editing design (drag readout, snapping), take-looks-by-source R6-4 (look-mode piece selection), `docs/designs/editor-added-graphics.md`.
-*   **Mockup:** `~/ossclip-work/mockups/timeline-lanes/index.html` (v4, on real EGM cues, with a `?state=` switcher). Screenshots are in `shots-v4/<state>/<WxH>.png`. Local only. Every value the build needs is copied into this doc. If the doc and the mockup disagree, the doc wins.
+*   **Mockup:** `~/ossclip-work/mockups/timeline-lanes/index.html` (v5, on real EGM cues, with a `?state=` switcher). Screenshots are in `shots-v5/<state>/<WxH>.png`. Local only. Every value the build needs is copied into this doc. If the doc and the mockup disagree, the doc wins.
 
 --------------------------------------------------------------------------------
 
@@ -102,7 +102,8 @@ B1 relies on these, and the plan must keep them:
     *   **The cue id:** `fontWeight: 600`, `textTransform: "none"`. Its colour is `#FBCFE8`, or `#dbe4ff` when selected.
     *   **The component name:** `marginLeft: 6`, `textTransform: "none"`. Its colour is `#C9A3BA`, or `#9fb0d8` when selected. These are solid colours, not opacity: an opacity of 0.6 measured only 4.8:1. This span is omitted when `cue.component` is `"ClipScene"` (the common case, which carries no information) or absent (a type guard only; the schema requires it, `scene-schema.ts:291-295`).
     *   `blockLabel`'s ellipsis clips the line from the right, so the id survives longest.
-    *   **Narrow blocks:** the block div gets `containerType: "inline-size"`, and `index.css` adds `@container (max-width: 40px) { .ossclip-lane-label { display: none } }`. The label span carries `className="ossclip-lane-label"`. A block under 40 px shows its grips only, not a stray glyph. The `title` still names it.
+    *   **Badges keep the label clear.** The badge sits at `top: 3` on a 28 px block, so it overlaps the vertically centred label. In mockup v4 it covered the id ("adde[PIN]"). When a graphic block shows badges, the label span gets `paddingRight: 44` for one badge, or `76` for PIN and volume together. The ellipsis then cuts before the badge, and the id stays visible longest (UI review r2, S1).
+    *   **Narrow blocks:** the graphic block div gets `containerType: "inline-size"`, and `index.css` adds `@container (max-width: 40px) { .ossclip-lane-label { display: none } }`. The label span carries `className="ossclip-lane-label"`. A block under 40 px shows its grips only, not a stray glyph. The `title` still names it.
 *   **Grips.**
     *   Each existing `edgeHandle` div (10 px hit zone, `EDGE_HIT`, `:248`) gets `className="ossclip-edge"`. It also gets one child `<span className="ossclip-grip" />` with inline position only: `position: absolute`, `top: 5`, `bottom: 5`, `width: 3`, `borderRadius: 2`, `pointerEvents: "none"`, and `left: 2` on the start handle or `right: 2` on the end handle.
     *   The grip rules go in `apps/editor/src/index.css`, near the hover pattern at `:66`:
@@ -119,12 +120,12 @@ B1 relies on these, and the plan must keep them:
 *   **Divider.** One element, `data-testid="timeline-lane-divider"`: `position: absolute`, `left: 0`, `right: 0`, `top: 34`, `height: 1`, `background: #22222a`, `zIndex: 0`, `pointerEvents: "none"`. It is the track's first child.
 *   **Footage strip.** One element, `data-testid="timeline-footage"`, rendered second:
     *   `position: absolute`, `left: 0`, `right: 0`, `top: 38`, `height: 36`, `boxSizing: "border-box"`;
-    *   `background: #1a1a21`, `border: 1px solid #26262e`, `borderRadius: 4`. The border is solid, so dashed keeps one meaning on the timeline: KEPT. The fill is one step above the track (`#0F0F14`), so V1 under a graphic reads as footage present, not as an empty slot (UI review r1);
+    *   `background: #1a1a21`, `border: 1px solid #2e2e38`, `borderRadius: 4`. The border is solid, so dashed keeps one meaning on the timeline: KEPT. The fill is one step above the track (`#0F0F14`), so V1 under a graphic reads as footage present, not as an empty slot (UI review r1);
     *   `zIndex: 0`, `pointerEvents: "none"`.
 
     `left/right` with `border-box` keeps it inside the track. A 2 px overflow would turn on scrolling at zoom 1 (round 2, S9).
 *   **Take blocks.**
-    *   Unchanged: the element, handlers, filmstrip, `KEPT` styling, volume badge and test ids.
+    *   Unchanged: the element, handlers, filmstrip (kept takes included), `KEPT` styling, volume badge and test ids. Take blocks get no container query and no `ossclip-lane-label` class: their labels ellipsise as today.
     *   They move to the V1 box and gain `data-lane="footage"` and `cursor: "default"`.
     *   A drag still scrubs. A click still selects without seeking. Look mode still selects by piece (`pieceSelection`). They have no grips.
 *   **Hatch, for picture-hidden graphics only.** For a graphic cue where `pictureHidden(cue.layout)` holds, the iteration's Fragment adds one element after the block:
@@ -135,7 +136,7 @@ B1 relies on these, and the plan must keep them:
     *   **Label:** one span, `className="ossclip-lane-label ossclip-hatch-label"`, with `blockLabel`'s font, `nowrap` and ellipsis.
         *   Style: colour `#9A9AA3` (5.1:1 on the light stripe), `fontWeight: 400`, `textTransform: "none"`, `background: "#15151bcc"`, `borderRadius: 2`, `marginLeft: 4`, `padding: "0 4px"`. The old `#5f5f6a` measured 2.7:1.
         *   `index.css` adds `@container (max-width: 56px) { .ossclip-hatch-label { display: none } }`.
-        *   The text is `audio only` when the cue's `video.volume` is absent or not 0, and `hidden · muted` when it is 0. Both texts name the hidden picture. `muted` alone talked only about audio.
+        *   The text is `audio only` when the cue's `video.volume` is absent or not 0, and `no picture · muted` when it is 0. Both texts say what the viewer gets from the recording there. `muted` alone talked only about audio, and `no picture · muted` read as "the graphic is hidden" (UI review r2, S5).
     *   **Not hatched:**
         *   a graphic with any other layout. Its picture plays, and a muted one already shows MUTE on V2;
         *   take blocks (Non-goals).
@@ -171,8 +172,8 @@ Today its one strike line is `cutStrike` at `top: "50%"` (`Timeline.tsx:2045-205
 
 Lanes replace it with two strike lines, `cutStrikeV2` and `cutStrikeV1`. They are the same style with `top: "50%"` replaced:
 
-*   `cutStrikeV2`: `top: V2_BOX.top + V2_BOX.height / 2 - 3 - 1 - 1`, which is 13 px. The terms are: lane centre, minus the band's `top: 3` inset, minus its 1 px border, minus half the 2 px line.
-*   `cutStrikeV1`: `top: V1_BOX.top + V1_BOX.height / 2 - 3 - 1 - 1`, which is 52 px.
+*   `cutStrikeV2`: `top: V2_BOX.top + V2_BOX.height / 2 - 3 - 1 - 1`, which is 12 px. The terms are: lane centre, minus the band's `top: 3` inset, minus its 1 px border, minus half the 2 px line.
+*   `cutStrikeV1`: `top: V1_BOX.top + V1_BOX.height / 2 - 3 - 1 - 1`, which is 51 px.
 
 The band renders both. They are computed from the lane constants, not typed as literals.
 
@@ -202,6 +203,8 @@ The drag readout floats above the track (`dragReadout`) and is not affected.
     All three are accepted.
 *   **Kept ranges under a graphic** are not carved into takes (`kept-takes.ts:131-135`), so they show as footage strip. Today they show nothing either.
 *   **Zoom.** Every element is inside the zoom-width content.
+*   **A sub-second graphic** (under about 40 px at zoom 1) shows only its grips. Its two 10 px edge zones cover most of its width, so a body drag is hard to start. This is accepted. The same block is easy to drag at zoom 2× or more, and the Inspector's timing fields move it at any zoom. The hit zones are unchanged from today.
+*   **A cut inside a `graphic-only` window.** The V1 strike line can run through the hatch label. This is accepted: the cut band is z 3 and means the time is removed, so the label under it is moot until Restore.
 *   **Hidden graphics.** They are not drawn today; the take covering their window offers Restore (`App.tsx:3709-3712`). No change.
 
 ## Risks and mitigations
@@ -263,13 +266,14 @@ Assertions:
 5.  Each graphic has two `.ossclip-edge > .ossclip-grip`. The takes have none.
 6.  No grip has an inline `opacity`.
 7.  Cursors: `grab` on graphics and `default` on takes.
-8.  Badges:
+8.  Badges, and the label's reserved space:
+    *   `scene-a`'s label span has `style.paddingRight === "44px"` (PIN only). `scene-b`'s has `"44px"` (MUTE only). A graphic with no badge has no `paddingRight` set.
     *   `scene-a`'s PIN badge, found as the span with text `PIN` inside `timeline-block-scene-a`, has `style.right === "8px"`.
     *   `volume-badge-scene-b` (text `MUTE`) has `style.right === "8px"`.
     *   `volume-badge-take-0` (text `50%`) has `style.right === "3px"`.
 9.  `timeline-lane-divider` and `timeline-footage` exist, with `pointerEvents === "none"`. The footage strip has `boxSizing === "border-box"`, `style.top === "38px"`, and a `style.border` matching `/1px solid/`, not dashed. Its `left` and `right` are set: jsdom reads React's numeric `0` back as `"0"` (`project-picker.test.ts:87`), so assert `"0"` or `"0px"`.
 10. There are exactly two hatches:
-    *   `timeline-hatch-scene-b`, with text `hidden · muted`;
+    *   `timeline-hatch-scene-b`, with text `no picture · muted`;
     *   `timeline-hatch-scene-c`, with text `audio only`.
 
     Both have `pointerEvents === "none"`, `zIndex === "2"`, `style.top === "38px"` and `style.height === "36px"`. Each hatch's `style.left` and `style.width` equal its block's. Their `data-piece-start` values are `"6.050"` and `"10.000"`. Each hatch's `backgroundImage` contains `45deg`. Its label span has classes `ossclip-lane-label` and `ossclip-hatch-label`. `scene-a` and `take-1` have none.
@@ -280,7 +284,7 @@ Assertions:
 15. The existing suites pass unchanged.
 16. With `selection` set to `scene-a`, its block has an empty `backgroundImage` and a `2px solid` border, and both of its `.ossclip-edge` elements have class `is-selected`. Unselected, neither has the class. Unselected, its border is `1px solid` with the pink colour, matched by `/#f472b6|rgb\(244, 114, 182\)/i`, the hex-or-rgb pattern at `TranscriptPanel.test.ts:2305`.
 
-17. **The cut band's strike lines** (Harness `cuts`, one unapplied cut [7, 8]). The band contains exactly two strike elements, with `style.top` `"13px"` and `"52px"`.
+17. **The cut band's strike lines** (Harness `cuts`, one unapplied cut [7, 8]). The band contains exactly two strike elements, with `style.top` `"12px"` and `"51px"`.
 18. **A dragged hatch follows its block** (UI review r1, S9; this replaces the old e2e step 4). Use the drag harness at `Timeline.test.ts:930-966`, which mocks `getBoundingClientRect` to 100 px per second.
     *   Dispatch `mousedown` on `scene-c`'s block, then a `window` `mousemove` of +40 px. Do not release.
     *   While the drag is live, `timeline-hatch-scene-c`'s `style.left` equals the block's `style.left`, and differs from its value before the drag.
@@ -326,7 +330,7 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
 
 1.  No lane labels (§6).
 2.  V2 is always drawn, even with no graphics.
-3.  The footage strip is flat, with no frames under graphics. Under a `graphic-only` graphic it is hatched and labelled `audio only` or `hidden · muted`. Takes set to `graphic-only` get no hatch.
+3.  The footage strip is flat, with no frames under graphics. Under a `graphic-only` graphic it is hatched and labelled `audio only` or `no picture · muted`. Takes set to `graphic-only` get no hatch.
 4.  Presses on empty lane space seek (§5). Graphics are selected on V2 only. **Confirmed by the author, 2026-11-24.**
 5.  The SFX, overlay and marker rows stay above the ruler.
 6.  Graphic blocks are labelled id first, then the component name, which is left out for `ClipScene`. **The author chose option A, 2026-11-24.**
@@ -334,10 +338,17 @@ The fixture's graphics are scene-0 `video-top` (0.09-5.09 s), scene-2 `blurred-b
 ## Changes from draft 5 (UI design loop, round 1)
 
 *   **B1.** The cut band gets one strike line per lane (§6a).
-*   **The hatch** uses 45° stripes with a visible step, a solid border, a `#9A9AA3` label on a pill, and `hidden · muted` for volume 0.
+*   **The hatch** uses 45° stripes with a visible step, a solid border, a `#9A9AA3` label on a pill, and `no picture · muted` for volume 0.
 *   **The footage strip** is `#1a1a21` with a solid `#26262e` border. Dashed now means only KEPT.
 *   **Labels** put the id first, with a solid-colour component name that is omitted for `ClipScene` (author's option A).
 *   **Container queries** hide labels under 40 px, and hatch labels under 56 px.
+*   **Draft 7 (UI review r2):**
+    *   the strike tops are 12/51, so the formula's own result;
+    *   `paddingRight` reserves badge space;
+    *   the hatch label reads `no picture · muted`;
+    *   take blocks get no container query;
+    *   the strip border is `#2e2e38`;
+    *   the sub-second-graphic and cut-over-hatch edge cases are accepted.
 *   **Tests:** e2e step 4 moves to jsdom (component assertion 18), and assertion 17 covers the strike lines.
 *   **Grips** turn `#dbe4ff` on a selected block.
 *   **Not taken:**
