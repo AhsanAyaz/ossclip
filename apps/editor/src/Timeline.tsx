@@ -2252,11 +2252,12 @@ const cutOverlay: React.CSSProperties = {
 };
 
 /** The literal "struck through" line — a hatch alone reads as "selected" or
- * "dragging" at a glance; a horizontal line through the middle is the same
- * mark the ghost ROW already uses on its own label text. One per lane, each
- * through its lane's centre: lane centre, minus the band's `top: 3` inset,
- * minus its 1 px border, minus half the 2 px line — computed from the lane
- * constants so a geometry change cannot strand them (timeline-lanes §6a). */
+ * "dragging" at a glance; a horizontal line through the middle reads as cut.
+ * One per lane, each through its lane's centre: lane centre, minus the band's
+ * `top: 3` inset, minus its 1 px border, minus half the 2 px line. The lane
+ * centre comes from the lane constants, so a lane change cannot strand them;
+ * the band inset and border are literals here and must move with `cutOverlay`
+ * (timeline-lanes §6a). */
 const cutStrikeBase: React.CSSProperties = {
   position: "absolute",
   left: 0,

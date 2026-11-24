@@ -267,7 +267,7 @@ Assertions:
 6.  No grip has an inline `opacity`.
 7.  Cursors: `grab` on graphics and `default` on takes.
 8.  Badges, and the label's reserved space:
-    *   `scene-a`'s label span has `style.paddingRight === "44px"` (PIN only). `scene-b`'s has `"44px"` (MUTE only). A graphic with no badge has no `paddingRight` set.
+    *   `scene-a`'s label span has `style.paddingRight === "44px"` (PIN only). `scene-b`'s has `"44px"` (MUTE only). A graphic with no badge keeps `blockLabel`'s 8 px right padding: `style.paddingRight === "8px"`, set explicitly as a longhand so that removing a badge from a mounted block cannot drop it.
     *   `scene-a`'s PIN badge, found as the span with text `PIN` inside `timeline-block-scene-a`, has `style.right === "8px"`.
     *   `volume-badge-scene-b` (text `MUTE`) has `style.right === "8px"`.
     *   `volume-badge-take-0` (text `50%`) has `style.right === "3px"`.
